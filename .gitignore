@@ -1,0 +1,20 @@
+node_modules/
+
+# Runtime state
+storage/state.json
+storage/state.lock
+storage/intake/**
+storage/packages/**
+storage/reviews/**
+storage/tmp/**
+logs/**
+backups/**
+shared/**
+
+# Keep directory placeholders out of published secrets; deployment creates dirs.
+!.gitignore
+
+# Local env
+.env
+.env.*
+!.env.example

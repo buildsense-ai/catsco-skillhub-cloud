@@ -1,0 +1,27 @@
+{
+  "name": "catsco-skillhub-cloud",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "CatsCo SkillHub cloud service without Docker: API, worker, scanner, packaging, signing, and registry.",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "start:api": "node apps/api/server.js",
+    "start:worker": "node apps/worker/worker.js",
+    "worker:once": "node apps/worker/worker.js --once",
+    "db:migrate": "node scripts/migrate.js",
+    "storage:migrate-git": "node scripts/migrate-git-storage.js",
+    "admin:create": "node scripts/create-admin.js",
+    "keys:generate-root": "node scripts/generate-root-key.js",
+    "keys:generate": "node scripts/generate-signing-key.js",
+    "keys:issue-certificate": "node scripts/issue-signing-certificate.js",
+    "secrets:generate": "node scripts/generate-secrets.js",
+    "smoke": "node scripts/smoke-test.js",
+    "test": "node --test tests/integration/*.test.js"
+  },
+  "dependencies": {
+    "pg": "^8.13.1"
+  }
+}

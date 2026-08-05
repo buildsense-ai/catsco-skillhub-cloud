@@ -1,0 +1,30 @@
+[Unit]
+Description=CatsCo SkillHub Worker
+After=network-online.target catsco-skillhub-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=skillhub
+Group=skillhub
+WorkingDirectory=/opt/catsco/skillhub/app
+EnvironmentFile=/opt/catsco/skillhub/shared/.env
+ExecStart=/usr/bin/node apps/worker/worker.js
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGTERM
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=catsco-skillhub-worker
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/catsco/skillhub/storage /opt/catsco/skillhub/logs /opt/catsco/skillhub/shared
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+

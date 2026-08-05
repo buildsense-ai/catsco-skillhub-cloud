@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CatsCo SkillHub Admin</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg:#f4f6fa;--surface:#fff;--soft:#f8f9fc;--line:#e5e8f0;
+      --text:#171b2b;--muted:#71778a;--nav:#121727;--primary:#625bf6;
+      --primary-soft:#eeedff;--success:#12805c;--success-soft:#e7f7f0;
+      --warning:#a55c08;--warning-soft:#fff3df;--danger:#c23b4b;--danger-soft:#fff0f2;
+      font-family:Inter,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    }
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text)}
+    button,input,select{font:inherit}button{cursor:pointer}.hidden{display:none!important}
+    .app{min-height:100vh;display:grid;grid-template-columns:248px minmax(0,1fr)}
+    .sidebar{height:100vh;position:sticky;top:0;padding:22px 16px 18px;display:flex;flex-direction:column;color:#fff;background:radial-gradient(circle at 16% 0%,rgba(98,91,246,.24),transparent 29%),var(--nav)}
+    .brand{display:flex;align-items:center;gap:11px;padding:0 8px 25px}.brand-mark{width:36px;height:36px;border-radius:11px;display:grid;place-items:center;background:linear-gradient(145deg,#817cff,#554df0);box-shadow:0 10px 25px rgba(98,91,246,.34)}.brand-mark svg{width:21px}.brand-title{font-size:15px;font-weight:760}.brand-subtitle{margin-top:2px;color:#8990a8;font-size:10px;letter-spacing:.08em;text-transform:uppercase}
+    .nav-label{padding:9px 12px 7px;color:#737b94;font-size:10px;font-weight:750;letter-spacing:.11em;text-transform:uppercase}.nav{display:grid;gap:4px}.nav-item{border:0;width:100%;padding:10px 12px;display:flex;align-items:center;gap:11px;border-radius:9px;background:transparent;color:#aeb4c7;text-align:left;font-size:13px}.nav-item svg{width:17px;height:17px;opacity:.8}.nav-item:hover{color:#fff;background:rgba(255,255,255,.055)}.nav-item.active{color:#fff;background:linear-gradient(90deg,rgba(98,91,246,.28),rgba(98,91,246,.12));box-shadow:inset 2px 0 #817cff}.nav-count{margin-left:auto;min-width:22px;padding:2px 6px;border-radius:999px;background:#2b3045;color:#bbc0d2;font-size:10px;text-align:center}.nav-item.active .nav-count{background:#655ef6;color:#fff}
+    .sidebar-footer{margin-top:auto}.system-card{margin:0 4px 14px;padding:12px;border:1px solid #2a3044;border-radius:11px;background:rgba(255,255,255,.025);cursor:pointer}.system-line{display:flex;align-items:center;gap:8px;font-size:12px}.live-dot{width:8px;height:8px;border-radius:50%;background:#3dd598;box-shadow:0 0 0 4px rgba(61,213,152,.11)}.live-dot.off{background:#ef6b78;box-shadow:0 0 0 4px rgba(239,107,120,.11)}.system-meta{margin:7px 0 0 16px;color:#737b94;font-size:10px}
+    .profile{border-top:1px solid #252b3d;padding:15px 7px 0;display:flex;align-items:center;gap:10px}.avatar{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;color:#fff;background:#655ef6;font-weight:750;font-size:12px}.profile-name{font-size:12px;font-weight:700}.profile-role{margin-top:2px;color:#737b94;font-size:10px}.logout{margin-left:auto;border:0;background:transparent;color:#8b92a7;font-size:10px}
+    .workspace{min-width:0}.topbar{height:68px;padding:0 30px;display:flex;align-items:center;justify-content:space-between;background:rgba(255,255,255,.9);backdrop-filter:blur(18px);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}.breadcrumb{display:flex;align-items:center;gap:8px;font-size:12px}.breadcrumb span{color:#9297a7}.breadcrumb b{color:#34394a}.top-actions{display:flex;align-items:center;gap:9px}.global-search{width:285px;height:36px;display:flex;align-items:center;gap:8px;padding:0 11px;border:1px solid var(--line);border-radius:9px;background:var(--soft);color:#979cad;font-size:12px}.global-search input{width:100%;border:0;outline:0;background:transparent}.shortcut{padding:2px 6px;border:1px solid #dfe2eb;border-radius:5px;background:#fff;font-size:9px}.icon-button{width:36px;height:36px;border:1px solid var(--line);border-radius:9px;background:#fff;color:#63697a;display:grid;place-items:center}.icon-button svg{width:17px;height:17px}
+    main{padding:27px 30px 42px}.page-heading{display:flex;align-items:flex-end;justify-content:space-between;gap:18px}.eyebrow{color:var(--primary);font-size:10px;font-weight:800;letter-spacing:.1em;text-transform:uppercase}h1{margin:5px 0;font-size:25px;line-height:1.2;letter-spacing:-.035em}.subtitle{color:var(--muted);font-size:12px}.primary-button{border:0;border-radius:9px;padding:10px 14px;background:var(--primary);color:#fff;font-size:12px;font-weight:730;box-shadow:0 8px 18px rgba(98,91,246,.2)}
+    .metrics{margin-top:23px;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.metric{padding:16px;border:1px solid var(--line);border-radius:12px;background:var(--surface);box-shadow:0 5px 16px rgba(24,29,48,.025)}.metric-top{display:flex;justify-content:space-between;align-items:center;color:var(--muted);font-size:11px}.metric-icon{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;background:var(--primary-soft);color:var(--primary)}.metric-value{margin-top:10px;font-size:23px;font-weight:780;letter-spacing:-.04em}.metric-note{margin-top:5px;color:#989dac;font-size:10px}.up{color:var(--success);font-weight:700}
+    .git-banner{margin-top:13px;padding:11px 14px;border:1px solid #dcdafe;border-radius:10px;display:flex;align-items:center;gap:10px;background:linear-gradient(90deg,#f5f4ff,#fbfbff);color:#48436e;font-size:11px}.git-banner strong{color:#332d91}.git-status{margin-left:auto;color:var(--success);font-weight:720}
+    .content-grid{margin-top:14px;display:grid;grid-template-columns:minmax(650px,1fr) 356px;gap:14px;align-items:start}.content-grid.wide{grid-template-columns:1fr}.card{border:1px solid var(--line);border-radius:12px;background:var(--surface);box-shadow:0 5px 16px rgba(24,29,48,.025);overflow:hidden}.card-header{min-height:66px;padding:14px 16px;display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid var(--line)}.card-title{font-size:13px;font-weight:760}.card-note{margin-top:3px;color:var(--muted);font-size:10px}.filters{display:flex;gap:8px}.filter-input,.filter-select{height:34px;border:1px solid var(--line);border-radius:8px;outline:none;background:var(--soft);color:#4c5262;font-size:11px}.filter-input{width:180px;padding:0 11px}.filter-select{padding:0 28px 0 10px}
+    .table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;table-layout:fixed}th{height:39px;padding:0 14px;background:#fafbfc;color:#8c92a3;font-size:9px;font-weight:780;letter-spacing:.075em;text-align:left;text-transform:uppercase}td{height:64px;padding:9px 14px;border-top:1px solid #eef0f5;color:#444a5b;font-size:11px;vertical-align:middle}tbody tr{cursor:pointer;transition:.15s ease}tbody tr:hover{background:#fafaff}tbody tr.selected{background:#f6f5ff;box-shadow:inset 2px 0 var(--primary)}.skill-cell{display:flex;align-items:center;gap:10px}.repo-icon{flex:0 0 auto;width:31px;height:31px;border-radius:8px;display:grid;place-items:center;background:#f0efff;color:var(--primary)}.repo-icon svg{width:15px}.skill-name{color:#24293a;font-size:11px;font-weight:740}.namespace{margin-top:3px;color:#999eac;font-size:9px}.mono{font-family:"Cascadia Code","SFMono-Regular",Consolas,monospace;font-size:10px}.tag{color:#4d50a4}.status{display:inline-flex;align-items:center;gap:5px;padding:4px 7px;border-radius:999px;font-size:9px;font-weight:750}.status:before{content:"";width:5px;height:5px;border-radius:50%;background:currentColor}.published{color:var(--success);background:var(--success-soft)}.yanked,.orphaned{color:var(--danger);background:var(--danger-soft)}.unknown{color:var(--warning);background:var(--warning-soft)}.pagination{height:49px;padding:0 15px;display:flex;align-items:center;justify-content:space-between;border-top:1px solid var(--line);color:#9297a7;font-size:10px}.empty{padding:48px 20px;text-align:center;color:#969baa;font-size:12px}
+    .detail{position:sticky;top:82px}.detail-cover{height:73px;background:radial-gradient(circle at 80% -10%,rgba(129,124,255,.42),transparent 44%),linear-gradient(135deg,#1b2035,#222743)}.detail-body{padding:0 17px 18px}.detail-avatar{width:48px;height:48px;margin-top:-24px;border:4px solid #fff;border-radius:13px;display:grid;place-items:center;background:var(--primary);color:#fff;font-weight:800;box-shadow:0 8px 20px rgba(24,29,48,.16)}.detail-head{margin-top:11px;display:flex;justify-content:space-between;gap:10px}.detail-title{font-size:15px;font-weight:780}.detail-id{margin-top:3px;color:#8f94a4;font-size:9px}.detail-description{margin:14px 0;color:#686e7f;font-size:10px;line-height:1.65}.action-row{display:grid;grid-template-columns:1fr 1fr;gap:8px}.secondary-button,.danger-button,.good-button{height:34px;border-radius:8px;background:#fff;font-size:10px;font-weight:720}.secondary-button{border:1px solid #dfe2eb;color:#4d5364}.danger-button{border:1px solid #f0cfd4;color:var(--danger)}.good-button{border:1px solid #c8e9dc;color:var(--success)}.section-label{margin:18px 0 9px;color:#999eac;font-size:9px;font-weight:780;letter-spacing:.09em;text-transform:uppercase}.version-select{width:100%;height:34px;margin-bottom:8px;border:1px solid var(--line);border-radius:8px;padding:0 9px;background:var(--soft);font-size:10px}.info-list{display:grid;gap:1px;border:1px solid #eceef3;border-radius:9px;overflow:hidden}.info-row{min-height:38px;padding:8px 10px;display:grid;grid-template-columns:96px 1fr;gap:8px;align-items:center;background:#fbfbfd;font-size:10px}.info-row+.info-row{border-top:1px solid #eceef3}.info-key{color:#9095a5}.info-value{color:#3e4456;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.commit{color:var(--primary)}.timeline{display:grid;gap:12px}.event{display:grid;grid-template-columns:8px 1fr;gap:10px}.event-dot{width:7px;height:7px;margin-top:3px;border-radius:50%;background:#bebbef;box-shadow:0 0 0 4px #f1f0ff}.event-title{color:#42485a;font-size:10px;font-weight:690}.event-meta{margin-top:3px;color:#9da2b0;font-size:9px}
+    .modal-backdrop{position:fixed;inset:0;z-index:20;display:grid;place-items:center;padding:20px;background:rgba(12,16,29,.56);backdrop-filter:blur(6px)}.modal{width:min(440px,100%);max-height:85vh;overflow:auto;border:1px solid rgba(255,255,255,.45);border-radius:16px;background:#fff;box-shadow:0 28px 80px rgba(12,16,29,.3)}.modal.large{width:min(780px,100%)}.modal-head{padding:19px 20px 12px;display:flex;justify-content:space-between;gap:15px}.modal-title{font-size:16px;font-weight:780}.modal-note{margin-top:4px;color:var(--muted);font-size:11px}.modal-close{width:30px;height:30px;border:0;border-radius:8px;background:var(--soft);color:#6d7283}.modal-body{padding:8px 20px 20px}.field{display:grid;gap:6px;margin-top:12px}.field label{font-size:10px;font-weight:720;color:#606677}.field input{height:40px;padding:0 11px;border:1px solid var(--line);border-radius:9px;outline:none}.field input:focus{border-color:#aaa6ff;box-shadow:0 0 0 3px var(--primary-soft)}.login-actions{display:flex;justify-content:flex-end;margin-top:17px}.modal-error{min-height:16px;margin-top:10px;color:var(--danger);font-size:10px}.json{margin:0;padding:14px;border-radius:10px;background:#121827;color:#dce4ff;white-space:pre-wrap;word-break:break-word;font:10px/1.55 "Cascadia Code",Consolas,monospace}.toast{position:fixed;right:22px;bottom:22px;z-index:30;padding:11px 14px;border-radius:9px;background:#171c2d;color:#fff;font-size:11px;opacity:0;transform:translateY(8px);pointer-events:none;transition:.2s;box-shadow:0 12px 35px rgba(19,24,40,.28)}.toast.show{opacity:1;transform:none}
+    @media(max-width:1120px){.app{grid-template-columns:76px minmax(0,1fr)}.brand-copy,.nav-label,.nav-item span,.nav-count,.system-card,.profile-copy,.logout{display:none}.brand{justify-content:center;padding-inline:0}.nav-item,.profile{justify-content:center}.content-grid{grid-template-columns:1fr}.detail{position:static}}@media(max-width:780px){.topbar{padding:0 16px}main{padding:20px 16px}.metrics{grid-template-columns:repeat(2,1fr)}.global-search{display:none}.card-header{align-items:flex-start;flex-direction:column}.filters{width:100%;flex-wrap:wrap}.filter-input{flex:1}.git-banner span:not(.git-status){display:none}}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand"><div class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8.2 10.2c-1.8-2.1-4.4-.4-3.8 1.8.4 1.6 2 2.2 3.4 1.5M15.8 10.2c1.8-2.1 4.4-.4 3.8 1.8-.4 1.6-2 2.2-3.4 1.5"/><path d="M8.1 8.4C8.1 5.9 9.8 4 12 4s3.9 1.9 3.9 4.4c0 3.3-1.4 7.6-3.9 7.6s-3.9-4.3-3.9-7.6Z"/></svg></div><div class="brand-copy"><div class="brand-title">CatsCo SkillHub</div><div class="brand-subtitle">Admin Console</div></div></div>
+      <div class="nav-label">Workspace</div>
+      <nav class="nav">
+        <button class="nav-item" data-view="overview"><span>概览</span></button>
+        <button class="nav-item active" data-view="skills"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H10l2 2h5.5A2.5 2.5 0 0 1 20 7.5v9A2.5 2.5 0 0 1 17.5 19h-11A2.5 2.5 0 0 1 4 16.5v-11Z"/></svg><span>Skills</span><b class="nav-count" id="skillNavCount">0</b></button>
+        <button class="nav-item" data-view="versions"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="6" cy="5" r="2"/><circle cx="18" cy="7" r="2"/><circle cx="6" cy="19" r="2"/><path d="M6 7v10M8 7c5 0 4 7 8 7V9"/></svg><span>版本与 Git</span><b class="nav-count" id="versionNavCount">0</b></button>
+      </nav>
+      <div class="nav-label" style="margin-top:18px">Management</div>
+      <nav class="nav">
+        <button class="nav-item" data-view="namespaces"><span>用户与命名空间</span></button>
+        <button class="nav-item" data-view="audit"><span>审计日志</span></button>
+      </nav>
+      <div class="sidebar-footer">
+        <div class="system-card" id="healthCard"><div class="system-line"><span class="live-dot" id="healthDot"></span><strong id="healthText">正在检查系统</strong></div><div class="system-meta">API · Worker · Git storage</div></div>
+        <div class="profile"><div class="avatar" id="profileAvatar">?</div><div class="profile-copy"><div class="profile-name" id="profileName">未登录</div><div class="profile-role" id="profileRole">Admin</div></div><button class="logout" id="logoutButton">退出</button></div>
+      </div>
+    </aside>
+
+    <section class="workspace">
+      <header class="topbar"><div class="breadcrumb"><span>SkillHub</span><span>/</span><b id="crumb">Skills</b></div><div class="top-actions"><label class="global-search"><span>⌕</span><input id="globalSearch" placeholder="搜索 Skill、命名空间或 commit"><span class="shortcut">⌘K</span></label><button class="icon-button" id="refreshButton" title="刷新"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 9a7 7 0 0 1 11.8-2L20 12M4 12l2.1 5a7 7 0 0 0 11.8-2"/></svg></button></div></header>
+      <main>
+        <div class="page-heading"><div><div class="eyebrow" id="eyebrow">Repository governance</div><h1 id="pageTitle">Skills 仓库</h1><div class="subtitle" id="pageSubtitle">管理命名空间、发布版本与 Git 历史。所有正式版本均不可改写。</div></div><button class="primary-button" id="primaryRefresh">刷新数据</button></div>
+        <section class="metrics">
+          <article class="metric"><div class="metric-top"><span>命名空间</span><span class="metric-icon">⌘</span></div><div class="metric-value" id="namespaceMetric">—</div><div class="metric-note">已注册的发布者空间</div></article>
+          <article class="metric"><div class="metric-top"><span>Skills</span><span class="metric-icon">◆</span></div><div class="metric-value" id="skillMetric">—</div><div class="metric-note" id="skillMetricNote">正在加载</div></article>
+          <article class="metric"><div class="metric-top"><span>Git 版本</span><span class="metric-icon">⑂</span></div><div class="metric-value" id="versionMetric">—</div><div class="metric-note"><span class="up" id="gitCoverage">—</span> Git 标签完整</div></article>
+          <article class="metric"><div class="metric-top"><span>已下架版本</span><span class="metric-icon">!</span></div><div class="metric-value" id="yankedMetric">—</div><div class="metric-note">历史记录与制品仍保留</div></article>
+        </section>
+        <div class="git-banner"><strong>Git-backed version control</strong><span>每个 Skill 一个独立仓库 · 标签不可改写 · 制品使用 SHA-256 内容寻址</span><span class="git-status" id="integrityText">● Loading</span></div>
+
+        <section class="content-grid" id="contentGrid">
+          <article class="card">
+            <div class="card-header"><div><div class="card-title" id="tableTitle">全部 Skills</div><div class="card-note" id="tableNote">按最近更新时间排序</div></div><div class="filters"><input class="filter-input" id="tableSearch" placeholder="搜索 Skill"><select class="filter-select" id="namespaceFilter"><option value="">全部命名空间</option></select><select class="filter-select" id="statusFilter"><option value="">全部状态</option><option value="published">已发布</option><option value="yanked">已下架</option></select></div></div>
+            <div class="table-wrap"><table><thead id="tableHead"></thead><tbody id="tableBody"></tbody></table></div>
+            <div class="pagination"><span id="resultCount">0 条记录</span><span>数据来自 SkillHub Admin API</span></div>
+          </article>
+
+          <aside class="card detail" id="detailPanel">
+            <div class="detail-cover"></div><div class="detail-body">
+              <div class="detail-avatar" id="detailAvatar">—</div>
+              <div class="detail-head"><div><div class="detail-title" id="detailTitle">选择一个 Skill</div><div class="detail-id mono" id="detailId">—</div></div><span class="status unknown" id="detailStatus">未知</span></div>
+              <p class="detail-description" id="detailDescription">从左侧表格选择一个 Skill，查看它的版本、Git commit、标签与制品完整性信息。</p>
+              <div class="action-row"><button class="secondary-button" id="jsonButton">查看完整详情</button><button class="danger-button" id="moderateButton" disabled>下架此版本</button></div>
+              <div class="section-label">当前版本</div><select class="version-select" id="versionSelect" disabled><option>暂无版本</option></select>
+              <div class="info-list">
+                <div class="info-row"><span class="info-key">Version tag</span><b class="info-value tag mono" id="detailVersion">—</b></div>
+                <div class="info-row"><span class="info-key">Git commit</span><b class="info-value commit mono" id="detailCommit">—</b></div>
+                <div class="info-row"><span class="info-key">Git tree</span><b class="info-value mono" id="detailTree">—</b></div>
+                <div class="info-row"><span class="info-key">Artifact SHA</span><b class="info-value mono" id="detailSha">—</b></div>
+                <div class="info-row"><span class="info-key">发布时间</span><b class="info-value" id="detailPublished">—</b></div>
+              </div>
+              <div class="section-label">状态</div><div class="timeline">
+                <div class="event"><span class="event-dot"></span><div><div class="event-title" id="eventVersion">等待选择版本</div><div class="event-meta" id="eventVersionMeta">—</div></div></div>
+                <div class="event"><span class="event-dot"></span><div><div class="event-title" id="eventIntegrity">Git 完整性等待检查</div><div class="event-meta" id="eventIntegrityMeta">—</div></div></div>
+              </div>
+            </div>
+          </aside>
+        </section>
+      </main>
+    </section>
+  </div>
+
+  <div class="modal-backdrop hidden" id="loginModal">
+    <section class="modal"><div class="modal-head"><div><div class="modal-title">登录 SkillHub Admin</div><div class="modal-note">管理员会话仅通过安全 Cookie 保存，密码不会写入页面。</div></div></div><form class="modal-body" id="loginForm"><div class="field"><label for="email">邮箱</label><input id="email" type="email" autocomplete="username" required placeholder="admin@example.com"></div><div class="field"><label for="password">密码</label><input id="password" type="password" autocomplete="current-password" required placeholder="输入管理员密码"></div><div class="field"><label for="apiBase">API 地址（通常无需修改）</label><input id="apiBase" inputmode="url" placeholder="默认使用当前站点"></div><div class="modal-error" id="loginError"></div><div class="login-actions"><button class="primary-button" type="submit" id="loginButton">登录</button></div></form></section>
+  </div>
+  <div class="modal-backdrop hidden" id="dataModal"><section class="modal large"><div class="modal-head"><div><div class="modal-title" id="modalTitle">详情</div><div class="modal-note" id="modalNote">SkillHub 返回的完整数据</div></div><button class="modal-close" id="modalClose">×</button></div><div class="modal-body"><pre class="json" id="modalJson">{}</pre></div></section></div>
+  <div class="toast" id="toast"></div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const state = { me:null, health:null, namespaces:[], skills:[], versions:[], audits:[], selectedSkillId:"", selectedVersionId:"", view:"skills" };
+    const viewCopy = {
+      overview:["概览","Platform overview","SkillHub 运行概览","查看仓库、版本和下架状态的整体情况。"],
+      skills:["Skills","Repository governance","Skills 仓库","管理命名空间、发布版本与 Git 历史。所有正式版本均不可改写。"],
+      versions:["版本与 Git","Immutable releases","版本与 Git","检查版本标签、commit、tree 与签名制品映射。"],
+      namespaces:["用户与命名空间","Publisher ownership","用户与命名空间","查看发布者命名空间及其 Skill 归属。"],
+      audit:["审计日志","Administrative audit","审计日志","追踪管理员操作、资源变更与访问来源。"]
+    };
+    const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+    const short = (value, size=8) => value ? String(value).slice(0,size) : "—";
+    const dateText = (value) => value ? new Intl.DateTimeFormat("zh-CN",{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}).format(new Date(value)) : "—";
+    const apiBase = () => $("apiBase").value.trim().replace(/\/+$/,"") || location.origin;
+    const statusClass = (value) => value === "published" ? "published" : value === "yanked" ? "yanked" : value === "orphaned" ? "orphaned" : "unknown";
+    const statusText = (value) => value === "published" ? "已发布" : value === "yanked" ? "已下架" : value === "orphaned" ? "无版本" : value || "未知";
+    const initials = (value) => String(value || "?").split(/[\s/_-]+/).filter(Boolean).slice(0,2).map((part)=>part[0]).join("").toUpperCase();
+
+    async function request(path, options={}) {
+      const response = await fetch(apiBase()+path,{credentials:"include",headers:{"Content-Type":"application/json",...(options.headers||{})},...options});
+      const text = await response.text(); let data={};
+      try { data=text?JSON.parse(text):{}; } catch { data={raw:text}; }
+      if (!response.ok) { const error=new Error(data?.error?.message||data?.message||`HTTP ${response.status}`); error.status=response.status; throw error; }
+      return data;
+    }
+    function toast(message) { $("toast").textContent=message; $("toast").classList.add("show"); clearTimeout(window.__toast); window.__toast=setTimeout(()=>$("toast").classList.remove("show"),1900); }
+    function openData(title, data, note="SkillHub 返回的完整数据") { $("modalTitle").textContent=title; $("modalNote").textContent=note; $("modalJson").textContent=JSON.stringify(data,null,2); $("dataModal").classList.remove("hidden"); }
+
+    async function checkHealth(show=false) {
+      try { state.health=await request("/healthz"); $("healthDot").classList.remove("off"); $("healthText").textContent="系统运行正常"; if(show) openData("系统健康状态",state.health); }
+      catch(error) { state.health={ok:false,error:error.message}; $("healthDot").classList.add("off"); $("healthText").textContent="系统状态异常"; if(show) openData("系统健康状态",state.health); }
+    }
+    async function loadSession() {
+      try { state.me=await request("/api/auth/me"); applyProfile(); $("loginModal").classList.add("hidden"); return true; }
+      catch(error) { if(error.status!==401) toast(error.message); $("loginModal").classList.remove("hidden"); return false; }
+    }
+    function applyProfile() {
+      const user=state.me?.user||{}; const roles=state.me?.roles||[];
+      $("profileName").textContent=user.displayName||user.email||"Admin"; $("profileAvatar").textContent=initials(user.displayName||user.email);
+      $("profileRole").textContent=roles.includes("admin")?"Platform Admin":roles.join(" · ")||"User";
+    }
+    async function login(event) {
+      event.preventDefault(); $("loginError").textContent=""; $("loginButton").disabled=true;
+      try {
+        state.me=await request("/api/auth/login",{method:"POST",body:JSON.stringify({email:$("email").value.trim(),password:$("password").value})});
+        $("password").value=""; applyProfile(); $("loginModal").classList.add("hidden"); await refreshAll(); toast("登录成功");
+      } catch(error) { $("loginError").textContent=error.message; } finally { $("loginButton").disabled=false; }
+    }
+    async function logout() {
+      await request("/api/auth/logout",{method:"POST",body:"{}"}).catch(()=>{});
+      state.me=null; $("loginModal").classList.remove("hidden"); $("profileName").textContent="未登录"; $("profileAvatar").textContent="?";
+    }
+    async function refreshAll() {
+      const [namespaceData,skillData,versionData]=await Promise.all([
+        request("/api/admin/namespaces?q="),
+        request("/api/admin/skills?namespace=&q=&status=&limit=1000"),
+        request("/api/admin/skill-versions?q=&status=&limit=1000")
+      ]);
+      state.namespaces=namespaceData.namespaces||[]; state.skills=skillData.skills||[]; state.versions=versionData.skillVersions||[];
+      if(!state.selectedSkillId&&state.skills.length) state.selectedSkillId=state.skills[0].skillId;
+      ensureSelection(); renderAll(); toast("数据已刷新");
+    }
+    function versionsForSkill(skillId) { return state.versions.filter((v)=>v.skillId===skillId).sort((a,b)=>String(b.publishedAt||"").localeCompare(String(a.publishedAt||""))); }
+    function ensureSelection() {
+      if(state.selectedSkillId&&!state.skills.some((s)=>s.skillId===state.selectedSkillId)) state.selectedSkillId=state.skills[0]?.skillId||"";
+      const versions=versionsForSkill(state.selectedSkillId);
+      if(!versions.some((v)=>(v.packageVersionId||v.id)===state.selectedVersionId)) state.selectedVersionId=versions[0]?.packageVersionId||versions[0]?.id||"";
+    }
+    function selectedSkill() { return state.skills.find((s)=>s.skillId===state.selectedSkillId)||null; }
+    function selectedVersion() { return state.versions.find((v)=>(v.packageVersionId||v.id)===state.selectedVersionId)||null; }
+
+    function renderMetrics() {
+      const published=state.versions.filter((v)=>v.status==="published").length, yanked=state.versions.filter((v)=>v.status==="yanked").length;
+      const git=state.versions.filter((v)=>v.sourceVersion?.model==="git"&&v.sourceVersion.commitSha&&v.sourceVersion.tag).length;
+      $("namespaceMetric").textContent=state.namespaces.length; $("skillMetric").textContent=state.skills.length;
+      $("versionMetric").textContent=state.versions.length; $("yankedMetric").textContent=yanked;
+      $("skillMetricNote").textContent=`${published} 个已发布版本`;
+      $("gitCoverage").textContent=state.versions.length?`${Math.round(git/state.versions.length*100)}%`:"100%";
+      $("integrityText").textContent=git===state.versions.length?"● Integrity healthy":`● ${state.versions.length-git} missing Git mapping`;
+      $("integrityText").style.color=git===state.versions.length?"var(--success)":"var(--danger)";
+      $("skillNavCount").textContent=state.skills.length; $("versionNavCount").textContent=state.versions.length;
+      const selectedNamespace=$("namespaceFilter").value;
+      $("namespaceFilter").innerHTML='<option value="">全部命名空间</option>'+state.namespaces.map((n)=>`<option value="${esc(n.namespace)}">${esc(n.namespace)}</option>`).join("");
+      $("namespaceFilter").value=state.namespaces.some((n)=>n.namespace===selectedNamespace)?selectedNamespace:"";
+    }
+    function renderView() {
+      const copy=viewCopy[state.view]||viewCopy.skills; $("crumb").textContent=copy[0]; $("eyebrow").textContent=copy[1]; $("pageTitle").textContent=copy[2]; $("pageSubtitle").textContent=copy[3];
+      document.querySelectorAll(".nav-item").forEach((node)=>node.classList.toggle("active",node.dataset.view===state.view));
+      $("detailPanel").classList.toggle("hidden",["namespaces","audit"].includes(state.view)); $("contentGrid").classList.toggle("wide",["namespaces","audit"].includes(state.view));
+      $("namespaceFilter").classList.toggle("hidden",!["skills","overview"].includes(state.view)); $("statusFilter").classList.toggle("hidden",state.view==="namespaces"||state.view==="audit");
+      if(state.view==="versions") renderVersionsTable(); else if(state.view==="namespaces") renderNamespacesTable(); else if(state.view==="audit") renderAuditTable(); else renderSkillsTable(state.view==="overview");
+    }
+    function renderSkillsTable(overview=false) {
+      $("tableTitle").textContent=overview?"最近更新的 Skills":"全部 Skills"; $("tableNote").textContent=overview?"平台近期仓库活动":"选择一行查看版本与 Git 详情"; $("tableSearch").placeholder="搜索 Skill";
+      $("tableHead").innerHTML='<tr><th style="width:34%">Skill</th><th style="width:15%">最新版本</th><th style="width:17%">Git commit</th><th style="width:14%">状态</th><th style="width:12%">版本数</th><th style="width:8%">更新</th></tr>';
+      const q=$("tableSearch").value.trim().toLowerCase(), ns=$("namespaceFilter").value, status=$("statusFilter").value;
+      let list=state.skills.filter((skill)=>{
+        const effective=Number(skill.publishedVersionCount)>0?"published":Number(skill.versionCount)>0?"yanked":"orphaned";
+        return(!q||`${skill.displayName} ${skill.skillId}`.toLowerCase().includes(q))&&(!ns||skill.namespace===ns)&&(!status||effective===status);
+      }); if(overview) list=list.slice(0,6);
+      $("tableBody").innerHTML=list.length?list.map((skill)=>{
+        const versions=versionsForSkill(skill.skillId), version=versions[0], effective=Number(skill.publishedVersionCount)>0?"published":Number(skill.versionCount)>0?"yanked":"orphaned";
+        return `<tr data-skill-id="${esc(skill.skillId)}" class="${skill.skillId===state.selectedSkillId?"selected":""}"><td><div class="skill-cell"><span class="repo-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H10l2 2h5.5A2.5 2.5 0 0 1 20 7.5v9A2.5 2.5 0 0 1 17.5 19h-11A2.5 2.5 0 0 1 4 16.5v-11Z"/></svg></span><span><div class="skill-name">${esc(skill.displayName||skill.skillName||skill.skillId)}</div><div class="namespace">${esc(skill.skillId)}</div></span></div></td><td class="mono tag">${esc(version?.sourceVersion?.tag||skill.latestVersion||"—")}</td><td class="mono">${esc(short(version?.sourceVersion?.commitSha))}</td><td><span class="status ${statusClass(effective)}">${esc(statusText(effective))}</span></td><td>${Number(skill.versionCount||0)}</td><td>${esc(dateText(skill.updatedAt))}</td></tr>`;
+      }).join(""):'<tr><td colspan="6"><div class="empty">没有符合条件的 Skill</div></td></tr>';
+      $("resultCount").textContent=`${list.length} 个 Skills`; bindRows();
+    }
+    function renderVersionsTable() {
+      $("tableTitle").textContent="全部版本"; $("tableNote").textContent="Git 标签不可改写；下架只影响可见性"; $("tableSearch").placeholder="搜索版本或 commit";
+      $("tableHead").innerHTML='<tr><th style="width:31%">Skill / Version</th><th style="width:17%">Git tag</th><th style="width:18%">Commit</th><th style="width:14%">状态</th><th style="width:20%">发布时间</th></tr>';
+      const q=$("tableSearch").value.trim().toLowerCase(), status=$("statusFilter").value;
+      const list=state.versions.filter((v)=>(!q||`${v.skillId} ${v.latestVersion} ${v.sourceVersion?.tag} ${v.sourceVersion?.commitSha}`.toLowerCase().includes(q))&&(!status||v.status===status));
+      $("tableBody").innerHTML=list.length?list.map((v)=>`<tr data-version-id="${esc(v.packageVersionId||v.id)}" data-skill-id="${esc(v.skillId)}" class="${(v.packageVersionId||v.id)===state.selectedVersionId?"selected":""}"><td><div class="skill-name">${esc(v.displayName||v.name||v.skillId)}</div><div class="namespace mono">${esc(v.skillId)} · ${esc(v.latestVersion)}</div></td><td class="mono tag">${esc(v.sourceVersion?.tag||"—")}</td><td class="mono">${esc(short(v.sourceVersion?.commitSha,12))}</td><td><span class="status ${statusClass(v.status)}">${esc(statusText(v.status))}</span></td><td>${esc(dateText(v.publishedAt))}</td></tr>`).join(""):'<tr><td colspan="5"><div class="empty">没有符合条件的版本</div></td></tr>';
+      $("resultCount").textContent=`${list.length} 个版本`; bindRows();
+    }
+    function renderNamespacesTable() {
+      $("tableTitle").textContent="命名空间"; $("tableNote").textContent="点击命名空间可筛选对应 Skills"; $("tableSearch").placeholder="搜索命名空间";
+      $("tableHead").innerHTML='<tr><th style="width:38%">Namespace</th><th style="width:20%">Skills</th><th style="width:20%">已发布</th><th style="width:22%">最近更新</th></tr>';
+      const q=$("tableSearch").value.trim().toLowerCase(), list=state.namespaces.filter((n)=>!q||n.namespace.toLowerCase().includes(q));
+      $("tableBody").innerHTML=list.length?list.map((n)=>`<tr data-namespace="${esc(n.namespace)}"><td><div class="skill-name">${esc(n.namespace)}</div><div class="namespace">Publisher namespace</div></td><td>${Number(n.skillCount||0)}</td><td>${Number(n.publishedSkillCount||0)}</td><td>${esc(dateText(n.updatedAt))}</td></tr>`).join(""):'<tr><td colspan="4"><div class="empty">没有命名空间</div></td></tr>';
+      $("resultCount").textContent=`${list.length} 个命名空间`; bindRows();
+    }
+    async function loadAudit() { const data=await request("/api/admin/audit-logs?limit=100"); state.audits=data.auditLogs||[]; }
+    function renderAuditTable() {
+      $("tableTitle").textContent="最近 100 条审计记录"; $("tableNote").textContent="点击记录查看 metadata"; $("tableSearch").placeholder="搜索 action 或资源";
+      $("tableHead").innerHTML='<tr><th style="width:25%">Action</th><th style="width:24%">Resource</th><th style="width:18%">Actor</th><th style="width:14%">IP</th><th style="width:19%">时间</th></tr>';
+      const q=$("tableSearch").value.trim().toLowerCase(), list=state.audits.filter((a)=>!q||`${a.action} ${a.resourceType} ${a.resourceId} ${a.actorUserId}`.toLowerCase().includes(q));
+      $("tableBody").innerHTML=list.length?list.map((a)=>`<tr data-audit-id="${esc(a.id)}"><td class="mono tag">${esc(a.action)}</td><td><div class="skill-name">${esc(a.resourceType)}</div><div class="namespace mono">${esc(short(a.resourceId,24))}</div></td><td>${esc(a.actorRole||"—")}<div class="namespace mono">${esc(short(a.actorUserId,12))}</div></td><td class="mono">${esc(a.ip||"—")}</td><td>${esc(dateText(a.createdAt))}</td></tr>`).join(""):'<tr><td colspan="5"><div class="empty">没有审计记录</div></td></tr>';
+      $("resultCount").textContent=`${list.length} 条记录`; bindRows();
+    }
+    function bindRows() {
+      $("tableBody").querySelectorAll("[data-skill-id]").forEach((row)=>row.addEventListener("click",()=>{ state.selectedSkillId=row.dataset.skillId; if(row.dataset.versionId)state.selectedVersionId=row.dataset.versionId; else { const first=versionsForSkill(state.selectedSkillId)[0]; state.selectedVersionId=first?.packageVersionId||first?.id||""; } renderAll(); }));
+      $("tableBody").querySelectorAll("[data-namespace]").forEach((row)=>row.addEventListener("click",()=>{ state.view="skills"; renderAll(); $("namespaceFilter").value=row.dataset.namespace; renderSkillsTable(); }));
+      $("tableBody").querySelectorAll("[data-audit-id]").forEach((row)=>row.addEventListener("click",()=>openData("审计记录",state.audits.find((a)=>a.id===row.dataset.auditId)||{})));
+    }
+    function renderDetail() {
+      const skill=selectedSkill(), version=selectedVersion(), versions=versionsForSkill(state.selectedSkillId);
+      $("detailAvatar").textContent=initials(skill?.displayName||skill?.skillId); $("detailTitle").textContent=skill?.displayName||skill?.skillName||"选择一个 Skill"; $("detailId").textContent=skill?.skillId||"—";
+      $("detailDescription").textContent=version?.description||"该 Skill 暂无描述。选择版本可查看 Git 与制品信息。";
+      const effective=version?.status||"orphaned"; $("detailStatus").className=`status ${statusClass(effective)}`; $("detailStatus").textContent=statusText(effective);
+      $("versionSelect").disabled=!versions.length; $("versionSelect").innerHTML=versions.length?versions.map((v)=>`<option value="${esc(v.packageVersionId||v.id)}" ${(v.packageVersionId||v.id)===state.selectedVersionId?"selected":""}>${esc(v.sourceVersion?.tag||`v${v.latestVersion}`)} · ${esc(statusText(v.status))}</option>`).join(""):"<option>暂无版本</option>";
+      $("detailVersion").textContent=version?.sourceVersion?.tag||version?.latestVersion||"—"; $("detailCommit").textContent=short(version?.sourceVersion?.commitSha,12); $("detailTree").textContent=short(version?.sourceVersion?.treeSha,12); $("detailSha").textContent=short(version?.checksumSha256,12); $("detailPublished").textContent=dateText(version?.publishedAt);
+      $("eventVersion").textContent=version?`版本 ${version.sourceVersion?.tag||version.latestVersion}`:"等待选择版本"; $("eventVersionMeta").textContent=version?`${statusText(version.status)} · ${dateText(version.publishedAt)}`:"—";
+      const gitOk=Boolean(version?.sourceVersion?.commitSha&&version?.sourceVersion?.treeSha&&version?.sourceVersion?.tag); $("eventIntegrity").textContent=gitOk?"Git 映射完整":"Git 映射不可用"; $("eventIntegrityMeta").textContent=gitOk?`${short(version.sourceVersion.repositoryId,20)} · immutable tag`:"该版本可能仍使用旧存储";
+      $("jsonButton").disabled=!skill; $("moderateButton").disabled=!version; $("moderateButton").className=version?.status==="yanked"?"good-button":"danger-button"; $("moderateButton").textContent=version?.status==="yanked"?"恢复此版本":"下架此版本";
+    }
+    function renderAll(){ ensureSelection(); renderMetrics(); renderView(); renderDetail(); }
+    async function switchView(view) { state.view=view; if(view==="audit"&&!state.audits.length) { try{await loadAudit();}catch(error){toast(error.message);} } renderAll(); }
+    async function moderateSelected() {
+      const version=selectedVersion(); if(!version)return; const id=version.packageVersionId||version.id;
+      if(version.status==="yanked") { if(!confirm(`恢复 ${version.skillId}@${version.latestVersion} 为公开状态？`))return; await request(`/api/admin/skill-versions/${encodeURIComponent(id)}/restore`,{method:"POST",body:"{}"}); }
+      else { const reason=prompt(`下架 ${version.skillId}@${version.latestVersion} 的原因：`,"admin moderation"); if(reason===null)return; await request(`/api/admin/skill-versions/${encodeURIComponent(id)}/yank`,{method:"POST",body:JSON.stringify({reason})}); }
+      await refreshAll();
+    }
+    async function boot() {
+      await checkHealth(); if(!(await loadSession()))return;
+      try { await refreshAll(); } catch(error) { if(error.status===401)$("loginModal").classList.remove("hidden"); else toast(error.message); }
+    }
+    $("loginForm").addEventListener("submit",login); $("logoutButton").addEventListener("click",logout); $("refreshButton").addEventListener("click",()=>refreshAll().catch((e)=>toast(e.message))); $("primaryRefresh").addEventListener("click",()=>refreshAll().catch((e)=>toast(e.message))); $("healthCard").addEventListener("click",()=>checkHealth(true)); $("modalClose").addEventListener("click",()=>$("dataModal").classList.add("hidden")); $("dataModal").addEventListener("click",(e)=>{if(e.target===$("dataModal"))$("dataModal").classList.add("hidden")});
+    $("tableSearch").addEventListener("input",renderView); $("namespaceFilter").addEventListener("change",renderView); $("statusFilter").addEventListener("change",renderView); $("globalSearch").addEventListener("input",(e)=>{$("tableSearch").value=e.target.value;renderView()}); $("versionSelect").addEventListener("change",(e)=>{state.selectedVersionId=e.target.value;renderDetail()}); $("jsonButton").addEventListener("click",()=>openData("Skill / Version 详情",{skill:selectedSkill(),version:selectedVersion()})); $("moderateButton").addEventListener("click",()=>moderateSelected().catch((e)=>toast(e.message)));
+    document.querySelectorAll(".nav-item").forEach((item)=>item.addEventListener("click",()=>switchView(item.dataset.view)));
+    document.addEventListener("keydown",(event)=>{if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==="k"){event.preventDefault();$("globalSearch").focus()}if(event.key==="Escape")$("dataModal").classList.add("hidden")});
+    boot();
+  </script>
+</body>
+</html>

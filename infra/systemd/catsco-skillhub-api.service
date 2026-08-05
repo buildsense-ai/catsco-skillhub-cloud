@@ -1,0 +1,29 @@
+[Unit]
+Description=CatsCo SkillHub API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=skillhub
+Group=skillhub
+WorkingDirectory=/opt/catsco/skillhub/app
+EnvironmentFile=/opt/catsco/skillhub/shared/.env
+ExecStart=/usr/bin/node apps/api/server.js
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGTERM
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=catsco-skillhub-api
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/catsco/skillhub/storage /opt/catsco/skillhub/logs /opt/catsco/skillhub/shared
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+

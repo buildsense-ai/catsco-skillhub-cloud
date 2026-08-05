@@ -1,0 +1,464 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CatsCo SkillHub Admin</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: Inter, "Segoe UI", Arial, sans-serif;
+        background: #f5f7fb;
+        color: #172033;
+      }
+      body { margin: 0; }
+      header {
+        min-height: 64px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 28px;
+        background: #fff;
+        border-bottom: 1px solid #dfe5ef;
+      }
+      main { padding: 20px; }
+      h1 { font-size: 20px; margin: 0; }
+      h2 { font-size: 15px; margin: 0; }
+      input, select, button {
+        border: 1px solid #cfd8e6;
+        border-radius: 8px;
+        padding: 8px 10px;
+        font: inherit;
+        background: #fff;
+      }
+      button {
+        border-color: #2563eb;
+        background: #2563eb;
+        color: #fff;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      button.secondary { background: #fff; color: #172033; border-color: #cfd8e6; }
+      button.warn { background: #b45309; border-color: #b45309; }
+      button.danger { background: #dc2626; border-color: #dc2626; }
+      button.good { background: #15803d; border-color: #15803d; }
+      .shell {
+        display: grid;
+        grid-template-columns: 320px minmax(360px, 1fr) minmax(460px, 1.25fr);
+        gap: 16px;
+        align-items: start;
+      }
+      .panel {
+        background: #fff;
+        border: 1px solid #dfe5ef;
+        border-radius: 12px;
+        padding: 14px;
+        box-shadow: 0 12px 28px rgba(15, 23, 42, .04);
+      }
+      .stack { display: grid; gap: 14px; }
+      .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+      .toolbar { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 12px; }
+      .muted { color: #64748b; font-size: 12px; }
+      .mono { font-family: "Cascadia Mono", Consolas, monospace; font-size: 12px; word-break: break-all; }
+      .list { display: grid; gap: 8px; }
+      .item {
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+        padding: 11px;
+        background: #fff;
+      }
+      .item.active { outline: 2px solid #2563eb; background: #eff6ff; }
+      .item-title { font-weight: 800; font-size: 14px; }
+      .item-head { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        padding: 3px 8px;
+        background: #eaf2ff;
+        color: #1d4ed8;
+        font-size: 12px;
+        font-weight: 700;
+        margin: 2px 4px 2px 0;
+      }
+      .pill.good { background: #dcfce7; color: #166534; }
+      .pill.warn { background: #fef3c7; color: #92400e; }
+      .pill.danger { background: #fee2e2; color: #991b1b; }
+      .pill.gray { background: #f1f5f9; color: #475569; }
+      .metric-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
+      .metric { border: 1px solid #e2e8f0; background: #f8fafc; border-radius: 8px; padding: 8px; }
+      .metric b { display: block; margin-top: 2px; }
+      .empty { border: 1px dashed #cbd5e1; border-radius: 10px; color: #64748b; padding: 18px; text-align: center; }
+      pre {
+        white-space: pre-wrap;
+        word-break: break-word;
+        max-height: 360px;
+        overflow: auto;
+        background: #0f172a;
+        color: #dbeafe;
+        border-radius: 10px;
+        padding: 12px;
+      }
+      @media (max-width: 1180px) {
+        .shell { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div>
+        <h1>CatsCo SkillHub Admin</h1>
+        <div class="muted">Repository-style governance: namespace / skill / version</div>
+      </div>
+      <div class="row">
+        <button class="secondary" id="refreshAll">Refresh</button>
+        <button class="secondary" id="health">Health</button>
+      </div>
+    </header>
+
+    <main class="shell">
+      <section class="stack">
+        <div class="panel">
+          <div class="toolbar">
+            <h2>Users / Namespaces</h2>
+            <button class="secondary" id="loadNamespaces">Load</button>
+          </div>
+          <input id="namespaceSearch" placeholder="filter namespace" style="width:100%; box-sizing:border-box; margin-bottom:10px" />
+          <div id="namespaces" class="empty">No namespaces loaded</div>
+        </div>
+
+        <div class="panel">
+          <h2>Admin Login</h2>
+          <div class="stack" style="margin-top:10px">
+            <input id="apiBase" placeholder="API base, defaults current origin" />
+            <input id="email" type="email" placeholder="admin@example.com" />
+            <input id="password" type="password" placeholder="password" />
+            <div class="row">
+              <button id="login">Login</button>
+              <button class="secondary" id="logout">Logout</button>
+              <button class="secondary" id="loadMe">Me</button>
+            </div>
+          </div>
+          <pre id="status" style="max-height:220px">{}</pre>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="toolbar">
+          <div>
+            <h2>Skills</h2>
+            <div id="skillsHint" class="muted">Select a namespace first</div>
+          </div>
+          <button class="secondary" id="loadSkills">Load</button>
+        </div>
+        <div class="row" style="margin-bottom:10px">
+          <input id="skillSearch" placeholder="search skill" />
+          <select id="skillStatus">
+            <option value="">all</option>
+            <option value="published">published</option>
+            <option value="yanked">yanked</option>
+          </select>
+        </div>
+        <div id="skills" class="empty">No skills loaded</div>
+      </section>
+
+      <section class="stack">
+        <div class="panel">
+          <div class="toolbar">
+            <div>
+              <h2>Versions</h2>
+              <div id="versionsHint" class="muted">Select a skill to manage versions</div>
+            </div>
+            <button class="secondary" id="loadVersions">Reload</button>
+          </div>
+          <div class="row" style="margin-bottom:10px">
+            <input id="versionSearch" placeholder="search versions" />
+            <select id="versionStatus">
+              <option value="">all</option>
+              <option value="published">published</option>
+              <option value="yanked">yanked</option>
+            </select>
+          </div>
+          <div id="versions" class="empty">No versions loaded</div>
+        </div>
+
+        <div class="panel">
+          <div class="toolbar">
+            <h2>Details</h2>
+            <button class="secondary" id="loadAudit">Audit</button>
+          </div>
+          <pre id="details">{}</pre>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+      let selectedNamespace = "";
+      let selectedSkillId = "";
+      let selectedVersion = null;
+
+      function apiBase() {
+        return $("apiBase").value.trim().replace(/\/+$/, "") || window.location.origin;
+      }
+
+      async function request(path, options = {}) {
+        const res = await fetch(apiBase() + path, {
+          credentials: "include",
+          headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+          ...options
+        });
+        const text = await res.text();
+        let data = {};
+        try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
+        if (!res.ok) throw new Error(data?.error?.message || data?.message || text || `HTTP ${res.status}`);
+        return data;
+      }
+
+      function esc(value) {
+        return String(value ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+      }
+      function pill(text, type = "") { return `<span class="pill ${type}">${esc(text)}</span>`; }
+      function riskPill(risk) {
+        const value = String(risk || "unknown").toLowerCase();
+        const type = ["critical", "high"].includes(value) ? "danger" : value === "medium" ? "warn" : value === "low" ? "good" : "gray";
+        return pill(value, type);
+      }
+      function statusPill(status) {
+        const value = String(status || "unknown");
+        return pill(value, value === "published" ? "good" : value === "yanked" ? "warn" : "gray");
+      }
+
+      function namespaceItem(item) {
+        const active = selectedNamespace === item.namespace ? " active" : "";
+        return `
+          <div class="item${active}" data-namespace="${esc(item.namespace)}">
+            <div class="item-head">
+              <div>
+                <div class="item-title">${esc(item.namespace)}</div>
+                <div class="muted">${esc(item.skillCount)} skills · ${esc(item.publishedSkillCount)} published</div>
+              </div>
+              ${pill("user", "gray")}
+            </div>
+          </div>
+        `;
+      }
+
+      function skillItem(skill) {
+        const active = selectedSkillId === skill.skillId ? " active" : "";
+        const versionCount = Number(skill.versionCount ?? 0);
+        const effectiveStatus = versionCount > 0 ? skill.status : "orphaned";
+        return `
+          <div class="item${active}" data-skill-id="${esc(skill.skillId)}">
+            <div class="item-head">
+              <div>
+                <div class="item-title">${esc(skill.displayName || skill.skillName || skill.name || skill.skillId)}</div>
+                <div class="muted mono">${esc(skill.skillId)}</div>
+              </div>
+              <div>${statusPill(effectiveStatus)} ${riskPill(skill.riskLevel)}</div>
+            </div>
+            <div class="metric-grid">
+              <div class="metric"><span class="muted">latest</span><b>${esc(skill.latestVersion || "-")}</b></div>
+              <div class="metric"><span class="muted">versions</span><b>${esc(versionCount)}</b></div>
+              <div class="metric"><span class="muted">downloads</span><b>${esc(skill.downloadCount ?? 0)}</b></div>
+            </div>
+            <div class="row" style="margin-top:10px">
+              <button class="secondary" data-action="select-skill">Open</button>
+              <button class="danger" data-action="delete-skill">Delete Skill</button>
+            </div>
+          </div>
+        `;
+      }
+
+      function versionItem(version) {
+        const id = version.packageVersionId || version.id || "";
+        const active = selectedVersion && (selectedVersion.packageVersionId || selectedVersion.id) === id ? " active" : "";
+        const findings = Array.isArray(version.findings) ? version.findings : [];
+        return `
+          <div class="item${active}" data-version-id="${esc(id)}">
+            <div class="item-head">
+              <div>
+                <div class="item-title">v${esc(version.version || version.latestVersion || "?")} ${statusPill(version.status)}</div>
+                <div class="muted mono">${esc(version.skillId || "")}</div>
+              </div>
+              <div>${riskPill(version.riskLevel)} ${pill(`${findings.length} findings`, findings.length ? "warn" : "good")}</div>
+            </div>
+            <div class="metric-grid">
+              <div class="metric"><span class="muted">size</span><b>${esc(version.packageSize ?? 0)} B</b></div>
+              <div class="metric"><span class="muted">downloads</span><b>${esc(version.downloadCount ?? 0)}</b></div>
+              <div class="metric"><span class="muted">published</span><b>${esc(version.publishedAt || "-")}</b></div>
+            </div>
+            <div class="muted mono" style="margin-top:8px">hash ${esc(version.contentHash || version.checksumSha256 || "-")}</div>
+            <div class="row" style="margin-top:10px">
+              <button class="secondary" data-action="details">Details</button>
+              ${version.status === "published" ? '<button class="warn" data-action="yank">Yank</button>' : '<button class="good" data-action="restore">Restore</button>'}
+              <button class="danger" data-action="delete-version">Delete Version</button>
+            </div>
+          </div>
+        `;
+      }
+
+      async function login() {
+        const data = await request("/api/auth/login", {
+          method: "POST",
+          body: JSON.stringify({ email: $("email").value.trim(), password: $("password").value })
+        });
+        $("status").textContent = JSON.stringify(data, null, 2);
+        await refreshAll();
+      }
+      async function logout() {
+        await request("/api/auth/logout", { method: "POST", body: "{}" }).catch(() => ({}));
+        $("status").textContent = "{}";
+      }
+      async function me() {
+        const data = await request("/api/auth/me");
+        $("status").textContent = JSON.stringify(data, null, 2);
+      }
+      async function health() {
+        const data = await request("/healthz");
+        $("status").textContent = JSON.stringify(data, null, 2);
+      }
+
+      async function loadNamespaces() {
+        const q = encodeURIComponent($("namespaceSearch").value.trim());
+        const data = await request(`/api/admin/namespaces?q=${q}`);
+        const list = data.namespaces || [];
+        $("namespaces").innerHTML = list.length ? list.map(namespaceItem).join("") : '<div class="empty">No namespaces found</div>';
+        if (!selectedNamespace && list.length) selectedNamespace = list[0].namespace || "";
+      }
+
+      async function loadSkills(namespace = selectedNamespace) {
+        selectedNamespace = namespace || selectedNamespace;
+        if (!selectedNamespace) {
+          $("skillsHint").textContent = "Select a namespace first";
+          $("skills").innerHTML = '<div class="empty">Select a namespace to list skills</div>';
+          return;
+        }
+        const q = encodeURIComponent($("skillSearch").value.trim());
+        const status = encodeURIComponent($("skillStatus").value);
+        const ns = encodeURIComponent(selectedNamespace || "");
+        const data = await request(`/api/admin/skills?namespace=${ns}&q=${q}&status=${status}&limit=1000`);
+        const list = data.skills || [];
+        $("skillsHint").textContent = selectedNamespace ? `Namespace: ${selectedNamespace}` : "All namespaces";
+        $("skills").innerHTML = list.length ? list.map(skillItem).join("") : '<div class="empty">No skills found</div>';
+      }
+
+      async function loadVersions(skillId = selectedSkillId) {
+        selectedSkillId = skillId || selectedSkillId;
+        let data;
+        if (selectedSkillId) {
+          data = await request(`/api/admin/skills/${encodeURIComponent(selectedSkillId)}/versions`);
+          $("versionsHint").textContent = `Skill: ${selectedSkillId}`;
+        } else {
+          $("versionsHint").textContent = "Select a skill to manage versions";
+          window.__skillhubVersions = [];
+          $("versions").innerHTML = '<div class="empty">Select a skill to list versions</div>';
+          return;
+        }
+        const list = data.skillVersions || data.packageVersions || [];
+        window.__skillhubVersions = list;
+        $("versions").innerHTML = list.length ? list.map(versionItem).join("") : '<div class="empty">No versions found</div>';
+      }
+
+      async function loadAudit() {
+        const data = await request("/api/admin/audit-logs?limit=80");
+        $("details").textContent = JSON.stringify(data.auditLogs || [], null, 2);
+      }
+
+      async function refreshAll() {
+        await me().catch(() => ({}));
+        await loadNamespaces();
+        await loadSkills();
+        await loadVersions();
+      }
+
+      async function yankVersion(id) {
+        const reason = window.prompt("Reason for yanking this version?", "admin moderation");
+        if (reason === null) return;
+        await request(`/api/admin/skill-versions/${encodeURIComponent(id)}/yank`, { method: "POST", body: JSON.stringify({ reason }) });
+        await loadVersions();
+        await loadSkills();
+        await loadNamespaces();
+      }
+      async function restoreVersion(id) {
+        if (!window.confirm("Restore this version to published?")) return;
+        await request(`/api/admin/skill-versions/${encodeURIComponent(id)}/restore`, { method: "POST", body: "{}" });
+        await loadVersions();
+        await loadSkills();
+        await loadNamespaces();
+      }
+      async function deleteVersion(id) {
+        if (!window.confirm("Hard delete this version and package file?")) return;
+        await request(`/api/admin/skill-versions/${encodeURIComponent(id)}`, { method: "DELETE" });
+        await loadVersions();
+        await loadSkills();
+        await loadNamespaces();
+      }
+      async function deleteSkill(skillId) {
+        if (!window.confirm(`Hard delete ${skillId}, all versions, and package files?`)) return;
+        await request(`/api/admin/skills/${encodeURIComponent(skillId)}`, { method: "DELETE" });
+        selectedSkillId = "";
+        selectedVersion = null;
+        await loadVersions("");
+        await loadSkills();
+        await loadNamespaces();
+      }
+
+      document.addEventListener("click", async (event) => {
+        const button = event.target.closest("button");
+        const namespaceNode = event.target.closest("[data-namespace]");
+        const skillNode = event.target.closest("[data-skill-id]");
+        const versionNode = event.target.closest("[data-version-id]");
+        try {
+          if (button?.id === "login") return await login();
+          if (button?.id === "logout") return await logout();
+          if (button?.id === "loadMe") return await me();
+          if (button?.id === "health") return await health();
+          if (button?.id === "refreshAll") return await refreshAll();
+          if (button?.id === "loadNamespaces") return await loadNamespaces();
+          if (button?.id === "loadSkills") return await loadSkills();
+          if (button?.id === "loadVersions") return await loadVersions();
+          if (button?.id === "loadAudit") return await loadAudit();
+
+          if (!button && namespaceNode) {
+            selectedNamespace = namespaceNode.dataset.namespace || "";
+            selectedSkillId = "";
+            selectedVersion = null;
+            await loadNamespaces();
+            await loadSkills(selectedNamespace);
+            await loadVersions("");
+            return;
+          }
+
+          if (!button && skillNode) {
+            selectedSkillId = skillNode.dataset.skillId || "";
+            await loadSkills();
+            await loadVersions(selectedSkillId);
+            return;
+          }
+
+          const action = button?.dataset.action;
+          if (!action) return;
+          if (action === "select-skill") return await loadVersions(skillNode?.dataset.skillId || "");
+          if (action === "delete-skill") return await deleteSkill(skillNode?.dataset.skillId || "");
+          if (action === "details") {
+            const id = versionNode?.dataset.versionId || "";
+            selectedVersion = (window.__skillhubVersions || []).find((item) => (item.packageVersionId || item.id) === id) || null;
+            $("details").textContent = JSON.stringify(selectedVersion || {}, null, 2);
+            return;
+          }
+          if (action === "yank") return await yankVersion(versionNode?.dataset.versionId || "");
+          if (action === "restore") return await restoreVersion(versionNode?.dataset.versionId || "");
+          if (action === "delete-version") return await deleteVersion(versionNode?.dataset.versionId || "");
+        } catch (error) {
+          $("status").textContent = JSON.stringify({ error: error.message }, null, 2);
+          alert(error.message);
+        }
+      });
+
+      refreshAll().catch((error) => {
+        $("status").textContent = JSON.stringify({ error: error.message }, null, 2);
+      });
+    </script>
+  </body>
+</html>
