@@ -26,6 +26,11 @@ const EXPLICIT_SAFE_CREDENTIAL_VALUES = new Set([
   "smoke-key",
   "smoke-secret"
 ]);
+
+export function isPrivateSkillReference(skillId) {
+  const value = String(skillId ?? "").trim().toLowerCase();
+  return value.startsWith("priv_") || value.startsWith("private/");
+}
 const CREDENTIAL_EXPRESSION_CONTINUATION_TOKENS = new Set([
   "\\", "||", "??", "&&", "=", "==", "===", "!=", "!==", "=>", "<=", ">=",
   "?", ":", "+", "-", "*", "/", "%", "&", "|", "^", "~", ".", "?.", "<", ">",

@@ -145,6 +145,53 @@ test("PostgreSQL-backed current share flow works", { skip: !databaseUrl }, async
   });
   assert.equal(forked.status, 201);
 
+  const legacyBytes = Buffer.from(`# Local backup from a retired Registry ${suffix}\n`);
+  const legacyFiles = [{
+    path: "SKILL.md",
+    size: legacyBytes.length,
+    sha256: sha256(legacyBytes),
+    contentBase64: legacyBytes.toString("base64")
+  }];
+  const historicalOrigin = {
+    skillId: `retired-author/retired-skill-${suffix}`,
+    version: "1.2.3"
+  };
+  const historicalBackup = await botRequest("PUT", "/api/bot/private-skill-packages", {
+    localSkillId: `historical-${suffix}`,
+    name: `historical-${suffix}`,
+    contentHash: computePrivateSkillContentHash(legacyFiles),
+    origin: historicalOrigin,
+    files: legacyFiles
+  });
+  assert.equal(historicalBackup.status, 201);
+  assert.deepEqual(historicalBackup.data.origin, historicalOrigin);
+
+  const foreignPrivateOrigin = await botRequest("PUT", "/api/bot/private-skill-packages", {
+    localSkillId: `foreign-private-${suffix}`,
+    name: `foreign-private-${suffix}`,
+    contentHash: computePrivateSkillContentHash(legacyFiles),
+    origin: {
+      skillId: `priv_${"a".repeat(40)}`,
+      version: `v_${"b".repeat(48)}`
+    },
+    files: legacyFiles
+  });
+  assert.equal(foreignPrivateOrigin.status, 400);
+  assert.equal(foreignPrivateOrigin.data.error.code, "PRIVATE_SKILL_ORIGIN_NOT_FOUND");
+
+  const malformedPrivateOrigin = await botRequest("PUT", "/api/bot/private-skill-packages", {
+    localSkillId: `malformed-private-${suffix}`,
+    name: `malformed-private-${suffix}`,
+    contentHash: computePrivateSkillContentHash(legacyFiles),
+    origin: {
+      skillId: "PRIVATE/legacy-reference",
+      version: "legacy-version"
+    },
+    files: legacyFiles
+  });
+  assert.equal(malformedPrivateOrigin.status, 400);
+  assert.equal(malformedPrivateOrigin.data.error.code, "PRIVATE_SKILL_ORIGIN_NOT_FOUND");
+
   await store.deletePackageVersion(published.id);
   const retainedAfterDelete = await store.findRecoverablePublishedVersion(skill.skillId, skill.latestVersion);
   assert.ok(retainedAfterDelete);

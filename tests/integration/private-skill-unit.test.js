@@ -11,6 +11,7 @@ import { hasBlockingFindings, sha256 } from "../../packages/domain/index.js";
 import {
   buildPrivatePackage,
   computePrivateSkillContentHash,
+  isPrivateSkillReference,
   parsePrivateSkillUpsert,
   publicVersionAsDownloadedPackage,
   readPrivatePackage,
@@ -34,6 +35,13 @@ const cleanup = [];
 
 afterEach(async () => {
   while (cleanup.length) await cleanup.pop()();
+});
+
+test("private reference detection covers current and legacy namespaces", () => {
+  assert.equal(isPrivateSkillReference("legacy-author/legacy-skill"), false);
+  assert.equal(isPrivateSkillReference(`priv_${"a".repeat(40)}`), true);
+  assert.equal(isPrivateSkillReference("priv_malformed"), true);
+  assert.equal(isPrivateSkillReference("PRIVATE/legacy-reference"), true);
 });
 
 test("private package validation uses canonical ordering and supports zero-byte files", () => {

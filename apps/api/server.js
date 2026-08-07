@@ -26,6 +26,7 @@ import { saveSubmissionFiles, safeJoin } from "../../packages/object-storage/ind
 import { computeSkillContentHash } from "../../packages/packager/index.js";
 import {
   buildPrivatePackage,
+  isPrivateSkillReference,
   opaquePrivateReference,
   parsePrivateSkillUpsert,
   privatePackageMetadata,
@@ -150,17 +151,14 @@ export function createApiServer(config = loadConfig()) {
         }
         const body = await readJson(req, config.privateSkills.maxRequestBytes);
         const input = parsePrivateSkillUpsert(body, config);
-        if (input.origin) {
+        if (input.origin && isPrivateSkillReference(input.origin.skillId)) {
           const ownedOrigin = await store.findPrivateSkillVersion({
             authority: identity.authority,
             ownerBotId: identity.botId,
             skillId: input.origin.skillId,
             version: input.origin.version
           });
-          const publicOrigin = ownedOrigin
-            ? null
-            : await store.findRecoverablePublishedVersion(input.origin.skillId, input.origin.version);
-          if (!ownedOrigin && !publicOrigin) {
+          if (!ownedOrigin) {
             throw new ValidationError(
               "Private Skill origin is unavailable to this Bot.",
               "PRIVATE_SKILL_ORIGIN_NOT_FOUND",
@@ -168,6 +166,8 @@ export function createApiServer(config = loadConfig()) {
             );
           }
         }
+        // Non-private origins are untrusted provenance metadata. They can
+        // outlive a rebuilt public Registry and must never authorize reads.
         const createdAt = nowIso();
         const reservation = await store.reservePrivateSkillVersion({
           authority: identity.authority,
