@@ -7,7 +7,7 @@ import { afterEach, test } from "node:test";
 import { startApiServer } from "../../apps/api/server.js";
 import { authenticateCatsCoBot } from "../../packages/bot-auth/index.js";
 import { loadConfig } from "../../packages/config/index.js";
-import { sha256 } from "../../packages/domain/index.js";
+import { hasBlockingFindings, sha256 } from "../../packages/domain/index.js";
 import {
   buildPrivatePackage,
   computePrivateSkillContentHash,
@@ -28,6 +28,7 @@ import {
   loadSigningKeyCertificateByKeyId,
   signPayload
 } from "../../packages/signing/index.js";
+import { scanSkillPackage } from "../../packages/scanner/index.js";
 
 const cleanup = [];
 
@@ -168,6 +169,98 @@ test("private package validation allows explicit safe references, placeholders, 
     contentHash: computePrivateSkillContentHash(files),
     files
   }, config));
+});
+
+test("private Bot backups allow runtime capabilities without weakening public publication scanning", () => {
+  const config = testConfig("unused");
+  const skillMarkdown = Buffer.from("# Runtime Skill\n");
+  const runtimeScript = Buffer.from([
+    'import { spawn } from "node:child_process";',
+    "const apiKey = process.env.OPENAI_API_KEY;",
+    "const token = process.env.CATSCO_TOKEN ?? void 0;",
+    'const optionalToken = process.env.CATSCO_TOKEN ?? "";',
+    'await fetch("https://api.example.com/status");',
+    'spawn("git", ["status"]);',
+    ""
+  ].join("\n"));
+  const pythonScript = Buffer.from([
+    'api_key = os.environ.get("OPENAI_API_KEY", "")',
+    'auth_token = os.environ.get(args.api_key_env, "")  # optional',
+    ""
+  ].join("\n"));
+  const files = [
+    file("SKILL.md", skillMarkdown),
+    file("scripts/runtime.mjs", runtimeScript),
+    file("scripts/runtime.py", pythonScript)
+  ];
+
+  assert.doesNotThrow(() => parsePrivateSkillUpsert({
+    localSkillId: "local-runtime",
+    name: "runtime-skill",
+    contentHash: computePrivateSkillContentHash(files),
+    files
+  }, config));
+
+  const publicReport = scanSkillPackage({
+    files: [
+      { path: "SKILL.md", buffer: skillMarkdown },
+      { path: "scripts/runtime.mjs", buffer: runtimeScript },
+      { path: "scripts/runtime.py", buffer: pythonScript }
+    ],
+    manifest: {
+      entrypoints: { skillFile: "SKILL.md" },
+      permissions: { filesystem: "none", network: "none", shell: "none", secrets: "none" }
+    },
+    config
+  });
+  assert.equal(hasBlockingFindings(publicReport.findings), true);
+});
+
+test("private Bot backups reject literal and shadowed runtime credential fallbacks", () => {
+  const config = testConfig("unused");
+  const unsafeScripts = [
+    'const token = process.env.CATSCO_TOKEN ?? "a-real-secret-value-that-must-not-leave-device";',
+    [
+      'const undefined = "a-real-secret-value-that-must-not-leave-device";',
+      "const token = process.env.CATSCO_TOKEN ?? undefined;"
+    ].join("\n"),
+    [
+      'function run(undefined = "a-real-secret-value-that-must-not-leave-device") {',
+      "  const token = process.env.CATSCO_TOKEN ?? undefined;",
+      "}"
+    ].join("\n")
+  ];
+
+  for (const source of unsafeScripts) {
+    const files = [
+      file("SKILL.md", Buffer.from("# Unsafe\n")),
+      file("runtime.mjs", Buffer.from(`${source}\n`))
+    ];
+    assert.throws(
+      () => parsePrivateSkillUpsert({
+        localSkillId: "local-unsafe",
+        name: "unsafe",
+        contentHash: computePrivateSkillContentHash(files),
+        files
+      }, config),
+      (error) => error.code === "PRIVATE_SKILL_SENSITIVE_REJECTED"
+    );
+  }
+});
+
+test("private credential scanning stays bounded on long whitespace tails", () => {
+  const config = testConfig("unused");
+  const bytes = Buffer.from(`API_TOKEN=\${API_TOKEN}\n${" ".repeat(64 * 1024)}`);
+  const files = [file("SKILL.md", bytes)];
+  const startedAt = Date.now();
+
+  assert.doesNotThrow(() => parsePrivateSkillUpsert({
+    localSkillId: "local-whitespace",
+    name: "whitespace",
+    contentHash: computePrivateSkillContentHash(files),
+    files
+  }, config));
+  assert.ok(Date.now() - startedAt < 1_000, "credential scan exceeded its bounded runtime budget");
 });
 
 test("private package validation does not allow password policy values for arbitrary secret keys", () => {
