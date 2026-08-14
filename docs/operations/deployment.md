@@ -60,6 +60,7 @@ release_id="bootstrap-legacy-$(date -u +%Y%m%d-%H%M%S)"
 services_were_active=0
 
 test -d "${root}/app" && test ! -L "${root}/app"
+sudo install -d -o root -g skillhub -m 0750 "${root}/releases"
 if sudo systemctl is-active --quiet catsco-skillhub-api \
   || sudo systemctl is-active --quiet catsco-skillhub-worker; then
   services_were_active=1

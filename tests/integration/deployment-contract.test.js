@@ -43,3 +43,29 @@ test("first-install documentation creates a release-backed app link", async () =
     /mkdir -p \/opt\/catsco\/skillhub\/\{app,/
   );
 });
+
+test("legacy bootstrap creates a missing releases directory before stopping services", async () => {
+  const guide = await fs.readFile(
+    path.join(root, "docs", "operations", "deployment.md"),
+    "utf8"
+  );
+  const bootstrapStart = guide.indexOf('release_id="bootstrap-legacy-');
+  const bootstrapEnd = guide.indexOf("bootstrap 只调整源码目录布局", bootstrapStart);
+  assert.notEqual(bootstrapStart, -1);
+  assert.notEqual(bootstrapEnd, -1);
+
+  const bootstrap = guide.slice(bootstrapStart, bootstrapEnd);
+  const createReleases = bootstrap.indexOf(
+    'sudo install -d -o root -g skillhub -m 0750 "${root}/releases"'
+  );
+  const stopServices = bootstrap.indexOf("sudo systemctl stop");
+  const moveApp = bootstrap.indexOf(
+    'sudo mv "${root}/app" "${root}/releases/${release_id}"'
+  );
+
+  assert.notEqual(createReleases, -1);
+  assert.notEqual(stopServices, -1);
+  assert.notEqual(moveApp, -1);
+  assert.ok(createReleases < stopServices);
+  assert.ok(createReleases < moveApp);
+});
