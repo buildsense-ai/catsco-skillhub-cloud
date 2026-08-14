@@ -63,7 +63,7 @@ test("private package validation uses canonical ordering and supports zero-byte 
   assert.equal(parsed.contentHash, contentHash);
 });
 
-test("private package validation rejects unsafe paths, tampered bytes, and secrets", () => {
+test("private package validation rejects unsafe paths and tampered bytes", () => {
   const config = testConfig("unused");
   const base = {
     localSkillId: "local-a",
@@ -87,39 +87,65 @@ test("private package validation rejects unsafe paths, tampered bytes, and secre
     }, config),
     (error) => error.code === "PRIVATE_SKILL_FILE_HASH_MISMATCH"
   );
-  const secretBytes = Buffer.from("api_key=sk-proj-1234567890abcdefghijklmnop\n");
+});
+
+test("private package validation keeps package structure and transport boundaries", () => {
+  const config = testConfig("unused");
+  const skill = file("SKILL.md", Buffer.from("# Test\n"));
+  const parse = (files, contentHash = computePrivateSkillContentHash(files)) => (
+    parsePrivateSkillUpsert({
+      localSkillId: "local-a",
+      name: "alpha",
+      contentHash,
+      files
+    }, config)
+  );
+
   assert.throws(
-    () => parsePrivateSkillUpsert({
-      ...base,
-      files: [file("SKILL.md", secretBytes)]
-    }, config),
-    (error) => error.code === "PRIVATE_SKILL_SENSITIVE_REJECTED" && !error.message.includes("sk-proj")
+    () => parse([file("C:/SKILL.md", Buffer.from("# bad\n"))]),
+    (error) => error.code === "path.absolute_or_windows"
+  );
+  assert.throws(
+    () => parse([skill, { ...skill, path: "skill.md" }]),
+    (error) => error.code === "PRIVATE_SKILL_DUPLICATE_PATH"
+  );
+  assert.throws(
+    () => parse([{
+      ...skill,
+      contentBase64: "not-canonical-base64"
+    }]),
+    (error) => error.code === "PRIVATE_SKILL_BASE64_INVALID"
+  );
+  assert.throws(
+    () => parse([file("README.md", Buffer.from("missing entry\n"))]),
+    (error) => error.code === "PRIVATE_SKILL_ENTRY_MISSING"
+  );
+  assert.throws(
+    () => parse([skill], "f".repeat(64)),
+    (error) => error.code === "PRIVATE_SKILL_CONTENT_HASH_MISMATCH"
   );
 });
 
-test("private package validation rejects archives by extension and magic bytes", () => {
+test("private package validation allows credentials, archives, and binary content", () => {
   const config = testConfig("unused");
-  const archiveCases = [
+  const contentFiles = [
+    file("SKILL.md", Buffer.from("# Test\napi_key=sk-proj-1234567890abcdefghijklmnop\n")),
+    file(".env", Buffer.from("AWS_SECRET_ACCESS_KEY=not-a-real-aws-secret-1234567890\n")),
+    file(".ssh/id_rsa", Buffer.from("-----BEGIN PRIVATE KEY-----\nprivate material\n")),
     file("payload.zip", Buffer.from("plain text disguised by extension")),
     file("payload.bin", Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0x00])),
-    file("payload.bin", Buffer.concat([Buffer.alloc(257), Buffer.from("ustar", "ascii")]))
+    file("runtime.exe", Buffer.from([0x4d, 0x5a, 0x00, 0x01]))
   ];
 
-  for (const archive of archiveCases) {
-    const files = [file("SKILL.md", Buffer.from("# Test\n")), archive];
-    assert.throws(
-      () => parsePrivateSkillUpsert({
-        localSkillId: "local-a",
-        name: "alpha",
-        contentHash: computePrivateSkillContentHash(files),
-        files
-      }, config),
-      (error) => error.code === "PRIVATE_SKILL_SENSITIVE_REJECTED"
-    );
-  }
+  assert.doesNotThrow(() => parsePrivateSkillUpsert({
+    localSkillId: "local-a",
+    name: "alpha",
+    contentHash: computePrivateSkillContentHash(contentFiles),
+    files: contentFiles
+  }, config));
 });
 
-test("private package validation rejects prefixed and camelCase credential assignments", () => {
+test("private package validation allows literal credential assignments", () => {
   const config = testConfig("unused");
   const assignments = [
     "CATSCO_API_KEY=not-a-real-catsco-key-1234567890",
@@ -142,18 +168,12 @@ test("private package validation rejects prefixed and camelCase credential assig
 
   for (const assignment of assignments) {
     const files = [file("SKILL.md", Buffer.from(`${assignment}\n`))];
-    assert.throws(
-      () => parsePrivateSkillUpsert({
-        localSkillId: "local-a",
-        name: "alpha",
-        contentHash: computePrivateSkillContentHash(files),
-        files
-      }, config),
-      (error) => (
-        error.code === "PRIVATE_SKILL_SENSITIVE_REJECTED"
-        && !error.message.includes("not-a-real")
-      )
-    );
+    assert.doesNotThrow(() => parsePrivateSkillUpsert({
+      localSkillId: "local-a",
+      name: "alpha",
+      contentHash: computePrivateSkillContentHash(files),
+      files
+    }, config));
   }
 });
 
@@ -221,10 +241,11 @@ test("private Bot backups allow runtime capabilities without weakening public pu
     },
     config
   });
+  assert.equal(publicReport.status, "passed");
   assert.equal(hasBlockingFindings(publicReport.findings), true);
 });
 
-test("private Bot backups reject literal and shadowed runtime credential fallbacks", () => {
+test("private Bot backups allow literal and shadowed runtime credential fallbacks", () => {
   const config = testConfig("unused");
   const unsafeScripts = [
     'const token = process.env.CATSCO_TOKEN ?? "a-real-secret-value-that-must-not-leave-device";',
@@ -244,19 +265,16 @@ test("private Bot backups reject literal and shadowed runtime credential fallbac
       file("SKILL.md", Buffer.from("# Unsafe\n")),
       file("runtime.mjs", Buffer.from(`${source}\n`))
     ];
-    assert.throws(
-      () => parsePrivateSkillUpsert({
-        localSkillId: "local-unsafe",
-        name: "unsafe",
-        contentHash: computePrivateSkillContentHash(files),
-        files
-      }, config),
-      (error) => error.code === "PRIVATE_SKILL_SENSITIVE_REJECTED"
-    );
+    assert.doesNotThrow(() => parsePrivateSkillUpsert({
+      localSkillId: "local-unsafe",
+      name: "unsafe",
+      contentHash: computePrivateSkillContentHash(files),
+      files
+    }, config));
   }
 });
 
-test("private credential scanning stays bounded on long whitespace tails", () => {
+test("private package validation accepts credential-like content with long whitespace tails", () => {
   const config = testConfig("unused");
   const bytes = Buffer.from(`API_TOKEN=\${API_TOKEN}\n${" ".repeat(64 * 1024)}`);
   const files = [file("SKILL.md", bytes)];
@@ -268,21 +286,18 @@ test("private credential scanning stays bounded on long whitespace tails", () =>
     contentHash: computePrivateSkillContentHash(files),
     files
   }, config));
-  assert.ok(Date.now() - startedAt < 1_000, "credential scan exceeded its bounded runtime budget");
+  assert.ok(Date.now() - startedAt < 1_000, "package validation exceeded its bounded runtime budget");
 });
 
-test("private package validation does not allow password policy values for arbitrary secret keys", () => {
+test("private package validation allows password policy values for arbitrary secret keys", () => {
   const config = testConfig("unused");
   const files = [file("SKILL.md", Buffer.from("STRIPE_SECRET_KEY=minimum_length_16\n"))];
-  assert.throws(
-    () => parsePrivateSkillUpsert({
-      localSkillId: "local-a",
-      name: "alpha",
-      contentHash: computePrivateSkillContentHash(files),
-      files
-    }, config),
-    (error) => error.code === "PRIVATE_SKILL_SENSITIVE_REJECTED"
-  );
+  assert.doesNotThrow(() => parsePrivateSkillUpsert({
+    localSkillId: "local-a",
+    name: "alpha",
+    contentHash: computePrivateSkillContentHash(files),
+    files
+  }, config));
 });
 
 test("private package storage is immutable and verifies bytes again on read", async () => {
