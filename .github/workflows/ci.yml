@@ -30,3 +30,92 @@ jobs:
 
       - name: Run integration tests
         run: npm test
+
+  deploy-production:
+    name: Deploy production
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    concurrency:
+      group: catsco-skillhub-production
+      cancel-in-progress: false
+    env:
+      DEPLOY_HOST: ${{ vars.SKILLHUB_PROD_HOST }}
+      DEPLOY_PORT: ${{ vars.SKILLHUB_PROD_PORT }}
+      DEPLOY_USER: ${{ vars.SKILLHUB_PROD_USER }}
+      PUBLIC_BASE_URL: ${{ vars.SKILLHUB_PROD_URL }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Validate deployment configuration
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SKILLHUB_PROD_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SKILLHUB_PROD_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_HOST"
+          test -n "$DEPLOY_PORT"
+          test -n "$DEPLOY_USER"
+          test -n "$PUBLIC_BASE_URL"
+          test -n "$SSH_PRIVATE_KEY"
+          test -n "$SSH_KNOWN_HOSTS"
+
+      - name: Build immutable source artifact
+        run: |
+          set -euo pipefail
+          artifact="skillhub-${GITHUB_SHA}.tar.gz"
+          git archive --format=tar.gz --output="$artifact" HEAD
+          sha256sum "$artifact" > "${artifact}.sha256"
+
+      - name: Configure pinned SSH connection
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SKILLHUB_PROD_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SKILLHUB_PROD_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/skillhub_deploy"
+          chmod 600 "$HOME/.ssh/skillhub_deploy"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+      - name: Upload release artifact
+        run: |
+          set -euo pipefail
+          artifact="skillhub-${GITHUB_SHA}.tar.gz"
+          scp \
+            -P "$DEPLOY_PORT" \
+            -i "$HOME/.ssh/skillhub_deploy" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            "$artifact" "${artifact}.sha256" \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:/opt/catsco/skillhub/shared/staging/"
+
+      - name: Deploy with health check and rollback
+        run: |
+          set -euo pipefail
+          ssh \
+            -p "$DEPLOY_PORT" \
+            -i "$HOME/.ssh/skillhub_deploy" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "sudo /usr/local/sbin/deploy-catsco-skillhub '${GITHUB_SHA}'"
+
+      - name: Verify public endpoint
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error \
+            --retry 10 --retry-all-errors --retry-delay 3 \
+            "${PUBLIC_BASE_URL%/}/healthz"
+          curl --fail --silent --show-error \
+            --retry 10 --retry-all-errors --retry-delay 3 \
+            "${PUBLIC_BASE_URL%/}/readyz"
+
+      - name: Remove runner SSH material
+        if: always()
+        run: rm -f "$HOME/.ssh/skillhub_deploy"

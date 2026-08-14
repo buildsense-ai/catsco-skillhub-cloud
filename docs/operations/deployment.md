@@ -1,5 +1,8 @@
 ﻿# 无 Docker 生产部署
 
+首次安装仍按本文执行。生产环境初始化完成后，日常源码发布由
+[GitHub Actions 自动生产部署](automatic-deployment.md)完成。
+
 部署目录：
 
 ```text
@@ -11,12 +14,17 @@
 ```bash
 sudo useradd --system --home /opt/catsco/skillhub --shell /usr/sbin/nologin skillhub || true
 
-sudo mkdir -p /opt/catsco/skillhub/{app,storage/{intake,packages,reviews,tmp},shared/keys,logs,backups}
-sudo chown -R skillhub:skillhub /opt/catsco/skillhub
+sudo mkdir -p /opt/catsco/skillhub/{releases,storage/{intake,packages,reviews,tmp},shared/keys,logs,backups}
+sudo chown root:skillhub /opt/catsco/skillhub /opt/catsco/skillhub/releases
+sudo chown -R skillhub:skillhub \
+  /opt/catsco/skillhub/storage \
+  /opt/catsco/skillhub/shared \
+  /opt/catsco/skillhub/logs \
+  /opt/catsco/skillhub/backups
 
 sudo chmod 755 /opt/catsco
 sudo chmod 755 /opt/catsco/skillhub
-sudo chmod 750 /opt/catsco/skillhub/app
+sudo chmod 750 /opt/catsco/skillhub/releases
 sudo chmod 750 /opt/catsco/skillhub/shared
 sudo chmod 700 /opt/catsco/skillhub/shared/keys
 sudo chmod 700 /opt/catsco/skillhub/storage/intake
@@ -27,10 +35,49 @@ sudo chmod 700 /opt/catsco/skillhub/storage/tmp
 
 ## 2. 上传项目代码
 
+首次安装必须从第一版开始使用不可变 release 和 `app` 符号链接。不要创建或直接填充
+`/opt/catsco/skillhub/app` 实体目录。
+
 ```bash
-rsync -av --delete ./catsco-skillhub-cloud/ root@YOUR_SERVER:/opt/catsco/skillhub/app/
-ssh root@YOUR_SERVER "sudo chown -R skillhub:skillhub /opt/catsco/skillhub/app"
+release_id="bootstrap-$(date -u +%Y%m%d-%H%M%S)"
+ssh root@YOUR_SERVER "test ! -e /opt/catsco/skillhub/app && mkdir -p /opt/catsco/skillhub/releases/${release_id}"
+rsync -av --delete \
+  --exclude .git --exclude node_modules --exclude .env \
+  ./catsco-skillhub-cloud/ \
+  root@YOUR_SERVER:/opt/catsco/skillhub/releases/${release_id}/
+ssh root@YOUR_SERVER "\
+  chown -R root:skillhub /opt/catsco/skillhub/releases/${release_id} && \
+  chmod -R u=rwX,g=rX,o= /opt/catsco/skillhub/releases/${release_id} && \
+  ln -s /opt/catsco/skillhub/releases/${release_id} /opt/catsco/skillhub/app && \
+  test -L /opt/catsco/skillhub/app"
 ```
+
+如果旧服务器已经存在实体 `app` 目录，启用自动部署前只执行一次以下 bootstrap：
+
+```bash
+root=/opt/catsco/skillhub
+release_id="bootstrap-legacy-$(date -u +%Y%m%d-%H%M%S)"
+services_were_active=0
+
+test -d "${root}/app" && test ! -L "${root}/app"
+sudo install -d -o root -g skillhub -m 0750 "${root}/releases"
+if sudo systemctl is-active --quiet catsco-skillhub-api \
+  || sudo systemctl is-active --quiet catsco-skillhub-worker; then
+  services_were_active=1
+  sudo systemctl stop catsco-skillhub-worker catsco-skillhub-api
+fi
+sudo mv "${root}/app" "${root}/releases/${release_id}"
+sudo chown -R root:skillhub "${root}/releases/${release_id}"
+sudo chmod -R u=rwX,g=rX,o= "${root}/releases/${release_id}"
+sudo ln -s "${root}/releases/${release_id}" "${root}/app"
+test -L "${root}/app"
+if [ "${services_were_active}" -eq 1 ]; then
+  sudo systemctl start catsco-skillhub-api catsco-skillhub-worker
+  curl -fsS http://127.0.0.1:9000/readyz
+fi
+```
+
+bootstrap 只调整源码目录布局，不移动 `shared/`、`storage/`、`logs/` 或数据库。
 
 ## 3. 安装 Node.js 和依赖
 
@@ -40,7 +87,10 @@ ssh root@YOUR_SERVER "sudo chown -R skillhub:skillhub /opt/catsco/skillhub/app"
 node -v
 
 cd /opt/catsco/skillhub/app
-sudo -u skillhub npm install --omit=dev
+sudo npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+release_path="$(readlink -f /opt/catsco/skillhub/app)"
+sudo chown -R root:skillhub "${release_path}"
+sudo chmod -R u=rwX,g=rX,o= "${release_path}"
 ```
 
 ## 4. 安装 PostgreSQL
@@ -232,4 +282,3 @@ curl -fsS https://skillhub.catsco.fun:19990/api/trust/public-keys
 ```text
 https://skillhub.catsco.fun:19990/admin/
 ```
-

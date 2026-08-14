@@ -25,4 +25,6 @@
 
 生产配置由服务器外部的环境文件和持久化卷提供。部署时请根据 `.env.example` 配置真实环境变量，并将密钥、数据库连接串、Skill 包和 CAS 数据放在仓库之外。
 
-本仓库当前只配置测试 CI，不配置自动生产部署。生产发布仍需经过团队明确的发布流程和回滚确认。
+仓库初始归档时只配置测试 CI。当前生产发布流程见
+[`docs/operations/automatic-deployment.md`](docs/operations/automatic-deployment.md)：测试通过后自动创建
+不可变 release，并在健康检查失败时回滚代码链接；生产凭据和数据仍保留在仓库之外。
