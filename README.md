@@ -119,6 +119,7 @@ GET /api/bot/skill-packages/:skillId/versions/:version
 
 - [docs/operations/postgresql.md](docs/operations/postgresql.md)
 - [docs/operations/deployment.md](docs/operations/deployment.md)
+- [docs/operations/automatic-deployment.md](docs/operations/automatic-deployment.md)
 - [docs/operations/env-vars.md](docs/operations/env-vars.md)
 
 部署后先运行：
@@ -139,4 +140,3 @@ cd E:\SkillHub\catsco-skillhub-cloud
 npm.cmd test
 Get-ChildItem -Recurse -Filter *.js | ForEach-Object { node --check $_.FullName }
 ```
-

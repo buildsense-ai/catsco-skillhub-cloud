@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+readonly ROOT="/opt/catsco/skillhub"
+readonly RELEASES_ROOT="${ROOT}/releases"
+readonly SHARED_ROOT="${ROOT}/shared"
+readonly STAGING_ROOT="${SHARED_ROOT}/staging"
+readonly APP_LINK="${ROOT}/app"
+readonly ENV_FILE="${SHARED_ROOT}/.env"
+readonly NODE_BIN="/opt/node-v22/bin"
+readonly API_SERVICE="catsco-skillhub-api"
+readonly WORKER_SERVICE="catsco-skillhub-worker"
+
+export PATH="${NODE_BIN}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+umask 027
+
+if [[ "${EUID}" -ne 0 ]]; then
+  echo "This deployment command must run as root." >&2
+  exit 1
+fi
+
+if [[ "$#" -ne 1 ]]; then
+  echo "Usage: deploy-catsco-skillhub <40-character-git-sha>" >&2
+  exit 2
+fi
+
+readonly GIT_SHA="$1"
+if [[ ! "${GIT_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "Invalid Git commit SHA." >&2
+  exit 2
+fi
+
+readonly ARTIFACT_NAME="skillhub-${GIT_SHA}.tar.gz"
+readonly ARTIFACT_PATH="${STAGING_ROOT}/${ARTIFACT_NAME}"
+readonly CHECKSUM_PATH="${ARTIFACT_PATH}.sha256"
+readonly RELEASE_ID="$(date -u +%Y%m%d-%H%M%S)-${GIT_SHA:0:12}"
+readonly RELEASE_PATH="${RELEASES_ROOT}/${RELEASE_ID}"
+readonly INCOMING_PATH="${RELEASES_ROOT}/.incoming-${RELEASE_ID}"
+readonly BACKUP_PATH="${ROOT}/backups/pre-deploy-${RELEASE_ID}.sql"
+readonly NEXT_LINK="${ROOT}/.app-next-${GIT_SHA}"
+readonly ROLLBACK_LINK="${ROOT}/.app-rollback-${GIT_SHA}"
+
+previous_release=""
+switched=0
+
+wait_for_health() {
+  local attempt
+  for attempt in $(seq 1 30); do
+    if systemctl is-active --quiet "${API_SERVICE}" \
+      && systemctl is-active --quiet "${WORKER_SERVICE}" \
+      && curl --fail --silent --show-error http://127.0.0.1:9000/healthz >/dev/null \
+      && curl --fail --silent --show-error http://127.0.0.1:9000/readyz >/dev/null; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+rollback_on_error() {
+  local status=$?
+  trap - ERR
+
+  rm -rf -- "${INCOMING_PATH}"
+  rm -f -- "${NEXT_LINK}" "${ROLLBACK_LINK}"
+
+  if [[ "${switched}" -eq 1 && -n "${previous_release}" ]]; then
+    echo "Deployment failed; restoring ${previous_release}." >&2
+    ln -s "${previous_release}" "${ROLLBACK_LINK}"
+    mv -Tf "${ROLLBACK_LINK}" "${APP_LINK}"
+    systemctl restart "${API_SERVICE}" "${WORKER_SERVICE}" || true
+    if ! wait_for_health; then
+      echo "Rollback completed, but the restored release is not healthy." >&2
+    fi
+  fi
+
+  exit "${status}"
+}
+trap rollback_on_error ERR
+
+mkdir -p "${RELEASES_ROOT}" "${STAGING_ROOT}" "${ROOT}/backups"
+
+exec 9>"${SHARED_ROOT}/deploy.lock"
+if ! flock -n 9; then
+  echo "Another SkillHub deployment is already running." >&2
+  exit 3
+fi
+
+[[ -f "${ARTIFACT_PATH}" ]] || { echo "Missing ${ARTIFACT_PATH}." >&2; exit 4; }
+[[ -f "${CHECKSUM_PATH}" ]] || { echo "Missing ${CHECKSUM_PATH}." >&2; exit 4; }
+[[ -f "${ENV_FILE}" ]] || { echo "Missing ${ENV_FILE}." >&2; exit 4; }
+[[ -x "${NODE_BIN}/node" ]] || { echo "Node.js 22 runtime is unavailable." >&2; exit 4; }
+[[ ! -e "${RELEASE_PATH}" ]] || { echo "Release ${RELEASE_PATH} already exists." >&2; exit 4; }
+
+(
+  cd "${STAGING_ROOT}"
+  sha256sum --check "${ARTIFACT_NAME}.sha256"
+)
+
+if tar -tzf "${ARTIFACT_PATH}" | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
+  echo "Artifact contains an unsafe path." >&2
+  exit 4
+fi
+
+mkdir "${INCOMING_PATH}"
+tar --extract --gzip --file "${ARTIFACT_PATH}" \
+  --directory "${INCOMING_PATH}" \
+  --no-same-owner --no-same-permissions
+
+[[ -f "${INCOMING_PATH}/package.json" ]] || { echo "Release is missing package.json." >&2; exit 4; }
+[[ -f "${INCOMING_PATH}/package-lock.json" ]] || { echo "Release is missing package-lock.json." >&2; exit 4; }
+[[ -f "${INCOMING_PATH}/apps/api/server.js" ]] || { echo "Release is missing the API entrypoint." >&2; exit 4; }
+[[ -f "${INCOMING_PATH}/apps/worker/worker.js" ]] || { echo "Release is missing the worker entrypoint." >&2; exit 4; }
+
+(
+  cd "${INCOMING_PATH}"
+  npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+)
+
+chown -R root:skillhub "${INCOMING_PATH}"
+chmod -R u=rwX,g=rX,o= "${INCOMING_PATH}"
+
+(
+  set -a
+  # shellcheck disable=SC1090
+  source "${ENV_FILE}"
+  set +a
+  pg_dump "${SKILLHUB_DATABASE_URL}" > "${BACKUP_PATH}"
+  chmod 600 "${BACKUP_PATH}"
+  cd "${INCOMING_PATH}"
+  runuser -u skillhub --preserve-environment -- node scripts/migrate.js
+)
+
+printf '%s\n' "${GIT_SHA}" > "${INCOMING_PATH}/.deploy-commit"
+chown root:skillhub "${INCOMING_PATH}/.deploy-commit"
+chmod 640 "${INCOMING_PATH}/.deploy-commit"
+mv "${INCOMING_PATH}" "${RELEASE_PATH}"
+
+previous_release="$(readlink -f "${APP_LINK}")"
+if [[ -z "${previous_release}" || "${previous_release}" != "${RELEASES_ROOT}/"* || ! -d "${previous_release}" ]]; then
+  echo "Current app link does not point to a valid release." >&2
+  exit 5
+fi
+
+ln -s "${RELEASE_PATH}" "${NEXT_LINK}"
+mv -Tf "${NEXT_LINK}" "${APP_LINK}"
+switched=1
+
+systemctl restart "${API_SERVICE}" "${WORKER_SERVICE}"
+wait_for_health
+
+switched=0
+rm -f -- "${ARTIFACT_PATH}" "${CHECKSUM_PATH}"
+
+echo "Deployed ${GIT_SHA} to ${RELEASE_PATH}."
+echo "Previous release remains available at ${previous_release}."

@@ -1,5 +1,8 @@
 ﻿# 无 Docker 生产部署
 
+首次安装仍按本文执行。生产环境初始化完成后，日常源码发布由
+[GitHub Actions 自动生产部署](automatic-deployment.md)完成。
+
 部署目录：
 
 ```text
@@ -26,6 +29,8 @@ sudo chmod 700 /opt/catsco/skillhub/storage/tmp
 ```
 
 ## 2. 上传项目代码
+
+以下命令用于首次安装或自动部署不可用时的人工恢复；日常发布不应直接覆盖当前 `app`。
 
 ```bash
 rsync -av --delete ./catsco-skillhub-cloud/ root@YOUR_SERVER:/opt/catsco/skillhub/app/
@@ -232,4 +237,3 @@ curl -fsS https://skillhub.catsco.fun:19990/api/trust/public-keys
 ```text
 https://skillhub.catsco.fun:19990/admin/
 ```
-
