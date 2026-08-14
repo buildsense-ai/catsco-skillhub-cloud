@@ -59,6 +59,11 @@ SKILLHUB_PROD_KNOWN_HOSTS
 仓库中的 `infra/deploy/deploy-catsco-skillhub` 是服务器发布程序的受审版本。修改该文件后，
 需要由服务器管理员复核并手动安装，普通 GitHub Actions 发布不能自行替换 root 级部署程序。
 
+自动部署要求 `/opt/catsco/skillhub/app` 是指向 `/opt/catsco/skillhub/releases/` 子目录的符号链接。
+新服务器必须按 [首次部署文档](deployment.md)直接创建 release；已有实体 `app` 目录的旧服务器，
+必须先执行文档中的一次性 bootstrap。发布程序会在安装依赖、备份和 migration 之前检查该结构，
+不符合时立即停止。
+
 ## 回滚边界
 
 发布程序在切换前保存当前 release 路径。新版本重启或健康检查失败时，会自动把 `app` 链接

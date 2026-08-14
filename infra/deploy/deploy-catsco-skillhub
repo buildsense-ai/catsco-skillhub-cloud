@@ -87,6 +87,17 @@ if ! flock -n 9; then
   exit 3
 fi
 
+if [[ ! -L "${APP_LINK}" ]]; then
+  echo "Current app path is not a release symlink; run the documented one-time bootstrap first." >&2
+  exit 5
+fi
+
+previous_release="$(readlink -f "${APP_LINK}" || true)"
+if [[ -z "${previous_release}" || "${previous_release}" != "${RELEASES_ROOT}/"* || ! -d "${previous_release}" ]]; then
+  echo "Current app link does not point to a valid release." >&2
+  exit 5
+fi
+
 [[ -f "${ARTIFACT_PATH}" ]] || { echo "Missing ${ARTIFACT_PATH}." >&2; exit 4; }
 [[ -f "${CHECKSUM_PATH}" ]] || { echo "Missing ${CHECKSUM_PATH}." >&2; exit 4; }
 [[ -f "${ENV_FILE}" ]] || { echo "Missing ${ENV_FILE}." >&2; exit 4; }
@@ -136,12 +147,6 @@ printf '%s\n' "${GIT_SHA}" > "${INCOMING_PATH}/.deploy-commit"
 chown root:skillhub "${INCOMING_PATH}/.deploy-commit"
 chmod 640 "${INCOMING_PATH}/.deploy-commit"
 mv "${INCOMING_PATH}" "${RELEASE_PATH}"
-
-previous_release="$(readlink -f "${APP_LINK}")"
-if [[ -z "${previous_release}" || "${previous_release}" != "${RELEASES_ROOT}/"* || ! -d "${previous_release}" ]]; then
-  echo "Current app link does not point to a valid release." >&2
-  exit 5
-fi
 
 ln -s "${RELEASE_PATH}" "${NEXT_LINK}"
 mv -Tf "${NEXT_LINK}" "${APP_LINK}"
