@@ -49,8 +49,8 @@ import { createExaWebAnswerService } from "../../packages/web-answer/index.js";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const adminIndexPath = path.resolve(here, "../admin/public/index-v2.html");
 
-export function createApiServer(config = loadConfig()) {
-  const store = createStore(config);
+export function createApiServer(config = loadConfig(), dependencies = {}) {
+  const store = dependencies.store ?? createStore(config);
   const limiter = new RateLimiter({ windowMs: 60_000, limit: 600, maxBuckets: 20_000 });
   const botWriteLimiter = new RateLimiter({ windowMs: 60_000, limit: 30, maxBuckets: 20_000 });
   const botReadLimiter = new RateLimiter({ windowMs: 60_000, limit: 600, maxBuckets: 20_000 });
@@ -267,6 +267,40 @@ export function createApiServer(config = loadConfig()) {
           ip
         });
         sendJson(res, reservation.created ? 201 : 200, privatePackageMetadata(packageValue));
+        return;
+      }
+
+      if (pathname === "/api/bot/private-skill-metadata" && req.method === "POST") {
+        if (!config.privateSkills.readEnabled) {
+          throw new ValidationError("Private Skill metadata is unavailable.", "PRIVATE_SKILL_READS_DISABLED", 503);
+        }
+        const identity = await authenticateCatsCoBot(config, req);
+        requireAllowedPrivateSkillBot(config, identity.botId);
+        if (!botReadLimiter.check(`${identity.authority}\0${identity.botId}`)) {
+          sendJson(res, 429, {
+            error: {
+              code: "PRIVATE_SKILL_READ_RATE_LIMITED",
+              message: "Too many private Skill metadata requests."
+            }
+          }, { "Retry-After": "60" });
+          return;
+        }
+        const references = parsePrivateSkillMetadataRequest(
+          await readJson(req, PRIVATE_SKILL_METADATA_MAX_REQUEST_BYTES)
+        );
+        const versions = await store.findPrivateSkillMetadata({
+          authority: identity.authority,
+          ownerBotId: identity.botId,
+          references
+        });
+        sendJson(res, 200, {
+          skills: versions.map((version) => ({
+            source: "skillhub",
+            skillId: version.skillId,
+            version: version.version,
+            displayName: version.name
+          }))
+        }, { "Cache-Control": "private, no-store" });
         return;
       }
 
@@ -1553,10 +1587,79 @@ function requireRoleName(role) {
 
 function requireReferencePart(value, field, maxLength) {
   const text = String(value ?? "").trim();
-  if (!text || text.length > maxLength || /[\u0000-\u001f\u007f]/.test(text)) {
+  if (
+    !text
+    || text.length > maxLength
+    || /[\u0000-\u001f\u007f]/.test(text)
+    || hasUnpairedSurrogate(text)
+  ) {
     throw new ValidationError(`${field} is invalid.`, "PRIVATE_SKILL_REFERENCE_INVALID", 400);
   }
   return text;
+}
+
+function hasUnpairedSurrogate(text) {
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = text.charCodeAt(index + 1);
+      if (next < 0xdc00 || next > 0xdfff) return true;
+      index += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
+}
+
+const PRIVATE_SKILL_METADATA_MAX_REFERENCES = 256;
+const PRIVATE_SKILL_METADATA_MAX_SKILL_ID_LENGTH = 240;
+const PRIVATE_SKILL_METADATA_MAX_VERSION_LENGTH = 120;
+// JSON.stringify escapes an unpaired UTF-16 surrogate as six ASCII bytes. The
+// parser rejects such strings, but the transport must still admit the bounded
+// payload so it can return the semantic 400 response instead of an earlier 413.
+// Valid BMP characters use at most three bytes per code unit and surrogate
+// pairs use fewer, so six is the complete worst-case JSON expansion.
+export const PRIVATE_SKILL_METADATA_MAX_REQUEST_BYTES =
+  64
+  + PRIVATE_SKILL_METADATA_MAX_REFERENCES
+    * (64 + 6 * (PRIVATE_SKILL_METADATA_MAX_SKILL_ID_LENGTH + PRIVATE_SKILL_METADATA_MAX_VERSION_LENGTH));
+
+export function parsePrivateSkillMetadataRequest(value) {
+  const references = value?.references;
+  if (!Array.isArray(references) || references.length > PRIVATE_SKILL_METADATA_MAX_REFERENCES) {
+    throw new ValidationError(
+      "Private Skill metadata references are invalid.",
+      "PRIVATE_SKILL_METADATA_REFERENCES_INVALID",
+      400
+    );
+  }
+  const seen = new Set();
+  const parsed = [];
+  for (const reference of references) {
+    const skillId = requireReferencePart(
+      reference?.skillId,
+      "skillId",
+      PRIVATE_SKILL_METADATA_MAX_SKILL_ID_LENGTH
+    );
+    const version = requireReferencePart(
+      reference?.version,
+      "version",
+      PRIVATE_SKILL_METADATA_MAX_VERSION_LENGTH
+    );
+    if (!isPrivateSkillReference(skillId)) {
+      throw new ValidationError(
+        "Private Skill metadata only accepts private references.",
+        "PRIVATE_SKILL_METADATA_REFERENCE_INVALID",
+        400
+      );
+    }
+    const key = `${skillId}\0${version}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    parsed.push({ skillId, version });
+  }
+  return parsed;
 }
 
 function referencesEqual(left, right) {

@@ -77,6 +77,32 @@ test("private Bot packages are idempotent, immutable, and isolated by Bot", { sk
   assert.equal(downloaded.data.contentHash, firstBody.contentHash);
   assert.equal(downloaded.data.files[0].contentBase64, firstBody.files[0].contentBase64);
 
+  const metadata = await request(
+    "POST",
+    "/api/bot/private-skill-metadata",
+    "bot-key-a",
+    "42001",
+    { references: [first.reference, { skillId: `priv_${"f".repeat(40)}`, version: "missing" }] }
+  );
+  assert.equal(metadata.status, 200);
+  assert.deepEqual(metadata.data.skills, [{
+    source: "skillhub",
+    skillId: first.reference.skillId,
+    version: first.reference.version,
+    displayName: firstBody.name
+  }]);
+  assert.deepEqual(Object.keys(metadata.data.skills[0]).sort(), ["displayName", "skillId", "source", "version"]);
+
+  const metadataHiddenFromOtherBot = await request(
+    "POST",
+    "/api/bot/private-skill-metadata",
+    "bot-key-b",
+    "42002",
+    { references: [first.reference] }
+  );
+  assert.equal(metadataHiddenFromOtherBot.status, 200);
+  assert.deepEqual(metadataHiddenFromOtherBot.data.skills, []);
+
   const hiddenFromOtherBot = await request(
     "GET",
     packagePath(first.reference),
