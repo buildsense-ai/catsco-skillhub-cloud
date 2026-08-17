@@ -1164,6 +1164,34 @@ export function createStore(config) {
       return result.rowCount ? mapPrivateSkillVersion(result.rows[0]) : null;
     },
 
+    async findPrivateSkillMetadata({ authority, ownerBotId, references }) {
+      if (!Array.isArray(references) || references.length === 0) return [];
+      const result = await query(
+        `WITH requested AS (
+           SELECT skill_id, version
+           FROM jsonb_to_recordset($3::jsonb) AS item(skill_id text, version text)
+         )
+         SELECT v.*, s.skill_id, s.authority, s.owner_bot_id, s.local_skill_id
+         FROM private_skill_versions v
+         JOIN private_skills s ON s.id = v.private_skill_id
+         JOIN requested r ON r.skill_id = s.skill_id AND r.version = v.version
+         WHERE s.authority = $1
+           AND s.owner_bot_id = $2
+           AND v.status = 'active'`,
+        [authority, ownerBotId, JSON.stringify(references.map(reference => ({
+          skill_id: reference.skillId,
+          version: reference.version
+        })))]
+      );
+      const byReference = new Map(result.rows.map(row => {
+        const version = mapPrivateSkillVersion(row);
+        return [`${version.skillId}\0${version.version}`, version];
+      }));
+      return references
+        .map(reference => byReference.get(`${reference.skillId}\0${reference.version}`))
+        .filter(Boolean);
+    },
+
     async privateSkillReadiness() {
       const result = await query(
         `SELECT

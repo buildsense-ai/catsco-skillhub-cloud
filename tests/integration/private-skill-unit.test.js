@@ -4,7 +4,10 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, test } from "node:test";
-import { startApiServer } from "../../apps/api/server.js";
+import {
+  parsePrivateSkillMetadataRequest,
+  startApiServer
+} from "../../apps/api/server.js";
 import { authenticateCatsCoBot } from "../../packages/bot-auth/index.js";
 import { loadConfig } from "../../packages/config/index.js";
 import { hasBlockingFindings, sha256 } from "../../packages/domain/index.js";
@@ -42,6 +45,19 @@ test("private reference detection covers current and legacy namespaces", () => {
   assert.equal(isPrivateSkillReference(`priv_${"a".repeat(40)}`), true);
   assert.equal(isPrivateSkillReference("priv_malformed"), true);
   assert.equal(isPrivateSkillReference("PRIVATE/legacy-reference"), true);
+});
+
+test("private metadata request validation is bounded, private-only, and deduplicated", () => {
+  const first = { skillId: `priv_${"a".repeat(40)}`, version: "v_1" };
+  assert.deepEqual(parsePrivateSkillMetadataRequest({ references: [first, first] }), [first]);
+  assert.throws(
+    () => parsePrivateSkillMetadataRequest({ references: [{ skillId: "lin/public", version: "1.0.0" }] }),
+    (error) => error.code === "PRIVATE_SKILL_METADATA_REFERENCE_INVALID" && error.status === 400
+  );
+  assert.throws(
+    () => parsePrivateSkillMetadataRequest({ references: Array.from({ length: 257 }, () => first) }),
+    (error) => error.code === "PRIVATE_SKILL_METADATA_REFERENCES_INVALID" && error.status === 400
+  );
 });
 
 test("private package validation uses canonical ordering and supports zero-byte files", () => {

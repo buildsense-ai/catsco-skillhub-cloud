@@ -270,6 +270,38 @@ export function createApiServer(config = loadConfig()) {
         return;
       }
 
+      if (pathname === "/api/bot/private-skill-metadata" && req.method === "POST") {
+        if (!config.privateSkills.readEnabled) {
+          throw new ValidationError("Private Skill metadata is unavailable.", "PRIVATE_SKILL_READS_DISABLED", 503);
+        }
+        const identity = await authenticateCatsCoBot(config, req);
+        requireAllowedPrivateSkillBot(config, identity.botId);
+        if (!botReadLimiter.check(`${identity.authority}\0${identity.botId}`)) {
+          sendJson(res, 429, {
+            error: {
+              code: "PRIVATE_SKILL_READ_RATE_LIMITED",
+              message: "Too many private Skill metadata requests."
+            }
+          }, { "Retry-After": "60" });
+          return;
+        }
+        const references = parsePrivateSkillMetadataRequest(await readJson(req, 64 * 1024));
+        const versions = await store.findPrivateSkillMetadata({
+          authority: identity.authority,
+          ownerBotId: identity.botId,
+          references
+        });
+        sendJson(res, 200, {
+          skills: versions.map((version) => ({
+            source: "skillhub",
+            skillId: version.skillId,
+            version: version.version,
+            displayName: version.name
+          }))
+        }, { "Cache-Control": "private, no-store" });
+        return;
+      }
+
       const botPackageMatch = pathname.match(/^\/api\/bot\/skill-packages\/(.+)\/versions\/([^/]+)$/);
       if (botPackageMatch && req.method === "GET") {
         if (!config.privateSkills.readEnabled) {
@@ -1557,6 +1589,35 @@ function requireReferencePart(value, field, maxLength) {
     throw new ValidationError(`${field} is invalid.`, "PRIVATE_SKILL_REFERENCE_INVALID", 400);
   }
   return text;
+}
+
+export function parsePrivateSkillMetadataRequest(value) {
+  const references = value?.references;
+  if (!Array.isArray(references) || references.length > 256) {
+    throw new ValidationError(
+      "Private Skill metadata references are invalid.",
+      "PRIVATE_SKILL_METADATA_REFERENCES_INVALID",
+      400
+    );
+  }
+  const seen = new Set();
+  const parsed = [];
+  for (const reference of references) {
+    const skillId = requireReferencePart(reference?.skillId, "skillId", 240);
+    const version = requireReferencePart(reference?.version, "version", 120);
+    if (!isPrivateSkillReference(skillId)) {
+      throw new ValidationError(
+        "Private Skill metadata only accepts private references.",
+        "PRIVATE_SKILL_METADATA_REFERENCE_INVALID",
+        400
+      );
+    }
+    const key = `${skillId}\0${version}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    parsed.push({ skillId, version });
+  }
+  return parsed;
 }
 
 function referencesEqual(left, right) {

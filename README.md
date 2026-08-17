@@ -108,9 +108,10 @@ Bot 私有备份（`Authorization: ApiKey ...` 与 `X-CatsCo-Bot-Id`）：
 ```text
 PUT /api/bot/private-skill-packages
 GET /api/bot/skill-packages/:skillId/versions/:version
+POST /api/bot/private-skill-metadata
 ```
 
-私有版本不可覆盖、按真实 Bot 身份隔离，且不会出现在公开 Registry。详细灰度与回滚顺序见
+私有版本不可覆盖、按真实 Bot 身份隔离，且不会出现在公开 Registry。元数据批量接口同样使用 Bot API key 鉴权，只返回请求 Bot 所拥有版本的 `skillId`、`version` 和 `displayName`，不返回包内容、哈希、来源路径或凭据。详细灰度与回滚顺序见
 [docs/operations/private-bot-skills.md](docs/operations/private-bot-skills.md)。
 
 ## 生产部署
