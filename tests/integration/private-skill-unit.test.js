@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, test } from "node:test";
 import {
+  createApiServer,
   parsePrivateSkillMetadataRequest,
   startApiServer
 } from "../../apps/api/server.js";
@@ -58,6 +59,60 @@ test("private metadata request validation is bounded, private-only, and deduplic
     () => parsePrivateSkillMetadataRequest({ references: Array.from({ length: 257 }, () => first) }),
     (error) => error.code === "PRIVATE_SKILL_METADATA_REFERENCES_INVALID" && error.status === 400
   );
+});
+
+test("private metadata route accepts the maximum validated reference request", async () => {
+  const upstream = http.createServer((req, res) => {
+    if (req.headers.authorization !== "ApiKey valid-key") {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "unauthorized" }));
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ uid: 42 }));
+  });
+  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  cleanup.push(() => new Promise((resolve) => upstream.close(resolve)));
+  const upstreamAddress = upstream.address();
+  const references = Array.from({ length: 256 }, (_, index) => {
+    const skillPrefix = `priv_${index.toString(16).padStart(4, "0")}_`;
+    const versionPrefix = `v_${index.toString(16).padStart(4, "0")}_`;
+    return {
+      skillId: `${skillPrefix}${"界".repeat(240 - skillPrefix.length)}`,
+      version: `${versionPrefix}${"版".repeat(120 - versionPrefix.length)}`
+    };
+  });
+  const requestBody = JSON.stringify({ references });
+  assert.ok(Buffer.byteLength(requestBody) > 64 * 1024);
+
+  let receivedReferences;
+  const server = createApiServer(
+    testConfig("unused", `http://127.0.0.1:${upstreamAddress.port}`),
+    {
+      store: {
+        async findPrivateSkillMetadata(input) {
+          receivedReferences = input.references;
+          return [];
+        }
+      }
+    }
+  );
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  cleanup.push(() => new Promise((resolve) => server.close(resolve)));
+  const address = server.address();
+  const response = await fetch(`http://127.0.0.1:${address.port}/api/bot/private-skill-metadata`, {
+    method: "POST",
+    headers: {
+      authorization: "ApiKey valid-key",
+      "content-type": "application/json",
+      "x-catsco-bot-id": "42"
+    },
+    body: requestBody
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { skills: [] });
+  assert.equal(receivedReferences.length, 256);
 });
 
 test("private package validation uses canonical ordering and supports zero-byte files", () => {

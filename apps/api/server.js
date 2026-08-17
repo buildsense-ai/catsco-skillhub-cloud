@@ -49,8 +49,8 @@ import { createExaWebAnswerService } from "../../packages/web-answer/index.js";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const adminIndexPath = path.resolve(here, "../admin/public/index-v2.html");
 
-export function createApiServer(config = loadConfig()) {
-  const store = createStore(config);
+export function createApiServer(config = loadConfig(), dependencies = {}) {
+  const store = dependencies.store ?? createStore(config);
   const limiter = new RateLimiter({ windowMs: 60_000, limit: 600, maxBuckets: 20_000 });
   const botWriteLimiter = new RateLimiter({ windowMs: 60_000, limit: 30, maxBuckets: 20_000 });
   const botReadLimiter = new RateLimiter({ windowMs: 60_000, limit: 600, maxBuckets: 20_000 });
@@ -285,7 +285,9 @@ export function createApiServer(config = loadConfig()) {
           }, { "Retry-After": "60" });
           return;
         }
-        const references = parsePrivateSkillMetadataRequest(await readJson(req, 64 * 1024));
+        const references = parsePrivateSkillMetadataRequest(
+          await readJson(req, PRIVATE_SKILL_METADATA_MAX_REQUEST_BYTES)
+        );
         const versions = await store.findPrivateSkillMetadata({
           authority: identity.authority,
           ownerBotId: identity.botId,
@@ -1591,9 +1593,22 @@ function requireReferencePart(value, field, maxLength) {
   return text;
 }
 
+const PRIVATE_SKILL_METADATA_MAX_REFERENCES = 256;
+const PRIVATE_SKILL_METADATA_MAX_SKILL_ID_LENGTH = 240;
+const PRIVATE_SKILL_METADATA_MAX_VERSION_LENGTH = 120;
+// The validator measures JavaScript UTF-16 code units. Three UTF-8 bytes per
+// code unit covers BMP characters and unpaired surrogates; surrogate pairs use
+// fewer bytes per code unit. The structural allowance covers JSON keys,
+// punctuation, and the top-level wrapper without making the transport limit a
+// second, narrower contract than the parser.
+export const PRIVATE_SKILL_METADATA_MAX_REQUEST_BYTES =
+  64
+  + PRIVATE_SKILL_METADATA_MAX_REFERENCES
+    * (64 + 3 * (PRIVATE_SKILL_METADATA_MAX_SKILL_ID_LENGTH + PRIVATE_SKILL_METADATA_MAX_VERSION_LENGTH));
+
 export function parsePrivateSkillMetadataRequest(value) {
   const references = value?.references;
-  if (!Array.isArray(references) || references.length > 256) {
+  if (!Array.isArray(references) || references.length > PRIVATE_SKILL_METADATA_MAX_REFERENCES) {
     throw new ValidationError(
       "Private Skill metadata references are invalid.",
       "PRIVATE_SKILL_METADATA_REFERENCES_INVALID",
@@ -1603,8 +1618,16 @@ export function parsePrivateSkillMetadataRequest(value) {
   const seen = new Set();
   const parsed = [];
   for (const reference of references) {
-    const skillId = requireReferencePart(reference?.skillId, "skillId", 240);
-    const version = requireReferencePart(reference?.version, "version", 120);
+    const skillId = requireReferencePart(
+      reference?.skillId,
+      "skillId",
+      PRIVATE_SKILL_METADATA_MAX_SKILL_ID_LENGTH
+    );
+    const version = requireReferencePart(
+      reference?.version,
+      "version",
+      PRIVATE_SKILL_METADATA_MAX_VERSION_LENGTH
+    );
     if (!isPrivateSkillReference(skillId)) {
       throw new ValidationError(
         "Private Skill metadata only accepts private references.",
