@@ -113,6 +113,31 @@ test("private metadata route accepts the maximum validated reference request", a
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { skills: [] });
   assert.equal(receivedReferences.length, 256);
+
+  const escapedReferences = Array.from({ length: 256 }, (_, index) => {
+    const skillPrefix = `priv_${index.toString(16).padStart(4, "0")}_`;
+    const versionPrefix = `v_${index.toString(16).padStart(4, "0")}_`;
+    return {
+      skillId: `${skillPrefix}${"\ud800".repeat(240 - skillPrefix.length)}`,
+      version: `${versionPrefix}${"\ud800".repeat(120 - versionPrefix.length)}`
+    };
+  });
+  const escapedRequestBody = JSON.stringify({ references: escapedReferences });
+  assert.ok(Buffer.byteLength(escapedRequestBody) > 500 * 1024);
+  const escapedResponse = await fetch(
+    `http://127.0.0.1:${address.port}/api/bot/private-skill-metadata`,
+    {
+      method: "POST",
+      headers: {
+        authorization: "ApiKey valid-key",
+        "content-type": "application/json",
+        "x-catsco-bot-id": "42"
+      },
+      body: escapedRequestBody
+    }
+  );
+  assert.equal(escapedResponse.status, 400);
+  assert.equal((await escapedResponse.json()).error.code, "PRIVATE_SKILL_REFERENCE_INVALID");
 });
 
 test("private package validation uses canonical ordering and supports zero-byte files", () => {

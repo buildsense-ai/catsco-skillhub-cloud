@@ -1587,24 +1587,43 @@ function requireRoleName(role) {
 
 function requireReferencePart(value, field, maxLength) {
   const text = String(value ?? "").trim();
-  if (!text || text.length > maxLength || /[\u0000-\u001f\u007f]/.test(text)) {
+  if (
+    !text
+    || text.length > maxLength
+    || /[\u0000-\u001f\u007f]/.test(text)
+    || hasUnpairedSurrogate(text)
+  ) {
     throw new ValidationError(`${field} is invalid.`, "PRIVATE_SKILL_REFERENCE_INVALID", 400);
   }
   return text;
 }
 
+function hasUnpairedSurrogate(text) {
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = text.charCodeAt(index + 1);
+      if (next < 0xdc00 || next > 0xdfff) return true;
+      index += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
+}
+
 const PRIVATE_SKILL_METADATA_MAX_REFERENCES = 256;
 const PRIVATE_SKILL_METADATA_MAX_SKILL_ID_LENGTH = 240;
 const PRIVATE_SKILL_METADATA_MAX_VERSION_LENGTH = 120;
-// The validator measures JavaScript UTF-16 code units. Three UTF-8 bytes per
-// code unit covers BMP characters and unpaired surrogates; surrogate pairs use
-// fewer bytes per code unit. The structural allowance covers JSON keys,
-// punctuation, and the top-level wrapper without making the transport limit a
-// second, narrower contract than the parser.
+// JSON.stringify escapes an unpaired UTF-16 surrogate as six ASCII bytes. The
+// parser rejects such strings, but the transport must still admit the bounded
+// payload so it can return the semantic 400 response instead of an earlier 413.
+// Valid BMP characters use at most three bytes per code unit and surrogate
+// pairs use fewer, so six is the complete worst-case JSON expansion.
 export const PRIVATE_SKILL_METADATA_MAX_REQUEST_BYTES =
   64
   + PRIVATE_SKILL_METADATA_MAX_REFERENCES
-    * (64 + 3 * (PRIVATE_SKILL_METADATA_MAX_SKILL_ID_LENGTH + PRIVATE_SKILL_METADATA_MAX_VERSION_LENGTH));
+    * (64 + 6 * (PRIVATE_SKILL_METADATA_MAX_SKILL_ID_LENGTH + PRIVATE_SKILL_METADATA_MAX_VERSION_LENGTH));
 
 export function parsePrivateSkillMetadataRequest(value) {
   const references = value?.references;
