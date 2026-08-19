@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
+import crypto from "node:crypto";
 import http from "node:http";
 import path from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
@@ -24,6 +25,7 @@ import { AuthError, compareSemver, generateId, hasBlockingFindings, nowIso, sha2
 import { assertGitVersion, commitGitVersion } from "../../packages/git-storage/index.js";
 import { saveSubmissionFiles, safeJoin } from "../../packages/object-storage/index.js";
 import { computeSkillContentHash } from "../../packages/packager/index.js";
+import { mutationVersionReference, parsePrivateSkillMutation } from "../../packages/private-mutations/index.js";
 import {
   buildPrivatePackage,
   isPrivateSkillReference,
@@ -88,7 +90,7 @@ export function createApiServer(config = loadConfig()) {
         await ensureRuntimeDirectories(config);
         const stats = await store.healthStats();
         let privateSkills;
-        if (config.privateSkills.readEnabled || config.privateSkills.writeEnabled) {
+        if (config.privateSkills.readEnabled || config.privateSkills.writeEnabled || config.mutationWriter?.enabled) {
           privateSkills = await store.privateSkillReadiness();
           await fsp.access(config.paths.private, fs.constants.R_OK | fs.constants.W_OK);
           if (!privateSkills.ready) {
@@ -117,6 +119,169 @@ export function createApiServer(config = loadConfig()) {
       if (req.method === "GET" && pathname.startsWith("/packages/")) {
         await servePackagePath(config, res, pathname);
         return;
+      }
+
+      if (pathname === "/api/internal/bot/private-skill-versions" && req.method === "PUT") {
+        if (!config.mutationWriter?.enabled || !config.mutationWriter?.secret) {
+          throw new ValidationError(
+            "Private mutation writes are disabled.",
+            "MUTATION_WRITES_DISABLED",
+            503
+          );
+        }
+        authenticateMutationWriter(config, req);
+        const body = await readJson(req, config.mutationWriter.maxRequestBytes);
+        const input = parsePrivateSkillMutation(body, config);
+        const authority = normalizeAuthority(config.botAuth.catsCoBaseUrl);
+        const ownerBotId = input.botUid;
+        const existingMutation = await store.findPrivateSkillMutation({ authority, ownerBotId, mutationId: input.mutationId });
+        if (!existingMutation) {
+          const latest = await store.findLatestPrivateSkillVersion({
+            authority,
+            ownerBotId,
+            localSkillId: input.localSkillId
+          });
+          if (input.operation === "create" && latest) {
+            throw new ValidationError(
+              "A private Skill with this local id already exists.",
+              "MUTATION_PREVIOUS_VERSION_STALE",
+              409
+            );
+          }
+          if (input.operation === "replace" && (
+            !latest
+            || latest.version !== input.beforeReference.version
+            || latest.contentHash !== input.beforeReference.contentHash
+          )) {
+            throw new ValidationError(
+              "The private Skill previous version is stale.",
+              "MUTATION_PREVIOUS_VERSION_STALE",
+              409
+            );
+          }
+        }
+        const createdAt = nowIso();
+        const versionInput = {
+          mutationRecordId: generateId("mutation"),
+          privateSkillId: opaquePrivateReference("ps", 16),
+          skillId: opaquePrivateReference("priv", 20),
+          privateVersionId: opaquePrivateReference("pv", 16),
+          version: opaquePrivateReference("v", 24),
+          createdAt,
+          leaseExpiresAt: new Date(Date.parse(createdAt) + 15 * 60 * 1000).toISOString()
+        };
+        const reservation = await store.reservePrivateSkillMutation({
+          envelope: {
+            ...input,
+            authority,
+            ownerBotId,
+            maxVersionsPerBot: config.privateSkills.maxVersionsPerBot,
+            maxBytesPerBot: config.privateSkills.maxBytesPerBot
+          },
+          versionInput
+        });
+        if (!reservation.version) {
+          throw new ValidationError(
+            "The private Skill mutation reservation is unavailable.",
+            "MUTATION_DEPENDENCY_UNAVAILABLE",
+            503
+          );
+        }
+        if (reservation.mutation.status === "active" && reservation.version.status === "active") {
+          sendJson(res, 200, privateMutationFacts(input, reservation.version, true));
+          return;
+        }
+        if (reservation.version.status === "rejected") {
+          throw new ValidationError(
+            "The private Skill mutation was rejected.",
+            reservation.version.failureCode || "MUTATION_WRITE_REJECTED",
+            422
+          );
+        }
+        const sourceVersion = await commitGitVersion({
+          config,
+          scope: "private",
+          skillId: reservation.version.skillId,
+          version: reservation.version.version,
+          files: input.input.files,
+          createdAt: reservation.version.createdAt,
+          metadata: {
+            authority,
+            ownerBotId,
+            localSkillId: input.localSkillId,
+            mutationId: input.mutationId,
+            grantId: input.grantId,
+            actorUserUid: input.actorUserUid,
+            operation: input.operation,
+            contentHash: input.candidateContentHash
+          }
+        });
+        let stored;
+        try {
+          const packageValue = buildPrivatePackage({
+            reservation: reservation.version,
+            input: input.input,
+            sourceVersion
+          });
+          stored = await writePrivatePackageAtomic(config, packageValue);
+          const activated = await store.activatePrivateSkillMutation({
+            authority,
+            ownerBotId,
+            mutationId: input.mutationId,
+            activation: {
+              packagePath: stored.packagePath,
+              packageSha256: stored.packageSha256,
+              packageBytes: stored.packageBytes,
+              storageBackend: "git-v1",
+              gitRepositoryId: sourceVersion.repositoryId,
+              gitCommitSha: sourceVersion.commitSha,
+              gitTreeSha: sourceVersion.treeSha,
+              gitTag: sourceVersion.tag,
+              artifactSha256: stored.packageSha256
+            }
+          });
+          if (!activated) {
+            throw new ValidationError(
+              "Private Skill mutation activation is unavailable.",
+              "MUTATION_ACTIVATION_RETRYABLE",
+              503
+            );
+          }
+          await appendAudit(store, {
+            actor: { id: "catsco-mutation-writer", role: "service", userId: null },
+            action: reservation.created ? "private_skill.mutation_created" : "private_skill.mutation_replayed",
+            resourceType: "privateSkillMutation",
+            resourceId: `${authority}/${ownerBotId}/${input.mutationId}`,
+            metadata: {
+              mutationId: input.mutationId,
+              grantId: input.grantId,
+              botId: ownerBotId,
+              actorUserUid: input.actorUserUid,
+              sourceTopicId: input.sourceTopicId,
+              sourceMessageId: input.sourceMessageId,
+              runtimeBodyId: input.runtimeBodyId,
+              localSkillId: input.localSkillId,
+              operation: input.operation,
+              contentHash: input.candidateContentHash,
+              gitCommitSha: sourceVersion.commitSha
+            },
+            ip
+          });
+          sendJson(res, reservation.created ? 201 : 200, privateMutationFacts(input, activated.version, !reservation.created));
+          return;
+        } catch (error) {
+          // Keep the durable mutation pending for retry. C1 treats a lost
+          // response as uncertain because Git/artifact may already exist.
+          if (stored && error?.code === "MUTATION_IMMUTABLE_CONFLICT") {
+            await store.rejectPrivateSkillMutation({
+              authority,
+              ownerBotId,
+              mutationId: input.mutationId,
+              failureCode: error.code
+            }).catch(() => {});
+          }
+          throw error;
+        }
       }
 
       if (pathname === "/api/bot/private-skill-packages" && req.method === "PUT") {
@@ -1585,6 +1750,52 @@ function requireAllowedPrivateSkillBot(config, botId) {
   }
 }
 
+function privateMutationFacts(input, version, replayed = false) {
+  const reference = mutationVersionReference({
+    localSkillId: input.localSkillId,
+    version: version.version,
+    contentHash: input.candidateContentHash
+  });
+  return {
+    mutationId: input.mutationId,
+    reference,
+    afterReference: reference,
+    gitCommitSHA: version.gitCommitSha,
+    gitRepositoryId: version.gitRepositoryId,
+    gitTreeSHA: version.gitTreeSha,
+    gitTag: version.gitTag,
+    replayed
+  };
+}
+
+function authenticateMutationWriter(config, req) {
+  const authorization = String(req.headers.authorization ?? "");
+  const token = authorization.startsWith("Bearer ")
+    ? authorization.slice("Bearer ".length).trim()
+    : "";
+  const expected = String(config.mutationWriter?.secret ?? "");
+  const actualBytes = Buffer.from(token);
+  const expectedBytes = Buffer.from(expected);
+  if (
+    !token
+    || !expected
+    || actualBytes.length !== expectedBytes.length
+    || !crypto.timingSafeEqual(actualBytes, expectedBytes)
+  ) {
+    throw new AuthError("Mutation writer authentication is required.", 401);
+  }
+}
+
+function normalizeAuthority(value) {
+  let parsed;
+  try {
+    parsed = new URL(String(value ?? ""));
+  } catch {
+    throw new ValidationError("CatsCo authority is invalid.", "MUTATION_AUTHORITY_INVALID", 500);
+  }
+  return parsed.origin;
+}
+
 function assertProductionConfig(config) {
   if (config.isProduction) {
     if (config.privateSkills.writeEnabled && !config.privateSkills.readEnabled) {
@@ -1625,6 +1836,20 @@ function assertProductionConfig(config) {
     }
     if (!config.databaseUrl) throw new Error("生产环境必须设置 SKILLHUB_DATABASE_URL");
     if (!config.session.secret || config.session.secret.length < 32) throw new Error("生产环境必须设置长度足够的 SKILLHUB_SESSION_SECRET");
+    if (config.mutationWriter.enabled && config.mutationWriter.secret.length < 32) {
+      throw new Error("生产 mutation writer requires a dedicated service secret of at least 32 characters");
+    }
+    if (config.mutationWriter.enabled) {
+      let catsCoUrl;
+      try {
+        catsCoUrl = new URL(config.botAuth.catsCoBaseUrl);
+      } catch {
+        throw new Error("SKILLHUB_CATSCO_BASE_URL is invalid.");
+      }
+      if (catsCoUrl.protocol !== "https:") {
+        throw new Error("Production mutation writer requires HTTPS CatsCo.");
+      }
+    }
   }
 }
 

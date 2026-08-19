@@ -7,6 +7,16 @@
 用户分享 -> 公开 Registry、签名发布
 ```
 
+第二阶段 C1/C2 mutation writer 是第三条、默认关闭的内部链路：
+
+```text
+C1 trusted mutation -> SkillHub immutable Git version -> future BotDefinition/Runtime activation
+```
+
+它不复用 Bot API key 上传接口，也不会因为开启备份接口而自动开放聊天修改。契约和请求事实见
+`docs/api/private-mutation-writer.md`。在候选工作区、Runtime 原子激活和跨仓回归测试完成前，生产环境必须保持
+`SKILLHUB_MUTATION_WRITER_ENABLED=false`。
+
 ## 上线顺序
 
 1. 先部署 CatsCo `GET /api/bot/identity`。接口只能返回已鉴权 Bot 的 UID，不返回模型配置或密钥。

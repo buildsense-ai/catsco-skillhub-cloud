@@ -923,6 +923,278 @@ export function createStore(config) {
       });
     },
 
+    async reservePrivateSkillMutation({ envelope, versionInput }) {
+      return tx(async (client) => {
+        const ownerLock = JSON.stringify([envelope.authority, envelope.ownerBotId]);
+        await client.query(`SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`, [ownerLock]);
+        const existingMutation = await client.query(
+          `SELECT * FROM private_skill_mutations
+           WHERE authority = $1 AND owner_bot_id = $2 AND mutation_id = $3
+           FOR UPDATE`,
+          [envelope.authority, envelope.ownerBotId, envelope.mutationId]
+        );
+        if (existingMutation.rowCount) {
+          const row = existingMutation.rows[0];
+          if (row.request_fingerprint !== envelope.requestFingerprint) {
+            throw new ValidationError(
+              "MutationID was reused with different facts.",
+              "MUTATION_IDEMPOTENCY_CONFLICT",
+              409
+            );
+          }
+          const versionResult = await client.query(
+            `SELECT v.*, s.skill_id, s.authority, s.owner_bot_id, s.local_skill_id
+             FROM private_skill_versions v
+             JOIN private_skills s ON s.id = v.private_skill_id
+             WHERE v.id = $1`,
+            [row.private_skill_version_id]
+          );
+          return {
+            created: false,
+            mutation: mapPrivateSkillMutation(row),
+            version: versionResult.rowCount ? mapPrivateSkillVersion(versionResult.rows[0]) : null
+          };
+        }
+
+        let skillResult = await client.query(
+          `SELECT * FROM private_skills
+           WHERE authority = $1 AND owner_bot_id = $2 AND local_skill_id = $3
+           FOR UPDATE`,
+          [envelope.authority, envelope.ownerBotId, envelope.localSkillId]
+        );
+        if (!skillResult.rowCount) {
+          skillResult = await client.query(
+            `INSERT INTO private_skills
+               (id, skill_id, authority, owner_bot_id, local_skill_id, created_at)
+             VALUES ($1,$2,$3,$4,$5,$6)
+             RETURNING *`,
+            [
+              versionInput.privateSkillId,
+              versionInput.skillId,
+              envelope.authority,
+              envelope.ownerBotId,
+              envelope.localSkillId,
+              versionInput.createdAt
+            ]
+          );
+        }
+        const skill = skillResult.rows[0];
+        let versionResult = await client.query(
+          `SELECT v.*, s.skill_id, s.authority, s.owner_bot_id, s.local_skill_id
+           FROM private_skill_versions v
+           JOIN private_skills s ON s.id = v.private_skill_id
+           WHERE v.private_skill_id = $1 AND v.content_hash = $2
+           FOR UPDATE`,
+          [skill.id, envelope.candidateContentHash]
+        );
+        if (!versionResult.rowCount) {
+          const quota = await client.query(
+            `SELECT count(*)::bigint AS version_count,
+                    coalesce(sum(v.total_bytes), 0)::bigint AS total_bytes
+             FROM private_skill_versions v
+             JOIN private_skills s ON s.id = v.private_skill_id
+             WHERE s.authority = $1 AND s.owner_bot_id = $2
+               AND v.status IN ('pending', 'active')`,
+            [envelope.authority, envelope.ownerBotId]
+          );
+          const versionCount = Number(quota.rows[0]?.version_count ?? 0);
+          const totalBytes = Number(quota.rows[0]?.total_bytes ?? 0);
+          if (
+            versionCount + 1 > envelope.maxVersionsPerBot
+            || totalBytes + envelope.candidateSizeBytes > envelope.maxBytesPerBot
+          ) {
+            throw new ValidationError("Bot private Skill storage quota exceeded.", "PRIVATE_SKILL_QUOTA_EXCEEDED", 429);
+          }
+          const inserted = await client.query(
+            `INSERT INTO private_skill_versions
+               (id, private_skill_id, version, name, content_hash, origin, status,
+                package_path, package_sha256, package_bytes, file_count, total_bytes,
+                failure_code, created_at, updated_at, lease_expires_at, attempt_count)
+             VALUES ($1,$2,$3,$4,$5,$6,'pending','','',0,$7,$8,'',$9,$9,$10,1)
+             RETURNING *`,
+            [
+              versionInput.privateVersionId,
+              skill.id,
+              versionInput.version,
+              envelope.name,
+              envelope.candidateContentHash,
+              null,
+              envelope.input.files.length,
+              envelope.candidateSizeBytes,
+              versionInput.createdAt,
+              versionInput.leaseExpiresAt
+            ]
+          );
+          versionResult = {
+            rows: [{
+              ...inserted.rows[0],
+              skill_id: skill.skill_id,
+              authority: skill.authority,
+              owner_bot_id: skill.owner_bot_id,
+              local_skill_id: skill.local_skill_id
+            }],
+            rowCount: 1
+          };
+        } else {
+          const row = versionResult.rows[0];
+          if (row.status === "rejected" && [
+            "MUTATION_WRITE_RETRYABLE",
+            "MUTATION_ACTIVATION_RETRYABLE",
+            "PRIVATE_SKILL_WRITE_RETRYABLE",
+            "PRIVATE_SKILL_ACTIVATION_RETRYABLE",
+            "PRIVATE_SKILL_PENDING_EXPIRED"
+          ].includes(row.failure_code)) {
+            const rearmed = await client.query(
+              `UPDATE private_skill_versions
+               SET status = 'pending', failure_code = '', updated_at = now(),
+                   lease_expires_at = $2, attempt_count = attempt_count + 1
+               WHERE id = $1
+               RETURNING *`,
+              [row.id, versionInput.leaseExpiresAt]
+            );
+            versionResult = {
+              rows: [{ ...rearmed.rows[0], skill_id: skill.skill_id, authority: skill.authority, owner_bot_id: skill.owner_bot_id, local_skill_id: skill.local_skill_id }],
+              rowCount: 1
+            };
+          }
+        }
+        const version = versionResult.rows[0];
+        const mutationResult = await client.query(
+          `INSERT INTO private_skill_mutations
+             (id, authority, owner_bot_id, mutation_id, grant_id, local_skill_id,
+              actor_user_id, source_topic_id, source_message_id, runtime_body_id,
+              client_request_id, operation, candidate_content_hash, candidate_size_bytes,
+              expected_previous_content_hash, before_reference, request_fingerprint,
+              private_skill_version_id, status)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,'pending')
+           RETURNING *`,
+          [
+            versionInput.mutationRecordId,
+            envelope.authority,
+            envelope.ownerBotId,
+            envelope.mutationId,
+            envelope.grantId,
+            envelope.localSkillId,
+            envelope.actorUserUid,
+            envelope.sourceTopicId,
+            envelope.sourceMessageId,
+            envelope.runtimeBodyId,
+            envelope.clientRequestId,
+            envelope.operation,
+            envelope.candidateContentHash,
+            envelope.candidateSizeBytes,
+            envelope.expectedPreviousHash,
+            envelope.beforeReference ? toJsonParam(envelope.beforeReference) : null,
+            envelope.requestFingerprint,
+            version.id
+          ]
+        );
+        return {
+          created: true,
+          mutation: mapPrivateSkillMutation(mutationResult.rows[0]),
+          version: mapPrivateSkillVersion(version)
+        };
+      });
+    },
+
+    async findLatestPrivateSkillVersion({ authority, ownerBotId, localSkillId }) {
+      const result = await query(
+        `SELECT v.*, s.skill_id, s.authority, s.owner_bot_id, s.local_skill_id
+         FROM private_skill_versions v
+         JOIN private_skills s ON s.id = v.private_skill_id
+         WHERE s.authority = $1 AND s.owner_bot_id = $2
+           AND s.local_skill_id = $3 AND v.status = 'active'
+         ORDER BY v.activated_at DESC NULLS LAST, v.created_at DESC
+         LIMIT 1`,
+        [authority, ownerBotId, localSkillId]
+      );
+      return result.rowCount ? mapPrivateSkillVersion(result.rows[0]) : null;
+    },
+
+    async findPrivateSkillMutation({ authority, ownerBotId, mutationId }) {
+      const result = await query(
+        `SELECT * FROM private_skill_mutations
+         WHERE authority = $1 AND owner_bot_id = $2 AND mutation_id = $3`,
+        [authority, ownerBotId, mutationId]
+      );
+      return result.rowCount ? mapPrivateSkillMutation(result.rows[0]) : null;
+    },
+
+    async activatePrivateSkillMutation({ authority, ownerBotId, mutationId, activation }) {
+      return tx(async (client) => {
+        const ownerLock = JSON.stringify([authority, ownerBotId]);
+        await client.query(`SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`, [ownerLock]);
+        const mutationResult = await client.query(
+          `SELECT * FROM private_skill_mutations
+           WHERE authority = $1 AND owner_bot_id = $2 AND mutation_id = $3
+           FOR UPDATE`,
+          [authority, ownerBotId, mutationId]
+        );
+        if (!mutationResult.rowCount) return null;
+        const mutation = mutationResult.rows[0];
+        const updated = await client.query(
+          `UPDATE private_skill_versions
+           SET status = 'active', package_path = $2, package_sha256 = $3,
+               package_bytes = $4, storage_backend = $5, git_repository_id = $6,
+               git_commit_sha = $7, git_tree_sha = $8, git_tag = $9,
+               artifact_sha256 = $10, failure_code = '', updated_at = now(),
+               lease_expires_at = NULL, activated_at = coalesce(activated_at, now())
+           WHERE id = $1 AND status = 'pending'
+           RETURNING *`,
+          [
+            mutation.private_skill_version_id,
+            activation.packagePath,
+            activation.packageSha256,
+            activation.packageBytes,
+            activation.storageBackend,
+            activation.gitRepositoryId,
+            activation.gitCommitSha,
+            activation.gitTreeSha,
+            activation.gitTag,
+            activation.artifactSha256
+          ]
+        );
+        let version;
+        if (updated.rowCount) {
+          const joined = await client.query(
+            `SELECT v.*, s.skill_id, s.authority, s.owner_bot_id, s.local_skill_id
+             FROM private_skill_versions v JOIN private_skills s ON s.id = v.private_skill_id
+             WHERE v.id = $1`,
+            [mutation.private_skill_version_id]
+          );
+          version = joined.rows[0];
+        } else {
+          const existing = await client.query(
+            `SELECT v.*, s.skill_id, s.authority, s.owner_bot_id, s.local_skill_id
+             FROM private_skill_versions v JOIN private_skills s ON s.id = v.private_skill_id
+             WHERE v.id = $1`,
+            [mutation.private_skill_version_id]
+          );
+          version = existing.rows[0];
+          if (!version || version.status !== "active" || version.git_commit_sha !== activation.gitCommitSha || version.git_tree_sha !== activation.gitTreeSha || version.git_tag !== activation.gitTag || version.package_sha256 !== activation.packageSha256) {
+            throw new ValidationError("Private Skill mutation activation facts conflict.", "MUTATION_IMMUTABLE_CONFLICT", 409);
+          }
+        }
+        const activated = await client.query(
+          `UPDATE private_skill_mutations
+           SET status = 'active', failure_code = '', updated_at = now(), activated_at = coalesce(activated_at, now())
+           WHERE id = $1
+           RETURNING *`,
+          [mutation.id]
+        );
+        return { mutation: mapPrivateSkillMutation(activated.rows[0] ?? mutation), version: mapPrivateSkillVersion(version) };
+      });
+    },
+
+    async rejectPrivateSkillMutation({ authority, ownerBotId, mutationId, failureCode }) {
+      await query(
+        `UPDATE private_skill_mutations
+         SET status = 'rejected', failure_code = $4, updated_at = now()
+         WHERE authority = $1 AND owner_bot_id = $2 AND mutation_id = $3 AND status = 'pending'`,
+        [authority, ownerBotId, mutationId, String(failureCode ?? "MUTATION_WRITE_RETRYABLE").slice(0, 120)]
+      );
+    },
+
     async reservePrivateSkillVersion(input) {
       return tx(async (client) => {
         // PostgreSQL text values cannot contain NUL bytes. Encode the two
@@ -941,7 +1213,7 @@ export function createStore(config) {
              AND s.authority = $1
              AND s.owner_bot_id = $2
              AND v.status = 'pending'
-             AND v.lease_expires_at < now()`,
+             AND (v.lease_expires_at IS NULL OR v.lease_expires_at < now())`,
           [input.authority, input.ownerBotId]
         );
         let skillResult = await client.query(
@@ -1171,6 +1443,10 @@ export function createStore(config) {
              SELECT 1 FROM schema_migrations
              WHERE id = '005_git_backed_skill_versions'
            ) AS migration_applied,
+           EXISTS (
+             SELECT 1 FROM schema_migrations
+             WHERE id = '006_private_skill_mutations'
+           ) AS mutation_migration_applied,
            to_regclass('private_skills') IS NOT NULL AS skills_table,
            to_regclass('private_skill_versions') IS NOT NULL AS versions_table,
            EXISTS (
@@ -1183,12 +1459,14 @@ export function createStore(config) {
       );
       const row = result.rows[0] ?? {};
       const migrationApplied = Boolean(row.migration_applied);
+      const mutationMigrationApplied = Boolean(row.mutation_migration_applied);
       const skillsTable = Boolean(row.skills_table);
       const versionsTable = Boolean(row.versions_table);
       const gitColumns = Boolean(row.git_columns);
       return {
-        ready: migrationApplied && skillsTable && versionsTable && gitColumns,
+        ready: migrationApplied && mutationMigrationApplied && skillsTable && versionsTable && gitColumns,
         migrationApplied,
+        mutationMigrationApplied,
         skillsTable,
         versionsTable,
         gitColumns
@@ -1483,6 +1761,34 @@ function mapPrivateSkillVersion(row) {
     gitTreeSha: row.git_tree_sha || null,
     gitTag: row.git_tag || null,
     artifactSha256: row.artifact_sha256 || null
+  };
+}
+
+function mapPrivateSkillMutation(row) {
+  return {
+    id: row.id,
+    authority: row.authority,
+    ownerBotId: row.owner_bot_id,
+    mutationId: Number(row.mutation_id),
+    grantId: row.grant_id,
+    localSkillId: row.local_skill_id,
+    actorUserUid: Number(row.actor_user_id),
+    sourceTopicId: row.source_topic_id,
+    sourceMessageId: Number(row.source_message_id),
+    runtimeBodyId: row.runtime_body_id,
+    clientRequestId: row.client_request_id,
+    operation: row.operation,
+    candidateContentHash: row.candidate_content_hash,
+    candidateSizeBytes: Number(row.candidate_size_bytes),
+    expectedPreviousHash: row.expected_previous_content_hash || "",
+    beforeReference: row.before_reference ?? undefined,
+    requestFingerprint: row.request_fingerprint,
+    privateSkillVersionId: row.private_skill_version_id,
+    status: row.status,
+    failureCode: row.failure_code || "",
+    createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at),
+    activatedAt: row.activated_at ? iso(row.activated_at) : undefined
   };
 }
 
