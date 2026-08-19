@@ -963,6 +963,13 @@ export function createStore(config) {
           [envelope.authority, envelope.ownerBotId, envelope.localSkillId]
         );
         if (!skillResult.rowCount) {
+          if (envelope.operation === "replace") {
+            throw new ValidationError(
+              "The private Skill previous version is stale.",
+              "MUTATION_PREVIOUS_VERSION_STALE",
+              409
+            );
+          }
           skillResult = await client.query(
             `INSERT INTO private_skills
                (id, skill_id, authority, owner_bot_id, local_skill_id, created_at)
@@ -979,6 +986,53 @@ export function createStore(config) {
           );
         }
         const skill = skillResult.rows[0];
+        // Reserve the expected predecessor while the owner lock is held. A
+        // pending reservation must block a different mutation too, because
+        // Git/artifact activation happens after this transaction commits.
+        const pendingResult = await client.query(
+          `SELECT id
+           FROM private_skill_versions
+           WHERE private_skill_id = $1 AND status = 'pending'
+           ORDER BY created_at ASC
+           LIMIT 1
+           FOR UPDATE`,
+          [skill.id]
+        );
+        if (pendingResult.rowCount) {
+          throw new ValidationError(
+            "Another private Skill mutation is already in progress.",
+            "MUTATION_PREVIOUS_VERSION_STALE",
+            409
+          );
+        }
+        const latestResult = await client.query(
+          `SELECT *
+           FROM private_skill_versions
+           WHERE private_skill_id = $1 AND status = 'active'
+           ORDER BY activated_at DESC NULLS LAST, created_at DESC
+           LIMIT 1
+           FOR UPDATE`,
+          [skill.id]
+        );
+        const latest = latestResult.rows[0] ?? null;
+        if (envelope.operation === "create" && latest) {
+          throw new ValidationError(
+            "A private Skill with this local id already exists.",
+            "MUTATION_PREVIOUS_VERSION_STALE",
+            409
+          );
+        }
+        if (envelope.operation === "replace" && (
+          !latest
+          || latest.version !== envelope.beforeReference?.version
+          || latest.content_hash !== envelope.beforeReference?.contentHash
+        )) {
+          throw new ValidationError(
+            "The private Skill previous version is stale.",
+            "MUTATION_PREVIOUS_VERSION_STALE",
+            409
+          );
+        }
         let versionResult = await client.query(
           `SELECT v.*, s.skill_id, s.authority, s.owner_bot_id, s.local_skill_id
            FROM private_skill_versions v

@@ -134,32 +134,6 @@ export function createApiServer(config = loadConfig()) {
         const input = parsePrivateSkillMutation(body, config);
         const authority = normalizeAuthority(config.botAuth.catsCoBaseUrl);
         const ownerBotId = input.botUid;
-        const existingMutation = await store.findPrivateSkillMutation({ authority, ownerBotId, mutationId: input.mutationId });
-        if (!existingMutation) {
-          const latest = await store.findLatestPrivateSkillVersion({
-            authority,
-            ownerBotId,
-            localSkillId: input.localSkillId
-          });
-          if (input.operation === "create" && latest) {
-            throw new ValidationError(
-              "A private Skill with this local id already exists.",
-              "MUTATION_PREVIOUS_VERSION_STALE",
-              409
-            );
-          }
-          if (input.operation === "replace" && (
-            !latest
-            || latest.version !== input.beforeReference.version
-            || latest.contentHash !== input.beforeReference.contentHash
-          )) {
-            throw new ValidationError(
-              "The private Skill previous version is stale.",
-              "MUTATION_PREVIOUS_VERSION_STALE",
-              409
-            );
-          }
-        }
         const createdAt = nowIso();
         const versionInput = {
           mutationRecordId: generateId("mutation"),
