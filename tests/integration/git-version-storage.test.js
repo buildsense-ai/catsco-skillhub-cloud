@@ -117,6 +117,31 @@ test("signed package artifacts are content-addressed instead of version-director
   assert.equal(first.artifactPath.includes(path.join("packages", "alice", "git-demo", "1.0.0")), false);
 });
 
+test("parallel writers keep one immutable Git history per repository", async () => {
+  const results = await Promise.all(
+    ["1.0.0", "1.0.1", "1.0.2", "1.0.3"].map((version) => commitGitVersion({
+      config,
+      scope: "private",
+      skillId: "bot-1001/review-pr",
+      version,
+      files: files(`# ${version}\n`),
+      createdAt: "2026-07-30T00:03:00.000Z",
+      metadata: { contentHash: "c".repeat(64) }
+    }))
+  );
+  assert.equal(new Set(results.map((result) => result.commitSha)).size, 4);
+  for (const result of results) {
+    await assertGitVersion({
+      config,
+      scope: "private",
+      skillId: "bot-1001/review-pr",
+      tag: result.tag,
+      commitSha: result.commitSha,
+      treeSha: result.treeSha
+    });
+  }
+});
+
 function files(markdown) {
   return [
     { path: "SKILL.md", buffer: Buffer.from(markdown) },

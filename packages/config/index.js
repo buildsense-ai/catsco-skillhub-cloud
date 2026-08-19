@@ -149,6 +149,18 @@ export function loadConfig(overrides = {}) {
         overrides.privateSkillMaxBytesPerBot
         ?? readInt("SKILLHUB_PRIVATE_MAX_BYTES_PER_BOT", 2 * 1024 * 1024 * 1024)
     },
+    mutationWriter: {
+      enabled:
+        overrides.mutationWriterEnabled
+        ?? readBool("SKILLHUB_MUTATION_WRITER_ENABLED", false),
+      secret:
+        overrides.mutationWriterSecret
+        ?? process.env.SKILLHUB_MUTATION_WRITER_SECRET
+        ?? "",
+      maxRequestBytes:
+        overrides.mutationWriterMaxRequestBytes
+        ?? readInt("SKILLHUB_MUTATION_WRITER_MAX_REQUEST_BYTES", 30 * 1024 * 1024)
+    },
     worker: {
       id: overrides.workerId ?? process.env.SKILLHUB_WORKER_ID ?? `worker-${process.pid}`,
       pollMs: readInt("SKILLHUB_WORKER_POLL_MS", overrides.workerPollMs ?? 3000)

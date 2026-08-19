@@ -6,6 +6,8 @@ import { validatePackagePath } from "../domain/index.js";
 
 const ZERO_OID = "0000000000000000000000000000000000000000";
 const repoQueues = new Map();
+const REPOSITORY_LOCK_TIMEOUT_MS = 30_000;
+const REPOSITORY_LOCK_STALE_MS = 10 * 60_000;
 
 export async function commitGitVersion({
   config,
@@ -18,70 +20,73 @@ export async function commitGitVersion({
 }) {
   const repository = gitRepository(config, scope, skillId);
   const tag = gitVersionTag(version);
-  return withRepositoryQueue(repository.path, async () => {
-    await ensureBareRepository(repository.path);
-    const treeSha = await writeTree(config, repository.path, files);
-    const existingCommit = await resolveOptional(repository.path, `refs/tags/${tag}^{commit}`);
-    if (existingCommit) {
-      const existingTree = await resolve(repository.path, `${existingCommit}^{tree}`);
-      if (existingTree !== treeSha) {
-        throw new Error(`Git version tag already exists with different content: ${skillId}@${version}`);
+  return withRepositoryQueue(repository.path, () => withRepositoryFileLock(
+    `${repository.path}.lock`,
+    async () => {
+      await ensureBareRepository(repository.path);
+      const treeSha = await writeTree(config, repository.path, files);
+      const existingCommit = await resolveOptional(repository.path, `refs/tags/${tag}^{commit}`);
+      if (existingCommit) {
+        const existingTree = await resolve(repository.path, `${existingCommit}^{tree}`);
+        if (existingTree !== treeSha) {
+          throw new Error(`Git version tag already exists with different content: ${skillId}@${version}`);
+        }
+        return {
+          ...repository,
+          commitSha: existingCommit,
+          treeSha: existingTree,
+          tag
+        };
       }
+
+      const parent = await resolveOptional(repository.path, "refs/heads/main^{commit}");
+      let commitSha = null;
+      if (parent) {
+        const parentTree = await resolve(repository.path, `${parent}^{tree}`);
+        if (parentTree === treeSha) commitSha = parent;
+      }
+      if (!commitSha) {
+        const timestamp = canonicalGitDate(createdAt);
+        const message = `${JSON.stringify({
+          schema: "catsco.skillhub.git-release.v1",
+          scope,
+          skillId,
+          version,
+          ...metadata
+        })}\n`;
+        commitSha = (await runGit(
+          repository.path,
+          ["commit-tree", treeSha, ...(parent ? ["-p", parent] : [])],
+          {
+            input: message,
+            env: {
+              GIT_AUTHOR_NAME: "CatsCo SkillHub",
+              GIT_AUTHOR_EMAIL: "skillhub@catsco.local",
+              GIT_AUTHOR_DATE: timestamp,
+              GIT_COMMITTER_NAME: "CatsCo SkillHub",
+              GIT_COMMITTER_EMAIL: "skillhub@catsco.local",
+              GIT_COMMITTER_DATE: timestamp
+            }
+          }
+        )).stdout.trim();
+        await runGit(
+          repository.path,
+          ["update-ref", "refs/heads/main", commitSha, parent || ZERO_OID]
+        );
+      }
+
+      await runGit(
+        repository.path,
+        ["update-ref", `refs/tags/${tag}`, commitSha, ZERO_OID]
+      );
       return {
         ...repository,
-        commitSha: existingCommit,
-        treeSha: existingTree,
+        commitSha,
+        treeSha,
         tag
       };
     }
-
-    const parent = await resolveOptional(repository.path, "refs/heads/main^{commit}");
-    let commitSha = null;
-    if (parent) {
-      const parentTree = await resolve(repository.path, `${parent}^{tree}`);
-      if (parentTree === treeSha) commitSha = parent;
-    }
-    if (!commitSha) {
-      const timestamp = canonicalGitDate(createdAt);
-      const message = `${JSON.stringify({
-        schema: "catsco.skillhub.git-release.v1",
-        scope,
-        skillId,
-        version,
-        ...metadata
-      })}\n`;
-      commitSha = (await runGit(
-        repository.path,
-        ["commit-tree", treeSha, ...(parent ? ["-p", parent] : [])],
-        {
-          input: message,
-          env: {
-            GIT_AUTHOR_NAME: "CatsCo SkillHub",
-            GIT_AUTHOR_EMAIL: "skillhub@catsco.local",
-            GIT_AUTHOR_DATE: timestamp,
-            GIT_COMMITTER_NAME: "CatsCo SkillHub",
-            GIT_COMMITTER_EMAIL: "skillhub@catsco.local",
-            GIT_COMMITTER_DATE: timestamp
-          }
-        }
-      )).stdout.trim();
-      await runGit(
-        repository.path,
-        ["update-ref", "refs/heads/main", commitSha, parent || ZERO_OID]
-      );
-    }
-
-    await runGit(
-      repository.path,
-      ["update-ref", `refs/tags/${tag}`, commitSha, ZERO_OID]
-    );
-    return {
-      ...repository,
-      commitSha,
-      treeSha,
-      tag
-    };
-  });
+  ));
 }
 
 export async function assertGitVersion({
@@ -220,6 +225,50 @@ function withRepositoryQueue(repositoryPath, work) {
   return current.finally(() => {
     if (repoQueues.get(repositoryPath) === current) repoQueues.delete(repositoryPath);
   });
+}
+
+async function withRepositoryFileLock(lockPath, work) {
+  await fs.mkdir(path.dirname(lockPath), { recursive: true, mode: 0o700 });
+  const deadline = Date.now() + REPOSITORY_LOCK_TIMEOUT_MS;
+  while (true) {
+    try {
+      await fs.mkdir(lockPath, { recursive: false, mode: 0o700 });
+      await fs.writeFile(
+        path.join(lockPath, "owner.json"),
+        `${JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })}\n`,
+        { encoding: "utf8", mode: 0o600 }
+      );
+      break;
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      const stale = await isStaleLock(lockPath);
+      if (stale) {
+        await fs.rm(lockPath, { recursive: true, force: true }).catch(() => {});
+        continue;
+      }
+      if (Date.now() >= deadline) {
+        const busy = new Error("Git repository lock is busy");
+        busy.code = "GIT_REPOSITORY_BUSY";
+        throw busy;
+      }
+      await delay(25);
+    }
+  }
+
+  try {
+    return await work();
+  } finally {
+    await fs.rm(lockPath, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function isStaleLock(lockPath) {
+  const stat = await fs.stat(lockPath).catch(() => null);
+  return Boolean(stat && Date.now() - stat.mtimeMs > REPOSITORY_LOCK_STALE_MS);
+}
+
+function delay(milliseconds) {
+  return new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds));
 }
 
 function runGit(repositoryPath, args, options = {}) {
