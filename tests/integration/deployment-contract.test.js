@@ -69,3 +69,15 @@ test("legacy bootstrap creates a missing releases directory before stopping serv
   assert.ok(createReleases < stopServices);
   assert.ok(createReleases < moveApp);
 });
+
+test("database migrations recover from transient connection termination", async () => {
+  const script = await fs.readFile(
+    path.join(root, "scripts", "migrate.js"),
+    "utf8"
+  );
+
+  assert.match(script, /client\.on\("error"/);
+  assert.match(script, /SKILLHUB_MIGRATION_RETRIES/);
+  assert.match(script, /isRetryableConnectionError/);
+  assert.match(script, /await closePools\(\)\.catch/);
+});
