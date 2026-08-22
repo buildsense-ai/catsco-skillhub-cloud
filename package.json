@@ -19,7 +19,8 @@
     "keys:issue-certificate": "node scripts/issue-signing-certificate.js",
     "secrets:generate": "node scripts/generate-secrets.js",
     "smoke": "node scripts/smoke-test.js",
-    "test": "node --test tests/integration/*.test.js"
+    "test": "node --test tests/integration/*.test.js",
+    "test:ci": "node --test --test-concurrency=1 tests/integration/*.test.js"
   },
   "dependencies": {
     "pg": "^8.13.1"

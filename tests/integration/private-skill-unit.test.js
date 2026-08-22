@@ -140,6 +140,63 @@ test("private metadata route accepts the maximum validated reference request", a
   assert.equal((await escapedResponse.json()).error.code, "PRIVATE_SKILL_REFERENCE_INVALID");
 });
 
+test("private metadata exposes only readable revision and change attribution fields", async () => {
+  const upstream = http.createServer((req, res) => {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ uid: 42 }));
+  });
+  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  cleanup.push(() => new Promise((resolve) => upstream.close(resolve)));
+  const upstreamAddress = upstream.address();
+  const reference = { skillId: `priv_${"a".repeat(40)}`, version: `v_${"b".repeat(48)}` };
+  const server = createApiServer(
+    testConfig("unused", `http://127.0.0.1:${upstreamAddress.port}`),
+    {
+      store: {
+        async findPrivateSkillMetadata() {
+          return [{
+            ...reference,
+            name: "review-helper",
+            revisionNumber: 3,
+            hasConversationMutation: true,
+            lastChangedAt: "2026-08-22T05:06:07.000Z",
+            activatedAt: "2026-08-22T02:03:04.000Z",
+            contentHash: "c".repeat(64),
+            packagePath: "/private/secret.json",
+            gitCommitSha: "d".repeat(40)
+          }];
+        }
+      }
+    }
+  );
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  cleanup.push(() => new Promise((resolve) => server.close(resolve)));
+  const address = server.address();
+  const response = await fetch(`http://127.0.0.1:${address.port}/api/bot/private-skill-metadata`, {
+    method: "POST",
+    headers: {
+      authorization: "ApiKey valid-key",
+      "content-type": "application/json",
+      "x-catsco-bot-id": "42"
+    },
+    body: JSON.stringify({ references: [reference] })
+  });
+
+  assert.equal(response.status, 200);
+  const responseBody = await response.json();
+  assert.deepEqual(responseBody, {
+    skills: [{
+      source: "skillhub",
+      ...reference,
+      displayName: "review-helper",
+      revisionNumber: 3,
+      changeSource: "conversation_mutation",
+      lastChangedAt: "2026-08-22T05:06:07.000Z"
+    }]
+  });
+  assert.equal(JSON.stringify(responseBody).includes("UserUid"), false);
+});
+
 test("private package validation uses canonical ordering and supports zero-byte files", () => {
   const files = [
     file("z.txt", Buffer.alloc(0)),

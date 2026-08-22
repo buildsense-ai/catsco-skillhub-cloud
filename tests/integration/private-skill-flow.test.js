@@ -11,6 +11,7 @@ import { sha256 } from "../../packages/domain/index.js";
 import { computePrivateSkillContentHash } from "../../packages/private-skills/index.js";
 
 const databaseUrl = process.env.SKILLHUB_TEST_DATABASE_URL;
+const mutationWriterSecret = "test-private-mutation-writer-secret-20260822";
 const suffix = `${Date.now().toString(36)}-${process.pid}`;
 let root;
 let upstream;
@@ -42,6 +43,8 @@ before(async () => {
     sessionSecret: "test-session-secret-that-is-long-enough-for-tests",
     catsCoBaseUrl: `http://127.0.0.1:${upstreamAddress.port}`,
     privateSkillMaxConcurrentUploads: 16,
+    mutationWriterEnabled: true,
+    mutationWriterSecret,
     nodeEnv: "test"
   });
   server = createApiServer(config);
@@ -89,9 +92,16 @@ test("private Bot packages are idempotent, immutable, and isolated by Bot", { sk
     source: "skillhub",
     skillId: first.reference.skillId,
     version: first.reference.version,
-    displayName: firstBody.name
+    displayName: firstBody.name,
+    revisionNumber: 1,
+    changeSource: "runtime_backup",
+    lastChangedAt: metadata.data.skills[0].lastChangedAt
   }]);
-  assert.deepEqual(Object.keys(metadata.data.skills[0]).sort(), ["displayName", "skillId", "source", "version"]);
+  assert.match(metadata.data.skills[0].lastChangedAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(Object.hasOwn(metadata.data.skills[0], "lastChangedByUserUid"), false);
+  assert.deepEqual(Object.keys(metadata.data.skills[0]).sort(), [
+    "changeSource", "displayName", "lastChangedAt", "revisionNumber", "skillId", "source", "version"
+  ]);
 
   const metadataHiddenFromOtherBot = await request(
     "POST",
@@ -126,6 +136,57 @@ test("private Bot packages are idempotent, immutable, and isolated by Bot", { sk
   assert.equal(second.status, 201);
   assert.equal(second.data.reference.skillId, first.reference.skillId);
   assert.notEqual(second.data.reference.version, first.reference.version);
+
+  const secondMetadata = await request(
+    "POST",
+    "/api/bot/private-skill-metadata",
+    "bot-key-a",
+    "42001",
+    { references: [second.data.reference] }
+  );
+  assert.equal(secondMetadata.status, 200, JSON.stringify(secondMetadata.data));
+  assert.equal(secondMetadata.data.skills[0].revisionNumber, 2);
+  assert.equal(secondMetadata.data.skills[0].changeSource, "runtime_backup");
+
+  const changedBackToFirst = await mutationRequest({
+    mutationId: Date.now() + process.pid,
+    grantId: `grant-${suffix}`,
+    botUid: "42001",
+    localSkillId: firstBody.localSkillId,
+    name: firstBody.name,
+    actorUserUid: 7,
+    sourceTopicId: `topic-${suffix}`,
+    sourceMessageId: 1001,
+    runtimeBodyId: `runtime-${suffix}`,
+    clientRequestId: `request-${suffix}`,
+    operation: "replace",
+    candidateContentHash: firstBody.contentHash,
+    candidateSizeBytes: firstBody.files.reduce((total, file) => total + file.size, 0),
+    expectedPreviousHash: secondBody.contentHash,
+    beforeReference: {
+      source: "skillhub",
+      skillId: second.data.reference.skillId,
+      version: second.data.reference.version,
+      contentHash: secondBody.contentHash
+    },
+    files: firstBody.files
+  });
+  assert.equal(changedBackToFirst.status, 201);
+
+  const changedMetadata = await request(
+    "POST",
+    "/api/bot/private-skill-metadata",
+    "bot-key-a",
+    "42001",
+    { references: [first.reference] }
+  );
+  assert.equal(changedMetadata.data.skills[0].revisionNumber, 1);
+  assert.equal(changedMetadata.data.skills[0].changeSource, "conversation_mutation");
+  assert.equal(Object.hasOwn(changedMetadata.data.skills[0], "lastChangedByUserUid"), false);
+  assert.ok(
+    Date.parse(changedMetadata.data.skills[0].lastChangedAt)
+      >= Date.parse(metadata.data.skills[0].lastChangedAt)
+  );
 
   const oldStillExists = await request("GET", packagePath(first.reference), "bot-key-a", "42001");
   assert.equal(oldStillExists.status, 200);
@@ -162,6 +223,19 @@ async function request(method, pathname, apiKey, botId, body) {
       ...(body ? { "Content-Type": "application/json" } : {})
     },
     body: body ? JSON.stringify(body) : undefined
+  });
+  return { status: response.status, data: await response.json() };
+}
+
+async function mutationRequest(body) {
+  const response = await fetch(`${baseUrl}/api/internal/bot/private-skill-versions`, {
+    method: "PUT",
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${mutationWriterSecret}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
   });
   return { status: response.status, data: await response.json() };
 }
