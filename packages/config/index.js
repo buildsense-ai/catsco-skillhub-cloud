@@ -118,6 +118,13 @@ export function loadConfig(overrides = {}) {
       readEnabled:
         overrides.privateSkillsReadEnabled
         ?? readBool("SKILLHUB_PRIVATE_SKILLS_READ_ENABLED", nodeEnv !== "production"),
+      historyEnabled:
+        overrides.privateSkillHistoryEnabled
+        ?? readBool(
+          "SKILLHUB_PRIVATE_SKILLS_HISTORY_ENABLED",
+          overrides.privateSkillsReadEnabled
+            ?? readBool("SKILLHUB_PRIVATE_SKILLS_READ_ENABLED", nodeEnv !== "production")
+        ),
       writeEnabled:
         overrides.privateSkillsWriteEnabled
         ?? readBool("SKILLHUB_PRIVATE_SKILLS_WRITE_ENABLED", nodeEnv !== "production"),

@@ -188,6 +188,75 @@ test("private Bot packages are idempotent, immutable, and isolated by Bot", { sk
       >= Date.parse(metadata.data.skills[0].lastChangedAt)
   );
 
+  const history = await request(
+    "POST",
+    "/api/bot/private-skill-history",
+    "bot-key-a",
+    "42001",
+    { skillId: first.reference.skillId }
+  );
+  assert.equal(history.status, 200, JSON.stringify(history.data));
+  assert.deepEqual(history.data.versions.map((item) => ({
+    version: item.version,
+    revisionNumber: item.revisionNumber,
+    changeSource: item.changeSource
+  })), [{
+    version: second.data.reference.version,
+    revisionNumber: 2,
+    changeSource: "runtime_backup"
+  }, {
+    version: first.reference.version,
+    revisionNumber: 1,
+    changeSource: "conversation_mutation"
+  }]);
+  assert.equal(history.data.nextBeforeRevisionNumber, null);
+  assert.ok(history.data.versions.every((item) => /^\d{4}-\d{2}-\d{2}T/.test(item.lastChangedAt)));
+  assert.ok(history.data.versions.every((item) => item.displayName === firstBody.name));
+  assert.deepEqual(Object.keys(history.data.versions[0]).sort(), [
+    "changeSource", "displayName", "lastChangedAt", "revisionNumber", "skillId", "source", "version"
+  ]);
+
+  const firstPage = await request(
+    "POST",
+    "/api/bot/private-skill-history",
+    "bot-key-a",
+    "42001",
+    { skillId: first.reference.skillId, limit: 1 }
+  );
+  assert.equal(firstPage.status, 200);
+  assert.equal(firstPage.data.versions.length, 1);
+  assert.equal(firstPage.data.versions[0].revisionNumber, 2);
+  assert.equal(firstPage.data.nextBeforeRevisionNumber, 2);
+  const secondPage = await request(
+    "POST",
+    "/api/bot/private-skill-history",
+    "bot-key-a",
+    "42001",
+    {
+      skillId: first.reference.skillId,
+      limit: 1,
+      beforeRevisionNumber: firstPage.data.nextBeforeRevisionNumber
+    }
+  );
+  assert.equal(secondPage.status, 200);
+  assert.equal(secondPage.data.versions.length, 1);
+  assert.equal(secondPage.data.versions[0].revisionNumber, 1);
+  assert.equal(secondPage.data.nextBeforeRevisionNumber, null);
+
+  const historyHiddenFromOtherBot = await request(
+    "POST",
+    "/api/bot/private-skill-history",
+    "bot-key-b",
+    "42002",
+    { skillId: first.reference.skillId }
+  );
+  assert.equal(historyHiddenFromOtherBot.status, 200);
+  assert.deepEqual(historyHiddenFromOtherBot.data, {
+    skillId: first.reference.skillId,
+    versions: [],
+    nextBeforeRevisionNumber: null
+  });
+
   const oldStillExists = await request("GET", packagePath(first.reference), "bot-key-a", "42001");
   assert.equal(oldStillExists.status, 200);
   assert.equal(oldStillExists.data.contentHash, firstBody.contentHash);

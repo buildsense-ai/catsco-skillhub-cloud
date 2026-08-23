@@ -109,10 +109,13 @@ Bot 私有备份（`Authorization: ApiKey ...` 与 `X-CatsCo-Bot-Id`）：
 PUT /api/bot/private-skill-packages
 GET /api/bot/skill-packages/:skillId/versions/:version
 POST /api/bot/private-skill-metadata
+POST /api/bot/private-skill-history
 ```
 
-私有版本不可覆盖、按真实 Bot 身份隔离，且不会出现在公开 Registry。元数据批量接口同样使用 Bot API key 鉴权，只返回请求 Bot 所拥有版本的 `skillId`、内部精确 `version`、`displayName`，以及可选的只读 `revisionNumber`、`changeSource` 和 `lastChangedAt`。这里记录的是该内容版本最近一次变更的来源与时间，不伪造成原始作者；没有 mutation 的历史 Runtime 备份明确归因为 Bot 自动同步。mutation actor UID 仅保存在审计数据中，不经此接口返回。接口不返回包内容、哈希、来源路径、Git 信息、对话标识或凭据。详细灰度与回滚顺序见
+私有版本不可覆盖、按真实 Bot 身份隔离，且不会出现在公开 Registry。元数据批量接口同样使用 Bot API key 鉴权，只返回请求 Bot 所拥有版本的 `skillId`、内部精确 `version`、`displayName`，以及可选的只读 `revisionNumber`、`changeSource` 和 `lastChangedAt`。这里记录的是该内容版本最近一次变更的来源与时间，不伪造成原始作者；没有 mutation 的历史 Runtime 备份明确归因为 Bot 自动同步。mutation actor UID 仅在服务端持久化，不经此接口返回。接口不返回包内容、哈希、来源路径、Git 信息、对话标识或凭据。详细灰度与回滚顺序见
 [docs/operations/private-bot-skills.md](docs/operations/private-bot-skills.md)。
+
+历史接口接收单个私有 `skillId`，按内容修订号倒序返回只读元数据，并使用 `beforeRevisionNumber` 游标分页。它列出的是不可变内容版本，不代表每一次重新启用事件；同一内容被再次启用时仍保留原修订号，并以最新已记录的变更来源与时间展示。不存在或不属于当前 Bot 的私有引用统一返回空列表，避免跨 Bot 探测。
 
 ## 生产部署
 
