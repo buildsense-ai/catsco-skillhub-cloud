@@ -14,6 +14,23 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: skillhub
+          POSTGRES_PASSWORD: skillhub
+          POSTGRES_DB: skillhub_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U skillhub -d skillhub_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      SKILLHUB_DATABASE_URL: postgresql://skillhub:skillhub@127.0.0.1:5432/skillhub_test
+      SKILLHUB_TEST_DATABASE_URL: postgresql://skillhub:skillhub@127.0.0.1:5432/skillhub_test
 
     steps:
       - name: Check out source
@@ -28,8 +45,11 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
 
+      - name: Apply database migrations
+        run: npm run db:migrate
+
       - name: Run integration tests
-        run: npm test
+        run: npm run test:ci
 
   deploy-production:
     name: Deploy production

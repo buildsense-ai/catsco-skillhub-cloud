@@ -1496,14 +1496,34 @@ export function createStore(config) {
         `WITH requested AS (
            SELECT skill_id, version
            FROM jsonb_to_recordset($3::jsonb) AS item(skill_id text, version text)
+         ), ranked_versions AS (
+           SELECT v.*,
+                  row_number() OVER (
+                    PARTITION BY v.private_skill_id
+                    ORDER BY coalesce(v.activated_at, v.created_at), v.created_at, v.id
+                  ) AS revision_number
+           FROM private_skill_versions v
+           JOIN private_skills scoped_skill ON scoped_skill.id = v.private_skill_id
+           WHERE scoped_skill.authority = $1
+             AND scoped_skill.owner_bot_id = $2
+             AND v.status = 'active'
          )
-         SELECT v.*, s.skill_id, s.authority, s.owner_bot_id, s.local_skill_id
-         FROM private_skill_versions v
+         SELECT v.*, s.skill_id, s.authority, s.owner_bot_id, s.local_skill_id,
+                mutation.has_conversation_mutation, mutation.last_changed_at
+         FROM ranked_versions v
          JOIN private_skills s ON s.id = v.private_skill_id
          JOIN requested r ON r.skill_id = s.skill_id AND r.version = v.version
+         LEFT JOIN LATERAL (
+           SELECT true AS has_conversation_mutation,
+                  coalesce(m.activated_at, m.created_at) AS last_changed_at
+           FROM private_skill_mutations m
+           WHERE m.private_skill_version_id = v.id AND m.status = 'active'
+           ORDER BY m.activated_at DESC NULLS LAST, m.created_at DESC, m.id DESC
+           LIMIT 1
+         ) mutation ON true
          WHERE s.authority = $1
            AND s.owner_bot_id = $2
-           AND v.status = 'active'`,
+        `,
         [authority, ownerBotId, JSON.stringify(references.map(reference => ({
           skill_id: reference.skillId,
           version: reference.version
@@ -1842,7 +1862,10 @@ function mapPrivateSkillVersion(row) {
     gitCommitSha: row.git_commit_sha || null,
     gitTreeSha: row.git_tree_sha || null,
     gitTag: row.git_tag || null,
-    artifactSha256: row.artifact_sha256 || null
+    artifactSha256: row.artifact_sha256 || null,
+    revisionNumber: Number(row.revision_number ?? 0),
+    hasConversationMutation: Boolean(row.has_conversation_mutation),
+    lastChangedAt: row.last_changed_at || null
   };
 }
 

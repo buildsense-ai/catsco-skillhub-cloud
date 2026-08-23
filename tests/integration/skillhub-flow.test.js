@@ -13,6 +13,7 @@ import {
   publicVersionAsDownloadedPackage
 } from "../../packages/private-skills/index.js";
 import { downloadAndVerifyPackage, getPublicKeys } from "../../packages/sdk/index.js";
+import { ensureRootKey } from "../../packages/signing/index.js";
 
 const databaseUrl = process.env.SKILLHUB_TEST_DATABASE_URL;
 
@@ -50,6 +51,7 @@ before(async () => {
     allowAutoKeygen: true,
     nodeEnv: "test"
   });
+  await ensureRootKey(config);
   store = createStore(config);
   server = createApiServer(config);
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));

@@ -437,7 +437,10 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
             source: "skillhub",
             skillId: version.skillId,
             version: version.version,
-            displayName: version.name
+            displayName: version.name,
+            revisionNumber: version.revisionNumber,
+            changeSource: version.hasConversationMutation ? "conversation_mutation" : "runtime_backup",
+            lastChangedAt: version.lastChangedAt || version.activatedAt || version.createdAt
           }))
         }, { "Cache-Control": "private, no-store" });
         return;
