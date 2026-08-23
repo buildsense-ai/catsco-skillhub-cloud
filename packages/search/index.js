@@ -1,7 +1,10 @@
 import { compareSemver } from "../domain/index.js";
 
 export function searchPublishedSkills(packageVersions, query = "", options = {}) {
-  const normalizedQuery = String(query ?? "").trim().toLowerCase();
+  const searchMode = options.searchMode === "name" ? "name" : "discovery";
+  const normalizedQuery = searchMode === "name"
+    ? normalizeNameSearchText(query)
+    : String(query ?? "").trim().toLowerCase();
   const terms = normalizedQuery ? normalizedQuery.split(/\s+/).filter(Boolean) : [];
   const versions = packageVersions
     .filter((version) => version.status === "published" && !version.yankedAt)
@@ -16,7 +19,12 @@ export function searchPublishedSkills(packageVersions, query = "", options = {})
   }
 
   return [...latestBySkill.values()]
-    .map((version) => ({ version, score: scoreVersion(version, terms, options.category) }))
+    .map((version) => ({
+      version,
+      score: searchMode === "name"
+        ? scoreVersionName(version, terms, normalizedQuery, options.category)
+        : scoreVersion(version, terms, options.category)
+    }))
     .filter((item) => item.score > 0 || terms.length === 0)
     .sort((a, b) => b.score - a.score || b.version.publishedAt.localeCompare(a.version.publishedAt))
     .slice(0, options.limit ?? 30)
@@ -96,4 +104,34 @@ function scoreVersion(version, terms, category) {
     }
   }
   return score;
+}
+
+function scoreVersionName(version, terms, normalizedQuery, category) {
+  const manifest = version.manifest;
+  if (category && !(manifest.categories ?? []).includes(category)) return 0;
+  if (!terms.length) return 1;
+  const fields = [
+    [version.displayName || manifest.displayName, 10],
+    [version.skillName || manifest.name, 8]
+  ].map(([value, weight]) => [normalizeNameSearchText(value), weight]);
+  if (!terms.every((term) => fields.some(([field]) => field.includes(term)))) return 0;
+
+  let score = 0;
+  for (const [field, weight] of fields) {
+    if (field === normalizedQuery) score += 100 + weight;
+    else if (field.startsWith(normalizedQuery)) score += 50 + weight;
+    else if (field.includes(normalizedQuery)) score += 20 + weight;
+    for (const term of terms) {
+      if (field.includes(term)) score += weight;
+    }
+  }
+  return score;
+}
+
+function normalizeNameSearchText(value) {
+  return String(value ?? "")
+    .normalize("NFKC")
+    .trim()
+    .toLowerCase()
+    .replace(/[-_\s]+/g, " ");
 }

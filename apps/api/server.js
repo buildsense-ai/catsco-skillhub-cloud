@@ -1276,7 +1276,8 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
         const skills = searchPublishedSkills(versions, url.searchParams.get("q") ?? "", {
           category: url.searchParams.get("category") ?? "",
           agentVersion: url.searchParams.get("agent_version") ?? "",
-          platform: url.searchParams.get("platform") ?? ""
+          platform: url.searchParams.get("platform") ?? "",
+          searchMode: url.searchParams.get("search_mode") ?? ""
         });
         sendJson(res, 200, { skills });
         return;
