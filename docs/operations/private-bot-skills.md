@@ -28,17 +28,19 @@ C1 trusted mutation -> SkillHub immutable Git version -> future BotDefinition/Ru
    ```
 
 4. 设置 `SKILLHUB_PRIVATE_SKILLS_READ_ENABLED=true`，保持写入关闭，验证 `/readyz`。
-5. 配置少量 `SKILLHUB_PRIVATE_SKILL_ALLOWED_BOT_IDS`，再开启写入。
-6. 验证上传幂等、同 Bot 下载、跨 Bot 返回 404、本地修改产生新版本、旧版本仍可下载。
-7. 逐步扩展 allowlist；确认稳定后才考虑设置
+5. 只读版本历史准备上线时，再独立设置 `SKILLHUB_PRIVATE_SKILLS_HISTORY_ENABLED=true`。历史查询使用独立限流桶，关闭它不影响 Runtime 恢复私有 Skill 包。
+6. 配置少量 `SKILLHUB_PRIVATE_SKILL_ALLOWED_BOT_IDS`，再开启写入。
+7. 验证上传幂等、同 Bot 下载、跨 Bot 返回 404、本地修改产生新版本、旧版本仍可下载。
+8. 逐步扩展 allowlist；确认稳定后才考虑设置
    `SKILLHUB_PRIVATE_SKILL_ALLOW_ALL_BOTS=true` 对全部已鉴权 Bot 开放。
 
 ## 回滚顺序
 
-1. 先设置 `SKILLHUB_PRIVATE_SKILLS_WRITE_ENABLED=false`，阻止新上传。
-2. 保持 `SKILLHUB_PRIVATE_SKILLS_READ_ENABLED=true`，让已写入 Definition 的引用仍可恢复。
-3. 回滚 XiaoBa 或 CatsCo 应用代码。
-4. migration 003 只新增表；应用回滚期间保留表和历史包，不执行物理删除。
+1. 只需关闭历史页面时，先设置 `SKILLHUB_PRIVATE_SKILLS_HISTORY_ENABLED=false`；Runtime 下载与元数据读取继续工作。
+2. 再设置 `SKILLHUB_PRIVATE_SKILLS_WRITE_ENABLED=false`，阻止新上传。
+3. 保持 `SKILLHUB_PRIVATE_SKILLS_READ_ENABLED=true`，让已写入 Definition 的引用仍可恢复。
+4. 回滚 XiaoBa 或 CatsCo 应用代码。
+5. migration 003 只新增表；应用回滚期间保留表和历史包，不执行物理删除。
 
 ## 数据与安全边界
 

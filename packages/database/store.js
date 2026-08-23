@@ -1538,6 +1538,50 @@ export function createStore(config) {
         .filter(Boolean);
     },
 
+    async listPrivateSkillHistory({ authority, ownerBotId, skillId, limit = 50, beforeRevisionNumber = null }) {
+      const cappedLimit = Math.min(Math.max(Number(limit) || 50, 1), 100);
+      const result = await query(
+        `WITH ranked_versions AS (
+           SELECT v.*,
+                  row_number() OVER (
+                    PARTITION BY v.private_skill_id
+                    ORDER BY coalesce(v.activated_at, v.created_at), v.created_at, v.id
+                  ) AS revision_number
+           FROM private_skill_versions v
+           JOIN private_skills scoped_skill ON scoped_skill.id = v.private_skill_id
+           WHERE scoped_skill.authority = $1
+             AND scoped_skill.owner_bot_id = $2
+             AND scoped_skill.skill_id = $3
+             AND v.status = 'active'
+         )
+         SELECT v.*, s.skill_id, s.authority, s.owner_bot_id, s.local_skill_id,
+                mutation.has_conversation_mutation, mutation.last_changed_at
+         FROM ranked_versions v
+         JOIN private_skills s ON s.id = v.private_skill_id
+         LEFT JOIN LATERAL (
+           SELECT true AS has_conversation_mutation,
+                  coalesce(m.activated_at, m.created_at) AS last_changed_at
+           FROM private_skill_mutations m
+           WHERE m.private_skill_version_id = v.id AND m.status = 'active'
+           ORDER BY m.activated_at DESC NULLS LAST, m.created_at DESC, m.id DESC
+           LIMIT 1
+         ) mutation ON true
+         WHERE ($4::bigint IS NULL OR v.revision_number < $4)
+         ORDER BY v.revision_number DESC
+         LIMIT $5`,
+        [authority, ownerBotId, skillId, beforeRevisionNumber, cappedLimit + 1]
+      );
+      const versions = result.rows.map(mapPrivateSkillVersion);
+      const hasMore = versions.length > cappedLimit;
+      if (hasMore) versions.pop();
+      return {
+        versions,
+        nextBeforeRevisionNumber: hasMore && versions.length
+          ? versions[versions.length - 1].revisionNumber
+          : null
+      };
+    },
+
     async privateSkillReadiness() {
       const result = await query(
         `SELECT
@@ -1865,7 +1909,7 @@ function mapPrivateSkillVersion(row) {
     artifactSha256: row.artifact_sha256 || null,
     revisionNumber: Number(row.revision_number ?? 0),
     hasConversationMutation: Boolean(row.has_conversation_mutation),
-    lastChangedAt: row.last_changed_at || null
+    lastChangedAt: row.last_changed_at ? iso(row.last_changed_at) : null
   };
 }
 

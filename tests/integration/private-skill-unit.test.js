@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterEach, test } from "node:test";
 import {
   createApiServer,
+  parsePrivateSkillHistoryRequest,
   parsePrivateSkillMetadataRequest,
   startApiServer
 } from "../../apps/api/server.js";
@@ -59,6 +60,40 @@ test("private metadata request validation is bounded, private-only, and deduplic
     () => parsePrivateSkillMetadataRequest({ references: Array.from({ length: 257 }, () => first) }),
     (error) => error.code === "PRIVATE_SKILL_METADATA_REFERENCES_INVALID" && error.status === 400
   );
+});
+
+test("private history request validation is private-only and cursor bounded", () => {
+  const skillId = `priv_${"a".repeat(40)}`;
+  assert.deepEqual(parsePrivateSkillHistoryRequest({ skillId }), {
+    skillId,
+    limit: 50,
+    beforeRevisionNumber: null
+  });
+  assert.deepEqual(parsePrivateSkillHistoryRequest({
+    skillId,
+    limit: 100,
+    beforeRevisionNumber: 17
+  }), {
+    skillId,
+    limit: 100,
+    beforeRevisionNumber: 17
+  });
+  assert.throws(
+    () => parsePrivateSkillHistoryRequest({ skillId: "lin/public" }),
+    (error) => error.code === "PRIVATE_SKILL_HISTORY_REFERENCE_INVALID" && error.status === 400
+  );
+  for (const limit of [0, 101, 1.5, "10"]) {
+    assert.throws(
+      () => parsePrivateSkillHistoryRequest({ skillId, limit }),
+      (error) => error.code === "PRIVATE_SKILL_HISTORY_LIMIT_INVALID" && error.status === 400
+    );
+  }
+  for (const beforeRevisionNumber of [0, 1.5, "2", 1_000_000_001]) {
+    assert.throws(
+      () => parsePrivateSkillHistoryRequest({ skillId, beforeRevisionNumber }),
+      (error) => error.code === "PRIVATE_SKILL_HISTORY_CURSOR_INVALID" && error.status === 400
+    );
+  }
 });
 
 test("private metadata route accepts the maximum validated reference request", async () => {
@@ -195,6 +230,178 @@ test("private metadata exposes only readable revision and change attribution fie
     }]
   });
   assert.equal(JSON.stringify(responseBody).includes("UserUid"), false);
+});
+
+test("private history route is Bot-scoped and exposes only read-only metadata", async () => {
+  const upstream = http.createServer((req, res) => {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ uid: 42 }));
+  });
+  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  cleanup.push(() => new Promise((resolve) => upstream.close(resolve)));
+  const upstreamAddress = upstream.address();
+  const authority = `http://127.0.0.1:${upstreamAddress.port}`;
+  const skillId = `priv_${"a".repeat(40)}`;
+  let receivedInput;
+  const server = createApiServer(
+    testConfig("unused", authority),
+    {
+      store: {
+        async listPrivateSkillHistory(input) {
+          receivedInput = input;
+          return {
+            versions: [{
+              skillId,
+              version: `v_${"b".repeat(48)}`,
+              name: "review-helper",
+              revisionNumber: 3,
+              hasConversationMutation: true,
+              lastChangedAt: "2026-08-22T05:06:07.000Z",
+              activatedAt: "2026-08-22T02:03:04.000Z",
+              contentHash: "c".repeat(64),
+              packagePath: "/private/secret.json",
+              gitCommitSha: "d".repeat(40),
+              actorUserUid: 7
+            }],
+            nextBeforeRevisionNumber: 3
+          };
+        }
+      }
+    }
+  );
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  cleanup.push(() => new Promise((resolve) => server.close(resolve)));
+  const address = server.address();
+  const response = await fetch(`http://127.0.0.1:${address.port}/api/bot/private-skill-history`, {
+    method: "POST",
+    headers: {
+      authorization: "ApiKey valid-key",
+      "content-type": "application/json",
+      "x-catsco-bot-id": "42"
+    },
+    body: JSON.stringify({ skillId, limit: 20, beforeRevisionNumber: 9 })
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(receivedInput, {
+    authority,
+    ownerBotId: "42",
+    skillId,
+    limit: 20,
+    beforeRevisionNumber: 9
+  });
+  const responseBody = await response.json();
+  assert.deepEqual(responseBody, {
+    skillId,
+    versions: [{
+      source: "skillhub",
+      skillId,
+      version: `v_${"b".repeat(48)}`,
+      displayName: "review-helper",
+      revisionNumber: 3,
+      changeSource: "conversation_mutation",
+      lastChangedAt: "2026-08-22T05:06:07.000Z"
+    }],
+    nextBeforeRevisionNumber: 3
+  });
+  for (const forbidden of ["contentHash", "packagePath", "gitCommitSha", "actorUserUid"]) {
+    assert.equal(JSON.stringify(responseBody).includes(forbidden), false);
+  }
+});
+
+test("private history has an independent kill switch from runtime reads", async () => {
+  const upstream = http.createServer((req, res) => {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ uid: 42 }));
+  });
+  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  cleanup.push(() => new Promise((resolve) => upstream.close(resolve)));
+  const upstreamAddress = upstream.address();
+  const server = createApiServer(testConfig("unused", `http://127.0.0.1:${upstreamAddress.port}`, {
+    privateSkillsReadEnabled: true,
+    privateSkillHistoryEnabled: false
+  }), {
+    store: {
+      async findPrivateSkillMetadata() {
+        return [];
+      },
+      async listPrivateSkillHistory() {
+        assert.fail("disabled history must not reach storage");
+      }
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  cleanup.push(() => new Promise((resolve) => server.close(resolve)));
+  const address = server.address();
+  const response = await fetch(`http://127.0.0.1:${address.port}/api/bot/private-skill-history`, {
+    method: "POST",
+    headers: {
+      authorization: "ApiKey unused",
+      "content-type": "application/json",
+      "x-catsco-bot-id": "42"
+    },
+    body: JSON.stringify({ skillId: `priv_${"a".repeat(40)}` })
+  });
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error.code, "PRIVATE_SKILL_HISTORY_DISABLED");
+
+  const metadata = await fetch(`http://127.0.0.1:${address.port}/api/bot/private-skill-metadata`, {
+    method: "POST",
+    headers: {
+      authorization: "ApiKey valid-key",
+      "content-type": "application/json",
+      "x-catsco-bot-id": "42"
+    },
+    body: JSON.stringify({ references: [] })
+  });
+  assert.equal(metadata.status, 200);
+  assert.deepEqual(await metadata.json(), { skills: [] });
+});
+
+test("private history rate limits cannot consume runtime metadata read capacity", async () => {
+  const upstream = http.createServer((req, res) => {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ uid: 42 }));
+  });
+  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  cleanup.push(() => new Promise((resolve) => upstream.close(resolve)));
+  const upstreamAddress = upstream.address();
+  const server = createApiServer(testConfig("unused", `http://127.0.0.1:${upstreamAddress.port}`), {
+    store: {
+      async findPrivateSkillMetadata() {
+        return [];
+      },
+      async listPrivateSkillHistory() {
+        return { versions: [], nextBeforeRevisionNumber: null };
+      }
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  cleanup.push(() => new Promise((resolve) => server.close(resolve)));
+  const address = server.address();
+  const headers = {
+    authorization: "ApiKey valid-key",
+    "content-type": "application/json",
+    "x-catsco-bot-id": "42"
+  };
+  let lastHistory;
+  for (let index = 0; index < 121; index += 1) {
+    lastHistory = await fetch(`http://127.0.0.1:${address.port}/api/bot/private-skill-history`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ skillId: `priv_${"a".repeat(40)}` })
+    });
+  }
+  assert.equal(lastHistory.status, 429);
+  assert.equal((await lastHistory.json()).error.code, "PRIVATE_SKILL_HISTORY_RATE_LIMITED");
+
+  const metadata = await fetch(`http://127.0.0.1:${address.port}/api/bot/private-skill-metadata`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ references: [] })
+  });
+  assert.equal(metadata.status, 200);
+  assert.deepEqual(await metadata.json(), { skills: [] });
 });
 
 test("private package validation uses canonical ordering and supports zero-byte files", () => {
@@ -807,14 +1014,15 @@ function file(filePath, bytes) {
   };
 }
 
-function testConfig(root, catsCoBaseUrl = "http://127.0.0.1:1") {
+function testConfig(root, catsCoBaseUrl = "http://127.0.0.1:1", overrides = {}) {
   return loadConfig({
     root,
     storageRoot: path.join(root, "storage"),
     logsRoot: path.join(root, "logs"),
     sharedRoot: path.join(root, "shared"),
     catsCoBaseUrl,
-    nodeEnv: "test"
+    nodeEnv: "test",
+    ...overrides
   });
 }
 

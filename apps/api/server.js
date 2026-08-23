@@ -56,6 +56,7 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
   const limiter = new RateLimiter({ windowMs: 60_000, limit: 600, maxBuckets: 20_000 });
   const botWriteLimiter = new RateLimiter({ windowMs: 60_000, limit: 30, maxBuckets: 20_000 });
   const botReadLimiter = new RateLimiter({ windowMs: 60_000, limit: 600, maxBuckets: 20_000 });
+  const botHistoryLimiter = new RateLimiter({ windowMs: 60_000, limit: 120, maxBuckets: 20_000 });
   let activePrivateUploads = 0;
   const exaWebAnswer = createExaWebAnswerService();
 
@@ -90,7 +91,7 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
         await ensureRuntimeDirectories(config);
         const stats = await store.healthStats();
         let privateSkills;
-        if (config.privateSkills.readEnabled || config.privateSkills.writeEnabled || config.mutationWriter?.enabled) {
+        if (config.privateSkills.readEnabled || config.privateSkills.historyEnabled || config.privateSkills.writeEnabled || config.mutationWriter?.enabled) {
           privateSkills = await store.privateSkillReadiness();
           await fsp.access(config.paths.private, fs.constants.R_OK | fs.constants.W_OK);
           if (!privateSkills.ready) {
@@ -442,6 +443,45 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
             changeSource: version.hasConversationMutation ? "conversation_mutation" : "runtime_backup",
             lastChangedAt: version.lastChangedAt || version.activatedAt || version.createdAt
           }))
+        }, { "Cache-Control": "private, no-store" });
+        return;
+      }
+
+      if (pathname === "/api/bot/private-skill-history" && req.method === "POST") {
+        if (!config.privateSkills.historyEnabled) {
+          throw new ValidationError("Private Skill history is unavailable.", "PRIVATE_SKILL_HISTORY_DISABLED", 503);
+        }
+        const identity = await authenticateCatsCoBot(config, req);
+        requireAllowedPrivateSkillBot(config, identity.botId);
+        if (!botHistoryLimiter.check(`${identity.authority}\0${identity.botId}`)) {
+          sendJson(res, 429, {
+            error: {
+              code: "PRIVATE_SKILL_HISTORY_RATE_LIMITED",
+              message: "Too many private Skill history requests."
+            }
+          }, { "Retry-After": "60" });
+          return;
+        }
+        const input = parsePrivateSkillHistoryRequest(
+          await readJson(req, PRIVATE_SKILL_HISTORY_MAX_REQUEST_BYTES)
+        );
+        const history = await store.listPrivateSkillHistory({
+          authority: identity.authority,
+          ownerBotId: identity.botId,
+          ...input
+        });
+        sendJson(res, 200, {
+          skillId: input.skillId,
+          versions: history.versions.map((version) => ({
+            source: "skillhub",
+            skillId: version.skillId,
+            version: version.version,
+            displayName: version.name,
+            revisionNumber: version.revisionNumber,
+            changeSource: version.hasConversationMutation ? "conversation_mutation" : "runtime_backup",
+            lastChangedAt: version.lastChangedAt || version.activatedAt || version.createdAt
+          })),
+          nextBeforeRevisionNumber: history.nextBeforeRevisionNumber
         }, { "Cache-Control": "private, no-store" });
         return;
       }
@@ -1804,6 +1844,47 @@ export function parsePrivateSkillMetadataRequest(value) {
   return parsed;
 }
 
+const PRIVATE_SKILL_HISTORY_DEFAULT_LIMIT = 50;
+const PRIVATE_SKILL_HISTORY_MAX_LIMIT = 100;
+export const PRIVATE_SKILL_HISTORY_MAX_REQUEST_BYTES =
+  96 + 6 * PRIVATE_SKILL_METADATA_MAX_SKILL_ID_LENGTH;
+
+export function parsePrivateSkillHistoryRequest(value) {
+  const skillId = requireReferencePart(
+    value?.skillId,
+    "skillId",
+    PRIVATE_SKILL_METADATA_MAX_SKILL_ID_LENGTH
+  );
+  if (!isPrivateSkillReference(skillId)) {
+    throw new ValidationError(
+      "Private Skill history only accepts private references.",
+      "PRIVATE_SKILL_HISTORY_REFERENCE_INVALID",
+      400
+    );
+  }
+  const rawLimit = value?.limit ?? PRIVATE_SKILL_HISTORY_DEFAULT_LIMIT;
+  if (!Number.isSafeInteger(rawLimit) || rawLimit < 1 || rawLimit > PRIVATE_SKILL_HISTORY_MAX_LIMIT) {
+    throw new ValidationError(
+      "Private Skill history limit is invalid.",
+      "PRIVATE_SKILL_HISTORY_LIMIT_INVALID",
+      400
+    );
+  }
+  const rawBefore = value?.beforeRevisionNumber;
+  if (rawBefore != null && (!Number.isSafeInteger(rawBefore) || rawBefore < 1 || rawBefore > 1_000_000_000)) {
+    throw new ValidationError(
+      "Private Skill history cursor is invalid.",
+      "PRIVATE_SKILL_HISTORY_CURSOR_INVALID",
+      400
+    );
+  }
+  return {
+    skillId,
+    limit: rawLimit,
+    beforeRevisionNumber: rawBefore ?? null
+  };
+}
+
 function referencesEqual(left, right) {
   if (!left && !right) return true;
   return Boolean(left)
@@ -1882,7 +1963,7 @@ function assertProductionConfig(config) {
       throw new Error("Private Skill writes require private Skill reads to remain enabled.");
     }
     if (
-      (config.privateSkills.readEnabled || config.privateSkills.writeEnabled)
+      (config.privateSkills.readEnabled || config.privateSkills.historyEnabled || config.privateSkills.writeEnabled)
       && config.privateSkills.allowedBotIds.length === 0
       && !config.privateSkills.allowAllBots
     ) {
@@ -1903,7 +1984,7 @@ function assertProductionConfig(config) {
     ) {
       throw new Error("Private Skill limits are outside the supported production safety boundary.");
     }
-    if (config.privateSkills.readEnabled || config.privateSkills.writeEnabled) {
+    if (config.privateSkills.readEnabled || config.privateSkills.historyEnabled || config.privateSkills.writeEnabled) {
       let catsCoUrl;
       try {
         catsCoUrl = new URL(config.botAuth.catsCoBaseUrl);
