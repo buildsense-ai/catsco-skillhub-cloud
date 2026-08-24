@@ -180,8 +180,8 @@ export function normalizeManifest(input = {}, inferred = {}) {
   assertSemver(version);
 
   const description = String(input.description ?? inferred.description ?? "").trim();
-  if (description.length < 12) {
-    throw new ValidationError("description 至少需要 12 个字符，用于审核和搜索", "manifest.description");
+  if (!description) {
+    throw new ValidationError("description 不能为空，请说明 Skill 的用途或适用场景", "manifest.description");
   }
 
   const search = inferSearchMetadata({
