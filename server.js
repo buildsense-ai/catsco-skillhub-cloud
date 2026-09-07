@@ -1024,43 +1024,16 @@ async function synchronizeCatsCoPublisherProfile(store, body, options = {}) {
   const username = String(catsUser.username || hintUser.username || `catsco_${uid}`).trim();
   const displayName = String(catsUser.display_name || catsUser.displayName || hintUser.displayName || username).trim();
   const namespace = slugify(username, `catsco-${uid}`);
-  if (typeof store.getDeveloperProfileByCatsCoUid !== "function") {
+  if (typeof store.claimCatsCoPublisherIdentity !== "function") {
     throw new Error("CatsCo publisher identity storage is unavailable.");
   }
-  const existingProfile = await store.getDeveloperProfileByCatsCoUid(uid);
-  let user = existingProfile ? await store.getUserById(existingProfile.userId) : null;
-  if (existingProfile && !user) {
-    throw new ValidationError(
-      "CatsCo publisher identity is inconsistent.",
-      "catsco.publisher_identity_inconsistent",
-      409
-    );
-  }
-  const namespaceProfile = typeof store.getDeveloperProfileByNamespace === "function"
-    ? await store.getDeveloperProfileByNamespace(namespace)
-    : null;
-  if (namespaceProfile && (!user || namespaceProfile.userId !== user.id)) {
-    throw new ValidationError(
-      "CatsCo publisher namespace is already linked to another account.",
-      "catsco.publisher_namespace_conflict",
-      409
-    );
-  }
-  if (!user) {
-    user = await store.createUser({
-      email: `catsco-${slugify(uid, "user")}-${createSessionToken().slice(0, 16)}@verified.catsco.internal`,
-      passwordHash: hashPassword(`${createSessionToken()}:${uid}`),
-      displayName
-    });
-  }
-  let developerProfile;
-  developerProfile = await store.ensureDeveloperProfile({
-    userId: user.id,
+  const { user, developerProfile } = await store.claimCatsCoPublisherIdentity({
+    catsCoUid: uid,
     namespace,
     displayName,
     contact: `catsco:${uid}`,
-    catsCoUid: uid,
-    approvedBy: "catsco"
+    internalEmail: `catsco-${slugify(uid, "user")}-${createSessionToken().slice(0, 16)}@verified.catsco.internal`,
+    passwordHash: hashPassword(`${createSessionToken()}:${uid}`)
   });
   return {
     user,

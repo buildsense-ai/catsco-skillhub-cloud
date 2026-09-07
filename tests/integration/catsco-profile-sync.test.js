@@ -64,6 +64,36 @@ test("CatsCo profile sync updates publisher identity without creating a SkillHub
   ]);
 });
 
+test("concurrent first-time CatsCo profile sync reuses one publisher identity", async () => {
+  const catsCo = http.createServer((req, res) => {
+    assert.equal(req.headers.authorization, "Bearer cats-token");
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ uid: 85, username: "arrowhaken", display_name: "arrowhaken" }));
+  });
+  await listen(catsCo);
+  cleanup.push(() => close(catsCo));
+
+  const catsCoAddress = catsCo.address();
+  const store = createMemoryStore();
+  const api = createApiServer(testConfig(`http://127.0.0.1:${catsCoAddress.port}`), { store });
+  await listen(api);
+  cleanup.push(() => close(api));
+  const apiAddress = api.address();
+  const endpoint = `http://127.0.0.1:${apiAddress.port}/api/auth/catsco-profile-sync`;
+
+  const [first, second] = await Promise.all([
+    post(endpoint, { token: "cats-token" }),
+    post(endpoint, { token: "cats-token" })
+  ]);
+
+  assert.equal(first.response.status, 200);
+  assert.equal(second.response.status, 200);
+  assert.equal(first.data.developerProfile.userId, second.data.developerProfile.userId);
+  assert.equal(store.users.size, 1);
+  assert.equal(store.profilesByUser.size, 1);
+  assert.equal(store.profilesByCatsCoUid.get("85").userId, first.data.developerProfile.userId);
+});
+
 test("CatsCo profile sync rejects a missing token without touching publisher data", async () => {
   const store = createMemoryStore();
   const api = createApiServer(testConfig(), { store });
@@ -213,6 +243,56 @@ function createMemoryStore() {
       users.set(user.id, user);
       usersByEmail.set(user.email, user);
       return user;
+    },
+    async claimCatsCoPublisherIdentity(input) {
+      const catsCoUid = String(input.catsCoUid ?? "").trim();
+      const existing = profilesByCatsCoUid.get(catsCoUid) || null;
+      const namespaceOwner = profilesByNamespace.get(input.namespace) || null;
+      if (namespaceOwner && (!existing || namespaceOwner.userId !== existing.userId)) {
+        const error = new Error("CatsCo publisher namespace is already linked to another account.");
+        error.name = "ValidationError";
+        error.code = "catsco.publisher_namespace_conflict";
+        error.status = 409;
+        throw error;
+      }
+
+      let user = existing ? users.get(existing.userId) : null;
+      if (existing && !user) {
+        const error = new Error("CatsCo publisher identity is inconsistent.");
+        error.name = "ValidationError";
+        error.code = "catsco.publisher_identity_inconsistent";
+        error.status = 409;
+        throw error;
+      }
+      if (!user) {
+        user = {
+          id: `user-${users.size + 1}`,
+          email: input.internalEmail,
+          passwordHash: input.passwordHash,
+          displayName: input.displayName,
+          status: "active",
+          emailVerified: true,
+          createdAt: new Date().toISOString()
+        };
+        users.set(user.id, user);
+        usersByEmail.set(user.email, user);
+      } else {
+        user.displayName = input.displayName;
+      }
+
+      if (existing) profilesByNamespace.delete(existing.namespace);
+      const profile = {
+        id: existing?.id || `profile-${profilesByUser.size + 1}`,
+        userId: user.id,
+        namespace: input.namespace,
+        displayName: input.displayName,
+        contact: input.contact,
+        catsCoUid
+      };
+      profilesByUser.set(user.id, profile);
+      profilesByNamespace.set(input.namespace, profile);
+      profilesByCatsCoUid.set(catsCoUid, profile);
+      return { user, developerProfile: profile };
     },
     async ensureDeveloperProfile(input) {
       const existing = profilesByUser.get(input.userId);

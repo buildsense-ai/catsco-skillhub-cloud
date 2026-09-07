@@ -30,6 +30,15 @@ before(async () => {
   if (!databaseUrl) return;
   root = await fs.mkdtemp(path.join(os.tmpdir(), "catsco-skillhub-pg-test-"));
   catsCoUpstream = http.createServer((req, res) => {
+    if (req.headers.authorization === "Bearer concurrent-cats-token") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        uid: `profile-${suffix}`,
+        username: `concurrent-${suffix}`,
+        display_name: `Concurrent ${suffix}`
+      }));
+      return;
+    }
     if (req.headers.authorization !== "ApiKey bot-key-a") {
       res.writeHead(401, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "unauthorized" }));
@@ -200,6 +209,30 @@ test("PostgreSQL-backed current share flow works", { skip: !databaseUrl }, async
   assert.equal(retainedAfterDelete.status, "yanked");
   const stillRecoverableByBot = await botRequest("GET", botPath);
   assert.equal(stillRecoverableByBot.status, 200);
+});
+
+test("PostgreSQL-backed concurrent first profile sync creates one identity", { skip: !databaseUrl }, async () => {
+  const responses = await Promise.all([
+    fetch(`${baseUrl}/api/auth/catsco-profile-sync`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: "concurrent-cats-token" })
+    }),
+    fetch(`${baseUrl}/api/auth/catsco-profile-sync`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: "concurrent-cats-token" })
+    })
+  ]);
+  assert.deepEqual(responses.map((response) => response.status), [200, 200]);
+
+  const [first, second] = await Promise.all(responses.map((response) => response.json()));
+  assert.equal(first.user.id, second.user.id);
+  assert.equal(first.developerProfile.userId, second.developerProfile.userId);
+
+  const profile = await store.getDeveloperProfileByCatsCoUid(`profile-${suffix}`);
+  assert.ok(profile);
+  assert.equal(profile.userId, first.user.id);
 });
 
 async function register(email, password) {
