@@ -84,8 +84,9 @@ export function createApiServer(config = loadConfig()) {
 
       if (pathname === "/api/auth/register" && req.method === "POST") {
         const body = await readJson(req, 128 * 1024);
+        const email = requirePublicRegistrationEmail(body.email);
         const user = await store.createUser({
-          email: requireEmail(body.email),
+          email,
           passwordHash: hashPassword(body.password),
           displayName: requireText(body.displayName || body.email, "displayName", 2, 80)
         });
@@ -114,47 +115,14 @@ export function createApiServer(config = loadConfig()) {
 
       if (pathname === "/api/auth/catsco-exchange" && req.method === "POST") {
         const body = await readJson(req, 128 * 1024);
-        const catsBaseUrl = normalizeHttpBaseUrl(body.baseUrl || body.httpBaseUrl || "https://app.catsco.cc");
-        const catsToken = String(body.token || "").trim();
-        if (!catsToken) throw new AuthError("CatsCo token missing", 401);
-        const catsUser = await verifyCatsCoToken(catsBaseUrl, catsToken);
-        const hintUser = body.user || {};
-        const uid = String(catsUser.uid || catsUser.id || hintUser.uid || "").trim();
-        if (!uid) throw new AuthError("CatsCo user uid missing", 401);
-        const username = String(catsUser.username || hintUser.username || `catsco_${uid}`).trim();
-        const displayName = String(catsUser.display_name || catsUser.displayName || hintUser.displayName || username).trim();
-        const namespace = slugify(username, `catsco-${uid}`);
-        const syntheticEmail = `catsco-${slugify(uid, "user")}@catsco.local`;
-        const existingProfile = typeof store.getDeveloperProfileByNamespace === "function"
-          ? await store.getDeveloperProfileByNamespace(namespace)
-          : null;
-        let user = existingProfile ? await store.getUserById(existingProfile.userId) : null;
-        if (!user) user = await store.getUserByEmail(syntheticEmail);
-        if (!user) {
-          user = await store.createUser({
-            email: syntheticEmail,
-            passwordHash: hashPassword(`${createSessionToken()}:${uid}`),
-            displayName
-          });
-        }
-        if (!existingProfile || existingProfile.userId === user.id) {
-          await store.ensureDeveloperProfile({
-            userId: user.id,
-            namespace,
-            displayName,
-            contact: `catsco:${uid}`,
-            approvedBy: "catsco"
-          });
-        } else {
-          await store.grantRole({ userId: user.id, role: "developer", grantedBy: "catsco" });
-        }
+        const { user, catsCo } = await synchronizeCatsCoPublisherProfile(store, body);
         const session = await createLoginSession({ config, store, user, req, res });
         await appendAudit(store, {
           actor: session.actor,
           action: "auth.catsco_exchange",
           resourceType: "user",
           resourceId: user.id,
-          metadata: { catsUid: uid, catsUsername: username },
+          metadata: { catsUid: catsCo.uid, catsUsername: catsCo.username },
           ip
         });
         sendJson(res, 200, {
@@ -162,12 +130,30 @@ export function createApiServer(config = loadConfig()) {
           roles: session.actor.roles,
           permissions: session.actor.permissions,
           developerProfile: session.actor.developerProfile,
-          catsCo: {
-            uid,
-            username,
-            displayName
-          }
+          catsCo
         });
+        return;
+      }
+
+      if (pathname === "/api/auth/catsco-profile-sync" && req.method === "POST") {
+        const body = await readJson(req, 128 * 1024);
+        const { user, developerProfile, catsCo } = await synchronizeCatsCoPublisherProfile(store, body, {
+          catsBaseUrl: config.botAuth.catsCoBaseUrl,
+          allowIdentityHints: false
+        });
+        await appendAudit(store, {
+          actor: { userId: user.id, role: "user" },
+          action: "auth.catsco_profile_sync",
+          resourceType: "user",
+          resourceId: user.id,
+          metadata: { catsUid: catsCo.uid, catsUsername: catsCo.username },
+          ip
+        });
+        sendJson(res, 200, {
+          synced: true,
+          developerProfile,
+          catsCo
+        }, { "Cache-Control": "private, no-store" });
         return;
       }
 
@@ -1025,6 +1011,37 @@ async function verifyCatsCoToken(baseUrl, token) {
   return data;
 }
 
+async function synchronizeCatsCoPublisherProfile(store, body, options = {}) {
+  const catsBaseUrl = normalizeHttpBaseUrl(
+    options.catsBaseUrl || body.baseUrl || body.httpBaseUrl || "https://app.catsco.cc"
+  );
+  const catsToken = String(body.token || "").trim();
+  if (!catsToken) throw new AuthError("CatsCo token missing", 401);
+  const catsUser = await verifyCatsCoToken(catsBaseUrl, catsToken);
+  const hintUser = options.allowIdentityHints === false ? {} : body.user || {};
+  const uid = String(catsUser.uid || catsUser.id || hintUser.uid || "").trim();
+  if (!uid) throw new AuthError("CatsCo user uid missing", 401);
+  const username = String(catsUser.username || hintUser.username || `catsco_${uid}`).trim();
+  const displayName = String(catsUser.display_name || catsUser.displayName || hintUser.displayName || username).trim();
+  const namespace = slugify(username, `catsco-${uid}`);
+  if (typeof store.claimCatsCoPublisherIdentity !== "function") {
+    throw new Error("CatsCo publisher identity storage is unavailable.");
+  }
+  const { user, developerProfile } = await store.claimCatsCoPublisherIdentity({
+    catsCoUid: uid,
+    namespace,
+    displayName,
+    contact: `catsco:${uid}`,
+    internalEmail: `catsco-${slugify(uid, "user")}-${createSessionToken().slice(0, 16)}@verified.catsco.internal`,
+    passwordHash: hashPassword(`${createSessionToken()}:${uid}`)
+  });
+  return {
+    user,
+    developerProfile,
+    catsCo: { uid, username, displayName }
+  };
+}
+
 async function findExistingByCanonicalPackageContentHash(publishedVersions, contentHash) {
   for (const version of publishedVersions) {
     try {
@@ -1243,6 +1260,20 @@ function publicUser(user) {
 function requireEmail(value) {
   const email = String(value ?? "").trim().toLowerCase();
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new ValidationError("邮箱格式不正确", "email.invalid");
+  return email;
+}
+
+function requirePublicRegistrationEmail(value) {
+  const email = requireEmail(value);
+  const domain = email.split("@").at(-1);
+  if (
+    domain === "catsco.local"
+    || domain?.endsWith(".catsco.local")
+    || domain === "catsco.internal"
+    || domain?.endsWith(".catsco.internal")
+  ) {
+    throw new ValidationError("该邮箱域名保留给 CatsCo 内部身份。", "email.reserved", 400);
+  }
   return email;
 }
 

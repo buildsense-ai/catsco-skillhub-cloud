@@ -85,12 +85,25 @@ export function createStore(config) {
             SELECT 1
             FROM information_schema.columns
             WHERE table_schema = current_schema()
+              AND table_name = 'publisher_profiles'
+              AND column_name = 'catsco_uid'
+          ) AS catsco_identity_column,
+          EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = current_schema()
               AND table_name = 'skill_versions'
               AND column_name = 'git_commit_sha'
           ) AS git_columns
       `);
       const schema = result.rows[0] || {};
-      if (!schema.publisher_profiles || !schema.skill_scans || !schema.skill_versions || !schema.git_columns) {
+      if (
+        !schema.publisher_profiles
+        || !schema.skill_scans
+        || !schema.skill_versions
+        || !schema.catsco_identity_column
+        || !schema.git_columns
+      ) {
         throw new Error("SkillHub database schema is incomplete; run npm run db:migrate");
       }
       simplifiedSchemaReady = true;
@@ -242,19 +255,150 @@ export function createStore(config) {
       return result.rows[0] ? mapDeveloperProfile(result.rows[0]) : null;
     },
 
-    async ensureDeveloperProfile({ userId, namespace, displayName, contact, websiteUrl = "", approvedBy = "system" }) {
+    async getDeveloperProfileByCatsCoUid(catsCoUid) {
       await ensureSimplifiedSchema();
+      const uid = String(catsCoUid ?? "").trim();
+      if (!uid) return null;
+      const result = await query(`SELECT * FROM publisher_profiles WHERE catsco_uid = $1`, [uid]);
+      return result.rows[0] ? mapDeveloperProfile(result.rows[0]) : null;
+    },
+
+    async claimCatsCoPublisherIdentity({
+      catsCoUid,
+      namespace,
+      displayName,
+      contact,
+      internalEmail,
+      passwordHash
+    }) {
+      await ensureSimplifiedSchema();
+      const uid = String(catsCoUid ?? "").trim();
+      const normalizedNamespace = String(namespace ?? "").trim();
+      if (!uid || !normalizedNamespace) {
+        throw new ValidationError(
+          "CatsCo publisher identity is incomplete.",
+          "catsco.publisher_identity_incomplete",
+          400
+        );
+      }
+      return tx(async (client) => {
+        const lockKeys = [
+          `catsco-publisher-uid:${uid}`,
+          `catsco-publisher-namespace:${normalizedNamespace}`
+        ].sort();
+        for (const lockKey of lockKeys) {
+          await client.query(`SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`, [lockKey]);
+        }
+
+        const identityResult = await client.query(
+          `SELECT * FROM publisher_profiles WHERE catsco_uid = $1 FOR UPDATE`,
+          [uid]
+        );
+        let profileRow = identityResult.rows[0] || null;
+        let userRow = null;
+        if (profileRow) {
+          const userResult = await client.query(
+            `SELECT * FROM users WHERE id = $1 FOR UPDATE`,
+            [profileRow.user_id]
+          );
+          userRow = userResult.rows[0] || null;
+          if (!userRow) {
+            throw new ValidationError(
+              "CatsCo publisher identity is inconsistent.",
+              "catsco.publisher_identity_inconsistent",
+              409
+            );
+          }
+        }
+
+        const namespaceResult = await client.query(
+          `SELECT * FROM publisher_profiles WHERE namespace = $1 FOR UPDATE`,
+          [normalizedNamespace]
+        );
+        const namespaceRow = namespaceResult.rows[0] || null;
+        if (namespaceRow && (!profileRow || namespaceRow.user_id !== profileRow.user_id)) {
+          throw new ValidationError(
+            "CatsCo publisher namespace is already linked to another account.",
+            "catsco.publisher_namespace_conflict",
+            409
+          );
+        }
+
+        if (!profileRow) {
+          const userId = generateId("user");
+          const userResult = await client.query(
+            `INSERT INTO users (id, email, password_hash, display_name)
+             VALUES ($1, $2, $3, $4)
+             RETURNING *`,
+            [userId, normalizeEmail(internalEmail), passwordHash, displayName]
+          );
+          userRow = userResult.rows[0];
+          await client.query(
+            `INSERT INTO user_roles (id, user_id, role, granted_by)
+             VALUES ($1, $2, 'user', 'catsco')`,
+            [generateId("role"), userId]
+          );
+          const profileResult = await client.query(
+            `INSERT INTO publisher_profiles (
+               id, user_id, namespace, display_name, contact, website_url, catsco_uid, status
+             )
+             VALUES ($1, $2, $3, $4, $5, '', $6, 'active')
+             RETURNING *`,
+            [generateId("pub"), userId, normalizedNamespace, displayName, contact, uid]
+          );
+          profileRow = profileResult.rows[0];
+        } else {
+          const userResult = await client.query(
+            `UPDATE users
+             SET display_name = $2, updated_at = now()
+             WHERE id = $1
+             RETURNING *`,
+            [profileRow.user_id, displayName]
+          );
+          userRow = userResult.rows[0];
+          const profileResult = await client.query(
+            `UPDATE publisher_profiles
+             SET namespace = $2,
+                 display_name = $3,
+                 contact = $4,
+                 updated_at = now()
+             WHERE user_id = $1
+             RETURNING *`,
+            [profileRow.user_id, normalizedNamespace, displayName, contact]
+          );
+          profileRow = profileResult.rows[0];
+        }
+
+        return {
+          user: mapUser(userRow),
+          developerProfile: mapDeveloperProfile(profileRow)
+        };
+      });
+    },
+
+    async ensureDeveloperProfile({
+      userId,
+      namespace,
+      displayName,
+      contact,
+      websiteUrl = "",
+      approvedBy = "system",
+      catsCoUid = null
+    }) {
+      await ensureSimplifiedSchema();
+      const normalizedCatsCoUid = String(catsCoUid ?? "").trim() || null;
       const result = await query(
-        `INSERT INTO publisher_profiles (id, user_id, namespace, display_name, contact, website_url, status)
-         VALUES ($1, $2, $3, $4, $5, $6, 'active')
+        `INSERT INTO publisher_profiles (id, user_id, namespace, display_name, contact, website_url, catsco_uid, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'active')
          ON CONFLICT (user_id) DO UPDATE SET
            namespace = EXCLUDED.namespace,
            display_name = EXCLUDED.display_name,
            contact = EXCLUDED.contact,
            website_url = EXCLUDED.website_url,
+           catsco_uid = COALESCE(EXCLUDED.catsco_uid, publisher_profiles.catsco_uid),
            updated_at = now()
          RETURNING *`,
-        [generateId("pub"), userId, namespace, displayName, contact, websiteUrl]
+        [generateId("pub"), userId, namespace, displayName, contact, websiteUrl, normalizedCatsCoUid]
       );
       return result.rows[0] ? mapDeveloperProfile(result.rows[0]) : null;
     },
@@ -1741,6 +1885,7 @@ function mapDeveloperProfile(row) {
     displayName: row.display_name,
     contact: row.contact,
     websiteUrl: row.website_url,
+    catsCoUid: row.catsco_uid || null,
     status: row.status || "active",
     approvedBy: row.approved_by || null,
     approvedAt: iso(row.approved_at),
