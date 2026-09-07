@@ -80,6 +80,33 @@ test("CatsCo profile sync rejects a missing token without touching publisher dat
   assert.equal(store.profilesByUser.size, 0);
 });
 
+test("CatsCo profile sync rejects a namespace already owned by another verified UID", async () => {
+  const catsCo = http.createServer((req, res) => {
+    const token = String(req.headers.authorization || "").replace(/^Bearer\s+/, "");
+    const uid = token === "cats-token-b" ? 86 : 85;
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ uid, username: "same-name", display_name: `User ${uid}` }));
+  });
+  await listen(catsCo);
+  cleanup.push(() => close(catsCo));
+
+  const catsCoAddress = catsCo.address();
+  const store = createMemoryStore();
+  const api = createApiServer(testConfig(`http://127.0.0.1:${catsCoAddress.port}`), { store });
+  await listen(api);
+  cleanup.push(() => close(api));
+  const apiAddress = api.address();
+  const endpoint = `http://127.0.0.1:${apiAddress.port}/api/auth/catsco-profile-sync`;
+
+  const first = await post(endpoint, { token: "cats-token-a" });
+  assert.equal(first.response.status, 200);
+  const second = await post(endpoint, { token: "cats-token-b" });
+  assert.equal(second.response.status, 409);
+  assert.equal(second.data.error?.code, "catsco.publisher_namespace_conflict");
+  assert.equal(store.users.size, 1);
+  assert.equal(store.profilesByUser.get("user-1").contact, "catsco:85");
+});
+
 function createMemoryStore() {
   const users = new Map();
   const usersByEmail = new Map();

@@ -1024,11 +1024,17 @@ async function synchronizeCatsCoPublisherProfile(store, body, options = {}) {
   const displayName = String(catsUser.display_name || catsUser.displayName || hintUser.displayName || username).trim();
   const namespace = slugify(username, `catsco-${uid}`);
   const syntheticEmail = `catsco-${slugify(uid, "user")}@catsco.local`;
-  const existingProfile = typeof store.getDeveloperProfileByNamespace === "function"
+  let user = await store.getUserByEmail(syntheticEmail);
+  const namespaceProfile = typeof store.getDeveloperProfileByNamespace === "function"
     ? await store.getDeveloperProfileByNamespace(namespace)
     : null;
-  let user = existingProfile ? await store.getUserById(existingProfile.userId) : null;
-  if (!user) user = await store.getUserByEmail(syntheticEmail);
+  if (namespaceProfile && (!user || namespaceProfile.userId !== user.id)) {
+    throw new ValidationError(
+      "CatsCo publisher namespace is already linked to another account.",
+      "catsco.publisher_namespace_conflict",
+      409
+    );
+  }
   if (!user) {
     user = await store.createUser({
       email: syntheticEmail,
@@ -1037,18 +1043,13 @@ async function synchronizeCatsCoPublisherProfile(store, body, options = {}) {
     });
   }
   let developerProfile;
-  if (!existingProfile || existingProfile.userId === user.id) {
-    developerProfile = await store.ensureDeveloperProfile({
-      userId: user.id,
-      namespace,
-      displayName,
-      contact: `catsco:${uid}`,
-      approvedBy: "catsco"
-    });
-  } else {
-    await store.grantRole({ userId: user.id, role: "developer", grantedBy: "catsco" });
-    developerProfile = await store.getDeveloperProfile(user.id);
-  }
+  developerProfile = await store.ensureDeveloperProfile({
+    userId: user.id,
+    namespace,
+    displayName,
+    contact: `catsco:${uid}`,
+    approvedBy: "catsco"
+  });
   return {
     user,
     developerProfile,
