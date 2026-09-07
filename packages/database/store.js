@@ -666,9 +666,13 @@ export function createStore(config) {
     async listPublishedVersions() {
       await ensureSimplifiedSchema();
       const result = await query(
-        `SELECT * FROM skill_versions
-         WHERE status = 'published' AND yanked_at IS NULL
-         ORDER BY published_at DESC`
+        `SELECT skill_versions.*,
+                publisher_profiles.display_name AS publisher_display_name,
+                publisher_profiles.contact AS publisher_contact
+         FROM skill_versions
+         LEFT JOIN publisher_profiles ON publisher_profiles.user_id = skill_versions.owner_user_id
+         WHERE skill_versions.status = 'published' AND skill_versions.yanked_at IS NULL
+         ORDER BY skill_versions.published_at DESC`
       );
       return result.rows.map(mapPackageVersion);
     },
@@ -676,8 +680,13 @@ export function createStore(config) {
     async findPublishedVersion(skillId, version) {
       await ensureSimplifiedSchema();
       const result = await query(
-        `SELECT * FROM skill_versions
-         WHERE skill_id = $1 AND version = $2 AND status = 'published' AND yanked_at IS NULL`,
+        `SELECT skill_versions.*,
+                publisher_profiles.display_name AS publisher_display_name,
+                publisher_profiles.contact AS publisher_contact
+         FROM skill_versions
+         LEFT JOIN publisher_profiles ON publisher_profiles.user_id = skill_versions.owner_user_id
+         WHERE skill_versions.skill_id = $1 AND skill_versions.version = $2
+           AND skill_versions.status = 'published' AND skill_versions.yanked_at IS NULL`,
         [skillId, version]
       );
       return result.rows[0] ? mapPackageVersion(result.rows[0]) : null;
@@ -696,9 +705,14 @@ export function createStore(config) {
     async listPublishedVersionsForSkill(skillId) {
       await ensureSimplifiedSchema();
       const result = await query(
-        `SELECT * FROM skill_versions
-         WHERE skill_id = $1 AND status = 'published' AND yanked_at IS NULL
-         ORDER BY published_at DESC`,
+        `SELECT skill_versions.*,
+                publisher_profiles.display_name AS publisher_display_name,
+                publisher_profiles.contact AS publisher_contact
+         FROM skill_versions
+         LEFT JOIN publisher_profiles ON publisher_profiles.user_id = skill_versions.owner_user_id
+         WHERE skill_versions.skill_id = $1
+           AND skill_versions.status = 'published' AND skill_versions.yanked_at IS NULL
+         ORDER BY skill_versions.published_at DESC`,
         [skillId]
       );
       return result.rows.map(mapPackageVersion);
@@ -1817,6 +1831,8 @@ function mapPackageVersion(row) {
       downloadCount: Number(row.download_count ?? 0),
       createdAt: iso(row.created_at),
       ownerUserId: row.owner_user_id,
+      publisherDisplayName: row.publisher_display_name || null,
+      publisherContact: row.publisher_contact || null,
       storageBackend: row.storage_backend || "legacy-fs",
       gitRepositoryId: row.git_repository_id || null,
       gitCommitSha: row.git_commit_sha || null,

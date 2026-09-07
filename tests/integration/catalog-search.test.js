@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { searchPublishedSkills } from "../../packages/search/index.js";
+import { searchPublishedSkills, toRegistryEntry } from "../../packages/search/index.js";
 
 test("name search excludes description-only substring matches", () => {
   const versions = [
@@ -60,7 +60,45 @@ test("name search matches technical and display names with separator normalizati
   );
 });
 
-function publishedVersion({ skillId, name, displayName = name, description = "" }) {
+test("registry entries expose the current CatsCo display name and stable UID without replacing the namespace", () => {
+  const version = publishedVersion({
+    skillId: "arrowhaken/test-skill",
+    name: "test-skill",
+    authorName: "arrowhaken",
+    publisherDisplayName: "arrowhaken1",
+    publisherContact: "catsco:85"
+  });
+
+  assert.deepEqual(toRegistryEntry(version).author, {
+    name: "arrowhaken",
+    displayName: "arrowhaken1",
+    catsCoUid: "85"
+  });
+});
+
+test("registry entries do not expose non-CatsCo publisher contact values", () => {
+  const version = publishedVersion({
+    skillId: "tools/test-skill",
+    name: "test-skill",
+    publisherDisplayName: "Test User",
+    publisherContact: "private@example.com"
+  });
+
+  assert.deepEqual(toRegistryEntry(version).author, {
+    name: "tools",
+    displayName: "Test User"
+  });
+});
+
+function publishedVersion({
+  skillId,
+  name,
+  displayName = name,
+  description = "",
+  authorName = "",
+  publisherDisplayName = "",
+  publisherContact = ""
+}) {
   return {
     skillId,
     skillName: name,
@@ -77,8 +115,10 @@ function publishedVersion({ skillId, name, displayName = name, description = "" 
       tags: [],
       triggerExamples: [],
       categories: [],
-      author: {},
+      author: authorName ? { name: authorName } : {},
       runtime: {}
-    }
+    },
+    publisherDisplayName,
+    publisherContact
   };
 }

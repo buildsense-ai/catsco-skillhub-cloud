@@ -35,6 +35,8 @@ export function toRegistryEntry(version) {
   const namespace = String(version.skillId || "").split("/")[0] || "";
   const author = version.manifest.author || {};
   const authorName = String(author.name || "").trim();
+  const publisherDisplayName = String(version.publisherDisplayName || "").trim();
+  const catsCoUid = catsCoUidFromContact(version.publisherContact);
   return {
     skillId: version.skillId,
     name: version.skillName,
@@ -47,7 +49,9 @@ export function toRegistryEntry(version) {
     triggerExamples: version.manifest.triggerExamples,
     author: {
       ...author,
-      name: authorName && authorName !== "Unknown" ? authorName : (namespace || "Unknown")
+      name: authorName && authorName !== "Unknown" ? authorName : (namespace || "Unknown"),
+      ...(publisherDisplayName ? { displayName: publisherDisplayName } : {}),
+      ...(catsCoUid ? { catsCoUid } : {})
     },
     permissions: version.manifest.permissions,
     runtime: version.manifest.runtime,
@@ -66,6 +70,11 @@ export function toRegistryEntry(version) {
     publishedAt: version.publishedAt,
     downloadCount: version.downloadCount ?? 0
   };
+}
+
+function catsCoUidFromContact(contact) {
+  const match = /^catsco:(\d+)$/.exec(String(contact || "").trim());
+  return match?.[1] || "";
 }
 
 function compatible(manifest, agentVersion, platform) {
