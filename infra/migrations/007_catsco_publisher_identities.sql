@@ -2,10 +2,12 @@ ALTER TABLE publisher_profiles
   ADD COLUMN IF NOT EXISTS catsco_uid text;
 
 WITH unique_legacy_identities AS (
-  SELECT contact
-  FROM publisher_profiles
-  WHERE contact ~ '^catsco:[^[:space:]]+$'
-  GROUP BY contact
+  SELECT profile.contact
+  FROM publisher_profiles AS profile
+  JOIN users AS account ON account.id = profile.user_id
+  WHERE profile.contact ~ '^catsco:[^[:space:]]+$'
+    AND account.email = 'catsco-' || substr(profile.contact, 8) || '@catsco.local'
+  GROUP BY profile.contact
   HAVING count(*) = 1
 )
 UPDATE publisher_profiles AS profile
