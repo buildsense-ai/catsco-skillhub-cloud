@@ -924,6 +924,8 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
             displayName: manifest.displayName,
             version: manifest.version,
             manifest,
+            publisherDisplayName: actor.developerProfile?.displayName,
+            publisherContact: actor.developerProfile?.contact,
             packageUrl: "",
             contentHash,
             checksumSha256: "",
