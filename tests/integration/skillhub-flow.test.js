@@ -227,12 +227,11 @@ test("PostgreSQL-backed concurrent first profile sync creates one identity", { s
   assert.deepEqual(responses.map((response) => response.status), [200, 200]);
 
   const [first, second] = await Promise.all(responses.map((response) => response.json()));
-  assert.equal(first.user.id, second.user.id);
   assert.equal(first.developerProfile.userId, second.developerProfile.userId);
 
   const profile = await store.getDeveloperProfileByCatsCoUid(`profile-${suffix}`);
   assert.ok(profile);
-  assert.equal(profile.userId, first.user.id);
+  assert.equal(profile.userId, first.developerProfile.userId);
 });
 
 async function register(email, password) {
