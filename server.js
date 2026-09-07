@@ -84,8 +84,9 @@ export function createApiServer(config = loadConfig()) {
 
       if (pathname === "/api/auth/register" && req.method === "POST") {
         const body = await readJson(req, 128 * 1024);
+        const email = requirePublicRegistrationEmail(body.email);
         const user = await store.createUser({
-          email: requireEmail(body.email),
+          email,
           passwordHash: hashPassword(body.password),
           displayName: requireText(body.displayName || body.email, "displayName", 2, 80)
         });
@@ -1023,8 +1024,18 @@ async function synchronizeCatsCoPublisherProfile(store, body, options = {}) {
   const username = String(catsUser.username || hintUser.username || `catsco_${uid}`).trim();
   const displayName = String(catsUser.display_name || catsUser.displayName || hintUser.displayName || username).trim();
   const namespace = slugify(username, `catsco-${uid}`);
-  const syntheticEmail = `catsco-${slugify(uid, "user")}@catsco.local`;
-  let user = await store.getUserByEmail(syntheticEmail);
+  if (typeof store.getDeveloperProfileByCatsCoUid !== "function") {
+    throw new Error("CatsCo publisher identity storage is unavailable.");
+  }
+  const existingProfile = await store.getDeveloperProfileByCatsCoUid(uid);
+  let user = existingProfile ? await store.getUserById(existingProfile.userId) : null;
+  if (existingProfile && !user) {
+    throw new ValidationError(
+      "CatsCo publisher identity is inconsistent.",
+      "catsco.publisher_identity_inconsistent",
+      409
+    );
+  }
   const namespaceProfile = typeof store.getDeveloperProfileByNamespace === "function"
     ? await store.getDeveloperProfileByNamespace(namespace)
     : null;
@@ -1037,7 +1048,7 @@ async function synchronizeCatsCoPublisherProfile(store, body, options = {}) {
   }
   if (!user) {
     user = await store.createUser({
-      email: syntheticEmail,
+      email: `catsco-${slugify(uid, "user")}-${createSessionToken().slice(0, 16)}@verified.catsco.internal`,
       passwordHash: hashPassword(`${createSessionToken()}:${uid}`),
       displayName
     });
@@ -1048,6 +1059,7 @@ async function synchronizeCatsCoPublisherProfile(store, body, options = {}) {
     namespace,
     displayName,
     contact: `catsco:${uid}`,
+    catsCoUid: uid,
     approvedBy: "catsco"
   });
   return {
@@ -1275,6 +1287,20 @@ function publicUser(user) {
 function requireEmail(value) {
   const email = String(value ?? "").trim().toLowerCase();
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new ValidationError("邮箱格式不正确", "email.invalid");
+  return email;
+}
+
+function requirePublicRegistrationEmail(value) {
+  const email = requireEmail(value);
+  const domain = email.split("@").at(-1);
+  if (
+    domain === "catsco.local"
+    || domain?.endsWith(".catsco.local")
+    || domain === "catsco.internal"
+    || domain?.endsWith(".catsco.internal")
+  ) {
+    throw new ValidationError("该邮箱域名保留给 CatsCo 内部身份。", "email.reserved", 400);
+  }
   return email;
 }
 

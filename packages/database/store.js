@@ -85,12 +85,25 @@ export function createStore(config) {
             SELECT 1
             FROM information_schema.columns
             WHERE table_schema = current_schema()
+              AND table_name = 'publisher_profiles'
+              AND column_name = 'catsco_uid'
+          ) AS catsco_identity_column,
+          EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = current_schema()
               AND table_name = 'skill_versions'
               AND column_name = 'git_commit_sha'
           ) AS git_columns
       `);
       const schema = result.rows[0] || {};
-      if (!schema.publisher_profiles || !schema.skill_scans || !schema.skill_versions || !schema.git_columns) {
+      if (
+        !schema.publisher_profiles
+        || !schema.skill_scans
+        || !schema.skill_versions
+        || !schema.catsco_identity_column
+        || !schema.git_columns
+      ) {
         throw new Error("SkillHub database schema is incomplete; run npm run db:migrate");
       }
       simplifiedSchemaReady = true;
@@ -242,19 +255,37 @@ export function createStore(config) {
       return result.rows[0] ? mapDeveloperProfile(result.rows[0]) : null;
     },
 
-    async ensureDeveloperProfile({ userId, namespace, displayName, contact, websiteUrl = "", approvedBy = "system" }) {
+    async getDeveloperProfileByCatsCoUid(catsCoUid) {
       await ensureSimplifiedSchema();
+      const uid = String(catsCoUid ?? "").trim();
+      if (!uid) return null;
+      const result = await query(`SELECT * FROM publisher_profiles WHERE catsco_uid = $1`, [uid]);
+      return result.rows[0] ? mapDeveloperProfile(result.rows[0]) : null;
+    },
+
+    async ensureDeveloperProfile({
+      userId,
+      namespace,
+      displayName,
+      contact,
+      websiteUrl = "",
+      approvedBy = "system",
+      catsCoUid = null
+    }) {
+      await ensureSimplifiedSchema();
+      const normalizedCatsCoUid = String(catsCoUid ?? "").trim() || null;
       const result = await query(
-        `INSERT INTO publisher_profiles (id, user_id, namespace, display_name, contact, website_url, status)
-         VALUES ($1, $2, $3, $4, $5, $6, 'active')
+        `INSERT INTO publisher_profiles (id, user_id, namespace, display_name, contact, website_url, catsco_uid, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'active')
          ON CONFLICT (user_id) DO UPDATE SET
            namespace = EXCLUDED.namespace,
            display_name = EXCLUDED.display_name,
            contact = EXCLUDED.contact,
            website_url = EXCLUDED.website_url,
+           catsco_uid = COALESCE(EXCLUDED.catsco_uid, publisher_profiles.catsco_uid),
            updated_at = now()
          RETURNING *`,
-        [generateId("pub"), userId, namespace, displayName, contact, websiteUrl]
+        [generateId("pub"), userId, namespace, displayName, contact, websiteUrl, normalizedCatsCoUid]
       );
       return result.rows[0] ? mapDeveloperProfile(result.rows[0]) : null;
     },
@@ -1741,6 +1772,7 @@ function mapDeveloperProfile(row) {
     displayName: row.display_name,
     contact: row.contact,
     websiteUrl: row.website_url,
+    catsCoUid: row.catsco_uid || null,
     status: row.status || "active",
     approvedBy: row.approved_by || null,
     approvedAt: iso(row.approved_at),

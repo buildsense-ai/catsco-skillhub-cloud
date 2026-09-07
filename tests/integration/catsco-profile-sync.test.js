@@ -107,18 +107,92 @@ test("CatsCo profile sync rejects a namespace already owned by another verified 
   assert.equal(store.profilesByUser.get("user-1").contact, "catsco:85");
 });
 
+test("public registration cannot preclaim an internal CatsCo publisher identity", async () => {
+  const catsCo = http.createServer((_req, res) => {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ uid: 85, username: "arrowhaken", display_name: "arrowhaken" }));
+  });
+  await listen(catsCo);
+  cleanup.push(() => close(catsCo));
+
+  const catsCoAddress = catsCo.address();
+  const store = createMemoryStore();
+  const api = createApiServer(testConfig(`http://127.0.0.1:${catsCoAddress.port}`), { store });
+  await listen(api);
+  cleanup.push(() => close(api));
+  const apiAddress = api.address();
+  const baseUrl = `http://127.0.0.1:${apiAddress.port}`;
+  const attackerEmail = "catsco-85@catsco.local";
+  const attackerPassword = "attacker-password";
+
+  const registration = await post(`${baseUrl}/api/auth/register`, {
+    email: attackerEmail,
+    password: attackerPassword,
+    displayName: "attacker"
+  });
+  assert.equal(registration.response.status, 400);
+  assert.equal(registration.data.error?.code, "email.reserved");
+
+  const sync = await post(`${baseUrl}/api/auth/catsco-profile-sync`, { token: "cats-token" });
+  assert.equal(sync.response.status, 200);
+  assert.equal(sync.data.developerProfile.catsCoUid, "85");
+
+  const login = await post(`${baseUrl}/api/auth/login`, {
+    email: attackerEmail,
+    password: attackerPassword
+  });
+  assert.equal(login.response.status, 401);
+  assert.equal(store.users.size, 1);
+  assert.equal(store.profilesByCatsCoUid.get("85").userId, "user-1");
+});
+
+test("a legacy preclaimed synthetic email is never adopted as a verified CatsCo identity", async () => {
+  const catsCo = http.createServer((_req, res) => {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ uid: 85, username: "arrowhaken", display_name: "arrowhaken" }));
+  });
+  await listen(catsCo);
+  cleanup.push(() => close(catsCo));
+
+  const catsCoAddress = catsCo.address();
+  const store = createMemoryStore();
+  const attacker = await store.createUser({
+    email: "catsco-85@catsco.local",
+    passwordHash: "attacker-password-hash",
+    displayName: "attacker"
+  });
+  const api = createApiServer(testConfig(`http://127.0.0.1:${catsCoAddress.port}`), { store });
+  await listen(api);
+  cleanup.push(() => close(api));
+  const apiAddress = api.address();
+
+  const sync = await post(
+    `http://127.0.0.1:${apiAddress.port}/api/auth/catsco-profile-sync`,
+    { token: "cats-token" }
+  );
+  assert.equal(sync.response.status, 200);
+  assert.equal(store.users.size, 2);
+  assert.equal(store.profilesByUser.has(attacker.id), false);
+  assert.notEqual(store.profilesByCatsCoUid.get("85").userId, attacker.id);
+});
+
 function createMemoryStore() {
   const users = new Map();
   const usersByEmail = new Map();
   const profilesByUser = new Map();
   const profilesByNamespace = new Map();
+  const profilesByCatsCoUid = new Map();
   const audits = [];
   return {
     users,
     profilesByUser,
+    profilesByCatsCoUid,
     audits,
     async getDeveloperProfileByNamespace(namespace) {
       return profilesByNamespace.get(namespace) || null;
+    },
+    async getDeveloperProfileByCatsCoUid(catsCoUid) {
+      return profilesByCatsCoUid.get(String(catsCoUid)) || null;
     },
     async getUserById(id) {
       return users.get(id) || null;
@@ -142,10 +216,17 @@ function createMemoryStore() {
     },
     async ensureDeveloperProfile(input) {
       const existing = profilesByUser.get(input.userId);
-      if (existing) profilesByNamespace.delete(existing.namespace);
-      const profile = { ...input };
+      if (existing) {
+        profilesByNamespace.delete(existing.namespace);
+        if (existing.catsCoUid) profilesByCatsCoUid.delete(existing.catsCoUid);
+      }
+      const profile = {
+        ...input,
+        catsCoUid: String(input.catsCoUid ?? "").trim() || existing?.catsCoUid || null
+      };
       profilesByUser.set(input.userId, profile);
       profilesByNamespace.set(input.namespace, profile);
+      if (profile.catsCoUid) profilesByCatsCoUid.set(profile.catsCoUid, profile);
       return profile;
     },
     async getDeveloperProfile(userId) {
