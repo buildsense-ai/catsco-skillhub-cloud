@@ -10,6 +10,7 @@ import {
   parsePrivateSkillMetadataRequest,
   startApiServer
 } from "../../apps/api/server.js";
+import { RateLimiter } from "../../packages/auth/index.js";
 import { authenticateCatsCoBot } from "../../packages/bot-auth/index.js";
 import { loadConfig } from "../../packages/config/index.js";
 import { hasBlockingFindings, sha256 } from "../../packages/domain/index.js";
@@ -47,6 +48,22 @@ test("private reference detection covers current and legacy namespaces", () => {
   assert.equal(isPrivateSkillReference(`priv_${"a".repeat(40)}`), true);
   assert.equal(isPrivateSkillReference("priv_malformed"), true);
   assert.equal(isPrivateSkillReference("PRIVATE/legacy-reference"), true);
+});
+
+test("private upload rate defaults support full Agent synchronization and remain configurable", () => {
+  assert.equal(testConfig("unused").privateSkills.maxUploadsPerMinute, 300);
+  assert.equal(testConfig("unused", undefined, {
+    privateSkillMaxUploadsPerMinute: 42
+  }).privateSkills.maxUploadsPerMinute, 42);
+});
+
+test("rate limiter refunds idempotent work without opening additional capacity", () => {
+  const limiter = new RateLimiter({ limit: 2 });
+  assert.equal(limiter.check("bot"), true);
+  limiter.refund("bot");
+  assert.equal(limiter.check("bot"), true);
+  assert.equal(limiter.check("bot"), true);
+  assert.equal(limiter.check("bot"), false);
 });
 
 test("private metadata request validation is bounded, private-only, and deduplicated", () => {
@@ -1000,6 +1017,16 @@ test("production startup rejects unsafe private Skill rollout settings", async (
       privateSkillsWriteEnabled: false,
       privateSkillAllowedBotIds: ["42"],
       privateSkillMaxFiles: 201
+    })),
+    /outside the supported production safety boundary/i
+  );
+  await assert.rejects(
+    startApiServer(loadConfig({
+      ...base,
+      privateSkillsReadEnabled: true,
+      privateSkillsWriteEnabled: false,
+      privateSkillAllowedBotIds: ["42"],
+      privateSkillMaxUploadsPerMinute: 601
     })),
     /outside the supported production safety boundary/i
   );

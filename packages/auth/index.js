@@ -188,6 +188,13 @@ export class RateLimiter {
     return bucket.count <= this.limit;
   }
 
+  refund(key) {
+    const bucket = this.buckets.get(key);
+    if (!bucket) return;
+    bucket.count = Math.max(0, bucket.count - 1);
+    if (bucket.count === 0) this.buckets.delete(key);
+  }
+
   sweep(now = Date.now()) {
     for (const [key, bucket] of this.buckets) {
       if (bucket.resetAt <= now) this.buckets.delete(key);

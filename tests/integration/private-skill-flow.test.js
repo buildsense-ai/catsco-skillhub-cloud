@@ -17,6 +17,7 @@ let root;
 let upstream;
 let server;
 let baseUrl;
+let upstreamBaseUrl;
 
 before(async () => {
   if (!databaseUrl) return;
@@ -34,6 +35,7 @@ before(async () => {
   });
   await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
   const upstreamAddress = upstream.address();
+  upstreamBaseUrl = `http://127.0.0.1:${upstreamAddress.port}`;
   const config = loadConfig({
     root,
     storageRoot: path.join(root, "storage"),
@@ -41,7 +43,7 @@ before(async () => {
     sharedRoot: path.join(root, "shared"),
     databaseUrl,
     sessionSecret: "test-session-secret-that-is-long-enough-for-tests",
-    catsCoBaseUrl: `http://127.0.0.1:${upstreamAddress.port}`,
+    catsCoBaseUrl: upstreamBaseUrl,
     privateSkillMaxConcurrentUploads: 16,
     mutationWriterEnabled: true,
     mutationWriterSecret,
@@ -262,6 +264,49 @@ test("private Bot packages are idempotent, immutable, and isolated by Bot", { sk
   assert.equal(oldStillExists.data.contentHash, firstBody.contentHash);
 });
 
+test("active idempotent private packages do not consume upload write quota", { skip: !databaseUrl }, async (t) => {
+  const limitedRoot = path.join(root, "limited-upload-rate");
+  const limitedConfig = loadConfig({
+    root: limitedRoot,
+    storageRoot: path.join(limitedRoot, "storage"),
+    logsRoot: path.join(limitedRoot, "logs"),
+    sharedRoot: path.join(limitedRoot, "shared"),
+    databaseUrl,
+    sessionSecret: "test-session-secret-that-is-long-enough-for-tests",
+    catsCoBaseUrl: upstreamBaseUrl,
+    privateSkillMaxConcurrentUploads: 16,
+    privateSkillMaxUploadsPerMinute: 2,
+    nodeEnv: "test"
+  });
+  const limitedServer = createApiServer(limitedConfig);
+  await new Promise((resolve) => limitedServer.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => limitedServer.close(resolve)));
+  const address = limitedServer.address();
+  const limitedBaseUrl = `http://127.0.0.1:${address.port}`;
+
+  const firstBody = packageBody(`rate-first-${suffix}`, "# Rate first\n");
+  const first = await requestAt(limitedBaseUrl, "PUT", "/api/bot/private-skill-packages", "bot-key-a", "42001", firstBody);
+  assert.equal(first.status, 201);
+
+  for (let index = 0; index < 5; index += 1) {
+    const repeated = await requestAt(limitedBaseUrl, "PUT", "/api/bot/private-skill-packages", "bot-key-a", "42001", firstBody);
+    assert.equal(repeated.status, 200);
+    assert.deepEqual(repeated.data.reference, first.data.reference);
+  }
+
+  const secondBody = packageBody(`rate-second-${suffix}`, "# Rate second\n");
+  const second = await requestAt(limitedBaseUrl, "PUT", "/api/bot/private-skill-packages", "bot-key-a", "42001", secondBody);
+  assert.equal(second.status, 201);
+
+  const secondRepeated = await requestAt(limitedBaseUrl, "PUT", "/api/bot/private-skill-packages", "bot-key-a", "42001", secondBody);
+  assert.equal(secondRepeated.status, 200);
+
+  const thirdBody = packageBody(`rate-third-${suffix}`, "# Rate third\n");
+  const limited = await requestAt(limitedBaseUrl, "PUT", "/api/bot/private-skill-packages", "bot-key-a", "42001", thirdBody);
+  assert.equal(limited.status, 429);
+  assert.equal(limited.data.error.code, "PRIVATE_SKILL_RATE_LIMITED");
+});
+
 function packageBody(localSkillId, text) {
   const bytes = Buffer.from(text);
   const files = [{
@@ -283,7 +328,11 @@ function packagePath(reference) {
 }
 
 async function request(method, pathname, apiKey, botId, body) {
-  const response = await fetch(`${baseUrl}${pathname}`, {
+  return requestAt(baseUrl, method, pathname, apiKey, botId, body);
+}
+
+async function requestAt(requestBaseUrl, method, pathname, apiKey, botId, body) {
+  const response = await fetch(`${requestBaseUrl}${pathname}`, {
     method,
     headers: {
       Accept: "application/json",

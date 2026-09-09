@@ -1648,6 +1648,21 @@ export function createStore(config) {
       return result.rowCount ? mapPrivateSkillVersion(result.rows[0]) : null;
     },
 
+    async findActivePrivateSkillVersionByContent({ authority, ownerBotId, localSkillId, contentHash }) {
+      const result = await query(
+        `SELECT v.*, s.skill_id, s.authority, s.owner_bot_id, s.local_skill_id
+         FROM private_skill_versions v
+         JOIN private_skills s ON s.id = v.private_skill_id
+         WHERE s.authority = $1
+           AND s.owner_bot_id = $2
+           AND s.local_skill_id = $3
+           AND v.content_hash = $4
+           AND v.status = 'active'`,
+        [authority, ownerBotId, localSkillId, contentHash]
+      );
+      return result.rowCount ? mapPrivateSkillVersion(result.rows[0]) : null;
+    },
+
     async findPrivateSkillMetadata({ authority, ownerBotId, references }) {
       if (!Array.isArray(references) || references.length === 0) return [];
       const result = await query(
