@@ -54,7 +54,11 @@ const adminIndexPath = path.resolve(here, "../admin/public/index-v2.html");
 export function createApiServer(config = loadConfig(), dependencies = {}) {
   const store = dependencies.store ?? createStore(config);
   const limiter = new RateLimiter({ windowMs: 60_000, limit: 600, maxBuckets: 20_000 });
-  const botWriteLimiter = new RateLimiter({ windowMs: 60_000, limit: 30, maxBuckets: 20_000 });
+  const botWriteLimiter = new RateLimiter({
+    windowMs: 60_000,
+    limit: config.privateSkills.maxUploadsPerMinute,
+    maxBuckets: 20_000
+  });
   const botReadLimiter = new RateLimiter({ windowMs: 60_000, limit: 600, maxBuckets: 20_000 });
   const botHistoryLimiter = new RateLimiter({ windowMs: 60_000, limit: 120, maxBuckets: 20_000 });
   let activePrivateUploads = 0;
@@ -283,12 +287,6 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
         };
         res.once("finish", releaseUpload);
         res.once("close", releaseUpload);
-        if (!botWriteLimiter.check(`${identity.authority}\0${identity.botId}`)) {
-          sendJson(res, 429, { error: { code: "PRIVATE_SKILL_RATE_LIMITED", message: "Too many private Skill uploads." } }, {
-            "Retry-After": "60"
-          });
-          return;
-        }
         const body = await readJson(req, config.privateSkills.maxRequestBytes);
         const input = parsePrivateSkillUpsert(body, config);
         if (input.origin && isPrivateSkillReference(input.origin.skillId)) {
@@ -305,6 +303,25 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
               400
             );
           }
+        }
+        const existing = await store.findActivePrivateSkillVersionByContent({
+          authority: identity.authority,
+          ownerBotId: identity.botId,
+          localSkillId: input.localSkillId,
+          contentHash: input.contentHash
+        });
+        if (existing) {
+          assertPrivateSkillIdempotencyMetadata(existing, input);
+          const stored = await readPrivatePackage(existing, config);
+          sendJson(res, 200, privatePackageMetadata(stored));
+          return;
+        }
+        const writeRateKey = `${identity.authority}\0${identity.botId}`;
+        if (!botWriteLimiter.check(writeRateKey)) {
+          sendJson(res, 429, { error: { code: "PRIVATE_SKILL_RATE_LIMITED", message: "Too many private Skill uploads." } }, {
+            "Retry-After": "60"
+          });
+          return;
         }
         // Non-private origins are untrusted provenance metadata. They can
         // outlive a rebuilt public Registry and must never authorize reads.
@@ -328,13 +345,7 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
           maxBytesPerBot: config.privateSkills.maxBytesPerBot
         });
         const reserved = reservation.version;
-        if (reserved.name !== input.name || !referencesEqual(reserved.origin, input.origin)) {
-          throw new ValidationError(
-            "The idempotent private Skill version has different metadata.",
-            "PRIVATE_SKILL_IDEMPOTENCY_CONFLICT",
-            409
-          );
-        }
+        assertPrivateSkillIdempotencyMetadata(reserved, input);
         if (reserved.status === "rejected") {
           throw new ValidationError(
             "The private Skill package was rejected.",
@@ -343,6 +354,7 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
           );
         }
         if (reserved.status === "active") {
+          botWriteLimiter.refund(writeRateKey);
           const stored = await readPrivatePackage(reserved, config);
           sendJson(res, 200, privatePackageMetadata(stored));
           return;
@@ -1927,6 +1939,15 @@ function referencesEqual(left, right) {
     && left.version === right.version;
 }
 
+function assertPrivateSkillIdempotencyMetadata(existing, input) {
+  if (existing.name === input.name && referencesEqual(existing.origin, input.origin)) return;
+  throw new ValidationError(
+    "The idempotent private Skill version has different metadata.",
+    "PRIVATE_SKILL_IDEMPOTENCY_CONFLICT",
+    409
+  );
+}
+
 function requireAllowedPrivateSkillBot(config, botId) {
   const allowed = config.privateSkills.allowedBotIds;
   if ((!Array.isArray(allowed) || allowed.length === 0) && !config.privateSkills.allowAllBots) {
@@ -2013,6 +2034,8 @@ function assertProductionConfig(config) {
       || config.privateSkills.maxRequestBytes < config.privateSkills.maxTotalBytes
       || config.privateSkills.maxRequestBytes > 30 * 1024 * 1024
       || config.privateSkills.maxConcurrentUploads < 1
+      || config.privateSkills.maxUploadsPerMinute < 1
+      || config.privateSkills.maxUploadsPerMinute > 600
       || config.privateSkills.maxVersionsPerBot < 1
       || config.privateSkills.maxBytesPerBot < config.privateSkills.maxTotalBytes
     ) {

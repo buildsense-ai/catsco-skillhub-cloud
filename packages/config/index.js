@@ -137,6 +137,9 @@ export function loadConfig(overrides = {}) {
       maxConcurrentUploads:
         overrides.privateSkillMaxConcurrentUploads
         ?? readInt("SKILLHUB_PRIVATE_MAX_CONCURRENT_UPLOADS", 2),
+      maxUploadsPerMinute:
+        overrides.privateSkillMaxUploadsPerMinute
+        ?? readInt("SKILLHUB_PRIVATE_MAX_UPLOADS_PER_MINUTE", 300),
       maxFiles:
         overrides.privateSkillMaxFiles
         ?? readInt("SKILLHUB_PRIVATE_MAX_FILES", 200),
