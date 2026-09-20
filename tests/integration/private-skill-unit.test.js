@@ -512,6 +512,26 @@ test("private package validation keeps package structure and transport boundarie
   );
 });
 
+test("private package validation accepts a page inside the SkillHub single-file budget", () => {
+  const config = testConfig("unused");
+  const artwork = file("assets/template.html", Buffer.alloc(3_470_090));
+  const files = [file("SKILL.md", Buffer.from("# Test\n")), artwork];
+  const parse = (input) => parsePrivateSkillUpsert({
+    localSkillId: "local-a",
+    name: "alpha",
+    contentHash: computePrivateSkillContentHash(input),
+    files: input
+  }, config);
+
+  assert.doesNotThrow(() => parse(files));
+
+  const oversized = [...files, file("assets/too-big.bin", Buffer.alloc(5 * 1024 * 1024 + 1))];
+  assert.throws(
+    () => parse(oversized),
+    (error) => error.code === "PRIVATE_SKILL_FILE_TOO_LARGE"
+  );
+});
+
 test("private package validation allows credentials, archives, and binary content", () => {
   const config = testConfig("unused");
   const contentFiles = [
@@ -1036,6 +1056,16 @@ test("production startup rejects unsafe private Skill rollout settings", async (
       privateSkillsWriteEnabled: false,
       privateSkillAllowedBotIds: ["42"],
       privateSkillMaxUploadsPerMinute: 601
+    })),
+    /outside the supported production safety boundary/i
+  );
+  await assert.rejects(
+    startApiServer(loadConfig({
+      ...base,
+      privateSkillsReadEnabled: true,
+      privateSkillsWriteEnabled: false,
+      privateSkillAllowedBotIds: ["42"],
+      privateSkillMaxSingleFileBytes: 5 * 1024 * 1024 + 1
     })),
     /outside the supported production safety boundary/i
   );
