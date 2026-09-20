@@ -74,8 +74,17 @@ test("private metadata request validation is bounded, private-only, and deduplic
     (error) => error.code === "PRIVATE_SKILL_METADATA_REFERENCE_INVALID" && error.status === 400
   );
   assert.throws(
-    () => parsePrivateSkillMetadataRequest({ references: Array.from({ length: 257 }, () => first) }),
+    () => parsePrivateSkillMetadataRequest({ references: Array.from({ length: 1025 }, () => first) }),
     (error) => error.code === "PRIVATE_SKILL_METADATA_REFERENCES_INVALID" && error.status === 400
+  );
+  assert.deepEqual(
+    parsePrivateSkillMetadataRequest({
+      references: Array.from({ length: 1024 }, (_value, index) => ({
+        skillId: `priv_${String(index).padStart(40, "0")}`,
+        version: `v_${index}`
+      }))
+    }).length,
+    1024
   );
 });
 
@@ -126,7 +135,7 @@ test("private metadata route accepts the maximum validated reference request", a
   await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
   cleanup.push(() => new Promise((resolve) => upstream.close(resolve)));
   const upstreamAddress = upstream.address();
-  const references = Array.from({ length: 256 }, (_, index) => {
+  const references = Array.from({ length: 1024 }, (_, index) => {
     const skillPrefix = `priv_${index.toString(16).padStart(4, "0")}_`;
     const versionPrefix = `v_${index.toString(16).padStart(4, "0")}_`;
     return {
@@ -135,7 +144,7 @@ test("private metadata route accepts the maximum validated reference request", a
     };
   });
   const requestBody = JSON.stringify({ references });
-  assert.ok(Buffer.byteLength(requestBody) > 64 * 1024);
+  assert.ok(Buffer.byteLength(requestBody) > 1024 * 1024);
 
   let receivedReferences;
   const server = createApiServer(
@@ -164,9 +173,9 @@ test("private metadata route accepts the maximum validated reference request", a
 
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { skills: [] });
-  assert.equal(receivedReferences.length, 256);
+  assert.equal(receivedReferences.length, 1024);
 
-  const escapedReferences = Array.from({ length: 256 }, (_, index) => {
+  const escapedReferences = Array.from({ length: 1024 }, (_, index) => {
     const skillPrefix = `priv_${index.toString(16).padStart(4, "0")}_`;
     const versionPrefix = `v_${index.toString(16).padStart(4, "0")}_`;
     return {
@@ -175,7 +184,7 @@ test("private metadata route accepts the maximum validated reference request", a
     };
   });
   const escapedRequestBody = JSON.stringify({ references: escapedReferences });
-  assert.ok(Buffer.byteLength(escapedRequestBody) > 500 * 1024);
+  assert.ok(Buffer.byteLength(escapedRequestBody) > 2 * 1024 * 1024);
   const escapedResponse = await fetch(
     `http://127.0.0.1:${address.port}/api/bot/private-skill-metadata`,
     {

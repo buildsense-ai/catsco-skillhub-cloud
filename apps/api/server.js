@@ -1840,7 +1840,11 @@ function hasUnpairedSurrogate(text) {
   return false;
 }
 
-const PRIVATE_SKILL_METADATA_MAX_REFERENCES = 256;
+// A Bot publishes its whole local workspace into its own BotDefinition as
+// Bot-private packages, so metadata lookups have to resolve every Skill an
+// operator accumulated locally. Real workspaces already hold 374 entries, so
+// the previous 256 left the friends view of that Bot unable to load them.
+const PRIVATE_SKILL_METADATA_MAX_REFERENCES = 1024;
 const PRIVATE_SKILL_METADATA_MAX_SKILL_ID_LENGTH = 240;
 const PRIVATE_SKILL_METADATA_MAX_VERSION_LENGTH = 120;
 // JSON.stringify escapes an unpaired UTF-16 surrogate as six ASCII bytes. The
