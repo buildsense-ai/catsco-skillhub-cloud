@@ -1046,8 +1046,8 @@ test("production startup rejects unsafe private Skill rollout settings", async (
       privateSkillsReadEnabled: true,
       privateSkillsWriteEnabled: false,
       privateSkillAllowedBotIds: ["42"],
-    privateSkillMaxUploadsPerMinute: 601
-  })),
+      privateSkillMaxUploadsPerMinute: 601
+    })),
     /outside the supported production safety boundary/i
   );
   await assert.rejects(
