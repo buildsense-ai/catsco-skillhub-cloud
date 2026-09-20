@@ -11,7 +11,9 @@ import {
 
 export const PRIVATE_SKILL_PACKAGE_SCHEMA = "catsco.private-skill-package.v1";
 const PUBLIC_DOWNLOAD_MAX_FILES = 200;
-const PUBLIC_DOWNLOAD_MAX_SINGLE_FILE_BYTES = 2 * 1024 * 1024;
+// Mirrors the public package limit, so a published Skill this service accepts
+// can also be downloaded into a Bot workspace.
+const PUBLIC_DOWNLOAD_MAX_SINGLE_FILE_BYTES = 5 * 1024 * 1024;
 const PUBLIC_DOWNLOAD_MAX_TOTAL_BYTES = 20 * 1024 * 1024;
 const PUBLIC_PACKAGE_MAX_BYTES = 30 * 1024 * 1024;
 

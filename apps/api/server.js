@@ -2028,7 +2028,7 @@ function assertProductionConfig(config) {
       config.privateSkills.maxFiles < 1
       || config.privateSkills.maxFiles > 200
       || config.privateSkills.maxSingleFileBytes < 1
-      || config.privateSkills.maxSingleFileBytes > 2 * 1024 * 1024
+      || config.privateSkills.maxSingleFileBytes > 5 * 1024 * 1024
       || config.privateSkills.maxTotalBytes < 1
       || config.privateSkills.maxTotalBytes > 20 * 1024 * 1024
       || config.privateSkills.maxRequestBytes < config.privateSkills.maxTotalBytes

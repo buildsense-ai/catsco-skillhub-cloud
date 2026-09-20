@@ -143,9 +143,12 @@ export function loadConfig(overrides = {}) {
       maxFiles:
         overrides.privateSkillMaxFiles
         ?? readInt("SKILLHUB_PRIVATE_MAX_FILES", 200),
+      // Mirrors SKILLHUB_MAX_SINGLE_FILE_BYTES for public packages: a Bot
+      // publishes its whole local workspace, so a page with embedded artwork
+      // must not be rejected here while the public path would accept it.
       maxSingleFileBytes:
         overrides.privateSkillMaxSingleFileBytes
-        ?? readInt("SKILLHUB_PRIVATE_MAX_SINGLE_FILE_BYTES", 2 * 1024 * 1024),
+        ?? readInt("SKILLHUB_PRIVATE_MAX_SINGLE_FILE_BYTES", 5 * 1024 * 1024),
       maxTotalBytes:
         overrides.privateSkillMaxTotalBytes
         ?? readInt("SKILLHUB_PRIVATE_MAX_TOTAL_BYTES", 20 * 1024 * 1024),
