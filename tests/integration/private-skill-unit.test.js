@@ -74,8 +74,17 @@ test("private metadata request validation is bounded, private-only, and deduplic
     (error) => error.code === "PRIVATE_SKILL_METADATA_REFERENCE_INVALID" && error.status === 400
   );
   assert.throws(
-    () => parsePrivateSkillMetadataRequest({ references: Array.from({ length: 257 }, () => first) }),
+    () => parsePrivateSkillMetadataRequest({ references: Array.from({ length: 1025 }, () => first) }),
     (error) => error.code === "PRIVATE_SKILL_METADATA_REFERENCES_INVALID" && error.status === 400
+  );
+  assert.deepEqual(
+    parsePrivateSkillMetadataRequest({
+      references: Array.from({ length: 1024 }, (_value, index) => ({
+        skillId: `priv_${String(index).padStart(40, "0")}`,
+        version: `v_${index}`
+      }))
+    }).length,
+    1024
   );
 });
 
