@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { generateId, JobStatus, nowIso, sha256, ValidationError } from "../domain/index.js";
+import { createPresentationStore, ensurePresentationSchema } from "../presentations/store.js";
 
 let poolByUrl = new Map();
 
@@ -117,6 +118,29 @@ export function createStore(config) {
   return {
     query,
     tx,
+    ...createPresentationStore({ query, tx }),
+    async listCatalogueVersions() {
+      await ensureSimplifiedSchema();
+      await ensurePresentationSchema(query);
+      const result = await query(`SELECT v.*, publisher_profiles.display_name AS publisher_display_name,
+          publisher_profiles.contact AS publisher_contact,
+          p.published_revision AS presentation_revision,
+          p.published_content->>'summary' AS presentation_summary,
+          p.published_content->>'primaryCategory' AS presentation_category
+        FROM skill_versions v
+        LEFT JOIN publisher_profiles ON publisher_profiles.user_id = v.owner_user_id
+        LEFT JOIN skill_presentations p ON p.package_version_id = v.id
+        WHERE v.status = 'published' AND v.yanked_at IS NULL
+        ORDER BY v.published_at DESC`);
+      return result.rows.map((row) => ({
+        ...mapPackageVersion(row),
+        ...(row.presentation_revision ? { presentationSummary: {
+          revision: row.presentation_revision,
+          summary: row.presentation_summary,
+          primaryCategory: row.presentation_category
+        } } : {})
+      }));
+    },
     async healthStats() {
       await ensureSimplifiedSchema();
       const result = await query(`
