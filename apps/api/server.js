@@ -47,6 +47,7 @@ import {
   readRootPublicKey
 } from "../../packages/signing/index.js";
 import { createExaWebAnswerService } from "../../packages/web-answer/index.js";
+import { handlePresentationRequest } from "./presentations.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const adminIndexPath = path.resolve(here, "../admin/public/index-v2.html");
@@ -85,6 +86,8 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
       const pathname = decodeURIComponent(url.pathname);
 
       if (await exaWebAnswer.handleHttp(req, res, pathname)) return;
+
+      if (await handlePresentationRequest({ config, store, req, res, url, pathname, readJson, sendJson })) return;
 
       if (req.method === "GET" && pathname === "/healthz") {
         sendJson(res, 200, { ok: true, service: "catsco-skillhub-api", time: nowIso() });
@@ -582,7 +585,10 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
 
       if (pathname === "/api/auth/catsco-exchange" && req.method === "POST") {
         const body = await readJson(req, 128 * 1024);
-        const { user, catsCo } = await synchronizeCatsCoPublisherProfile(store, body);
+        const { user, catsCo } = await synchronizeCatsCoPublisherProfile(store, body, {
+          catsBaseUrl: config.botAuth.catsCoBaseUrl,
+          allowIdentityHints: false
+        });
         const session = await createLoginSession({ config, store, user, req, res });
         await appendAudit(store, {
           actor: session.actor,
@@ -1459,6 +1465,7 @@ async function verifyCatsCoToken(baseUrl, token) {
   try {
     response = await fetch(`${baseUrl}/api/me`, {
       method: "GET",
+      redirect: "error",
       headers: {
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json"

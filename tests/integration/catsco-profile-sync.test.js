@@ -10,6 +10,129 @@ afterEach(async () => {
   while (cleanup.length) await cleanup.pop()();
 });
 
+test("CatsCo exchange pins the authority and ignores forged publisher hints while creating a valid session", async () => {
+  let forgedRequests = 0;
+  const forgedAuthority = http.createServer((_req, res) => {
+    forgedRequests += 1;
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ uid: 999, username: "victim", display_name: "Forged" }));
+  });
+  await listen(forgedAuthority);
+  cleanup.push(() => close(forgedAuthority));
+  const catsCo = http.createServer((req, res) => {
+    assert.equal(req.url, "/api/me");
+    assert.equal(req.headers.authorization, "Bearer cats-token");
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ uid: 85, username: "arrowhaken", display_name: "Verified" }));
+  });
+  await listen(catsCo);
+  cleanup.push(() => close(catsCo));
+  const store = createMemoryStore();
+  const api = createApiServer(testConfig(`http://127.0.0.1:${catsCo.address().port}`), { store });
+  await listen(api);
+  cleanup.push(() => close(api));
+  const baseUrl = `http://127.0.0.1:${api.address().port}`;
+  const untrustedUrl = `http://127.0.0.1:${forgedAuthority.address().port}`;
+
+  for (const authorityField of ["baseUrl", "httpBaseUrl"]) {
+    const result = await post(`${baseUrl}/api/auth/catsco-exchange`, {
+      token: "cats-token",
+      [authorityField]: untrustedUrl,
+      user: { uid: "999", username: "victim", displayName: "Forged" }
+    });
+    assert.equal(result.response.status, 200);
+    assert.deepEqual(result.data.catsCo, { uid: "85", username: "arrowhaken", displayName: "Verified" });
+    assert.equal(result.data.developerProfile.catsCoUid, "85");
+    const cookie = result.response.headers.get("set-cookie");
+    assert.ok(cookie, "legitimate exchange still creates a session");
+    const me = await fetch(`${baseUrl}/api/auth/me`, { headers: { Cookie: cookie.split(";")[0] } });
+    assert.equal(me.status, 200);
+    assert.equal((await me.json()).developerProfile.catsCoUid, "85");
+  }
+  assert.equal(forgedRequests, 0);
+  assert.equal(store.users.size, 1);
+  assert.equal(store.profilesByCatsCoUid.has("999"), false);
+  assert.equal(store.sessions.size, 2);
+});
+
+test("CatsCo exchange rejects a missing verified UID instead of using request-body hints", async () => {
+  const catsCo = http.createServer((_req, res) => {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ username: "verified-without-uid", display_name: "Verified" }));
+  });
+  await listen(catsCo);
+  cleanup.push(() => close(catsCo));
+  const store = createMemoryStore();
+  const api = createApiServer(testConfig(`http://127.0.0.1:${catsCo.address().port}`), { store });
+  await listen(api);
+  cleanup.push(() => close(api));
+  const result = await post(`http://127.0.0.1:${api.address().port}/api/auth/catsco-exchange`, {
+    token: "cats-token",
+    baseUrl: `http://127.0.0.1:${catsCo.address().port}`,
+    user: { uid: "999", username: "victim", displayName: "Forged" }
+  });
+  assert.equal(result.response.status, 401);
+  assert.equal(result.response.headers.get("set-cookie"), null);
+  assert.equal(store.users.size, 0);
+  assert.equal(store.sessions.size, 0);
+  assert.equal(store.audits.length, 0);
+});
+
+test("CatsCo exchange derives missing display fields from verified identity, never from hints", async () => {
+  const catsCo = http.createServer((_req, res) => {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ uid: 85 }));
+  });
+  await listen(catsCo);
+  cleanup.push(() => close(catsCo));
+  const store = createMemoryStore();
+  const api = createApiServer(testConfig(`http://127.0.0.1:${catsCo.address().port}`), { store });
+  await listen(api);
+  cleanup.push(() => close(api));
+  const result = await post(`http://127.0.0.1:${api.address().port}/api/auth/catsco-exchange`, {
+    token: "cats-token",
+    baseUrl: `http://127.0.0.1:${catsCo.address().port}`,
+    user: { uid: "999", username: "victim", displayName: "Forged" }
+  });
+  assert.equal(result.response.status, 200);
+  assert.deepEqual(result.data.catsCo, { uid: "85", username: "catsco_85", displayName: "catsco_85" });
+  assert.ok(result.response.headers.get("set-cookie"));
+  assert.equal(store.profilesByCatsCoUid.has("999"), false);
+});
+
+test("CatsCo identity verification refuses redirects for exchange and profile sync", async () => {
+  let redirectedRequests = 0;
+  const destination = http.createServer((_req, res) => {
+    redirectedRequests += 1;
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ uid: 999, username: "victim", display_name: "Forged" }));
+  });
+  await listen(destination);
+  cleanup.push(() => close(destination));
+  const catsCo = http.createServer((_req, res) => {
+    res.writeHead(302, { Location: `http://127.0.0.1:${destination.address().port}/api/me` });
+    res.end();
+  });
+  await listen(catsCo);
+  cleanup.push(() => close(catsCo));
+  const store = createMemoryStore();
+  const api = createApiServer(testConfig(`http://127.0.0.1:${catsCo.address().port}`), { store });
+  await listen(api);
+  cleanup.push(() => close(api));
+  for (const endpoint of ["catsco-exchange", "catsco-profile-sync"]) {
+    const result = await post(`http://127.0.0.1:${api.address().port}/api/auth/${endpoint}`, {
+      token: "cats-token",
+      baseUrl: `http://127.0.0.1:${catsCo.address().port}`
+    });
+    assert.equal(result.response.status, 502);
+    assert.equal(result.response.headers.get("set-cookie"), null);
+  }
+  assert.equal(redirectedRequests, 0);
+  assert.equal(store.users.size, 0);
+  assert.equal(store.sessions.size, 0);
+  assert.equal(store.audits.length, 0);
+});
+
 test("CatsCo profile sync updates publisher identity without creating a SkillHub session", async () => {
   let displayName = "arrowhaken1";
   const catsCo = http.createServer((req, res) => {
@@ -212,12 +335,24 @@ function createMemoryStore() {
   const profilesByUser = new Map();
   const profilesByNamespace = new Map();
   const profilesByCatsCoUid = new Map();
+  const sessions = new Map();
   const audits = [];
   return {
     users,
     profilesByUser,
     profilesByCatsCoUid,
+    sessions,
     audits,
+    async getRoles() {
+      return ["user"];
+    },
+    async createSession(input) {
+      sessions.set(input.tokenHash, input);
+      return input;
+    },
+    async getSessionByTokenHash(tokenHash) {
+      return sessions.get(tokenHash) || null;
+    },
     async getDeveloperProfileByNamespace(namespace) {
       return profilesByNamespace.get(namespace) || null;
     },
