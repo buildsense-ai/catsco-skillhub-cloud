@@ -37,6 +37,7 @@ export function loadConfig(overrides = {}) {
     packageBaseUrl: overrides.packageBaseUrl ?? process.env.SKILLHUB_PACKAGE_BASE_URL ?? "http://127.0.0.1:9000/packages",
     databaseUrl: overrides.databaseUrl ?? process.env.SKILLHUB_DATABASE_URL ?? "",
     presentations: {
+      imagesEnabled: overrides.presentationImagesEnabled ?? readBool("SKILLHUB_PRESENTATION_IMAGES_ENABLED", nodeEnv !== "production"),
       readEnabled: overrides.presentationsReadEnabled ?? readBool("SKILLHUB_PRESENTATIONS_READ_ENABLED", nodeEnv !== "production"),
       writeEnabled: overrides.presentationsWriteEnabled ?? readBool("SKILLHUB_PRESENTATIONS_WRITE_ENABLED", nodeEnv !== "production")
     },

@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { generateId, JobStatus, nowIso, sha256, ValidationError } from "../domain/index.js";
 import { createPresentationStore, ensurePresentationSchema } from "../presentations/store.js";
+import { createPresentationAssetStore } from "../presentations/asset-store.js";
 
 let poolByUrl = new Map();
 
@@ -119,6 +120,7 @@ export function createStore(config) {
     query,
     tx,
     ...createPresentationStore({ query, tx }),
+    ...createPresentationAssetStore({ query, tx }),
     async listCatalogueVersions() {
       await ensureSimplifiedSchema();
       await ensurePresentationSchema(query);

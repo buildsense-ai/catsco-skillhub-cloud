@@ -44,7 +44,7 @@ Agent 安装前必须校验 checksum 和 signature
 
 ## 关键 API
 
-图文介绍基础接口（生产默认关闭）：[Skill presentation foundation](docs/api/skill-presentations.md)。
+图文介绍与受控图片附件接口（生产默认关闭）：[Skill presentation foundation](docs/api/skill-presentations.md)。图片独立于 Skill 包存储，仅在介绍正式发布后按引用公开；不涉及模型调用或扣费。
 介绍独立于安装包，支持发布者草稿、确认公开与分类分页；不包含 AI 计费或 Bot 运行时改动。
 
 账号：

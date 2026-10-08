@@ -1,14 +1,21 @@
 import { getActorFromRequest } from "../../packages/auth/index.js";
 import { AuthError, ValidationError } from "../../packages/domain/index.js";
 import {
-  PRESENTATION_CATEGORIES, PRESENTATION_REQUEST_MAX_BYTES, parsePresentationTarget, parsePresentationWrite
+  PRESENTATION_CATEGORIES, PRESENTATION_REQUEST_MAX_BYTES, parsePresentationTarget, parsePresentationWrite, parsePresentationAssetWrite
 } from "../../packages/presentations/index.js";
 import { searchPublishedSkillsPage } from "../../packages/search/index.js";
+import { IMAGE_REQUEST_MAX_BYTES, normalizePresentationImage } from "../../packages/presentations/images.js";
+
+// Bound memory and native decoding work across all API instances in a process.
+let activeImageUploads = 0;
 
 export async function handlePresentationRequest({ config, store, req, res, url, pathname, ip, readJson, sendJson }) {
   if (!pathname.startsWith("/api/skill-presentations") && !pathname.startsWith("/api/catalogue/")) return false;
   if (!config.presentations?.readEnabled) {
     throw new ValidationError("Skill presentations are not enabled.", "presentation.disabled", 503);
+  }
+  if (pathname.startsWith("/api/skill-presentations/assets")) {
+    return handleImageRequest({ config, store, req, res, url, pathname, ip, readJson, sendJson });
   }
   if (pathname === "/api/catalogue/categories" && req.method === "GET") {
     sendJson(res, 200, { schemaVersion: 1, categories: PRESENTATION_CATEGORIES });
@@ -49,11 +56,63 @@ export async function handlePresentationRequest({ config, store, req, res, url, 
     const actor = await humanActor(config, store, req);
     const input = await readJson(req, PRESENTATION_REQUEST_MAX_BYTES);
     parsePresentationWrite(input, action);
+    if (action === "draft" && input.content?.images?.length && !config.presentations.imagesEnabled) {
+      throw new ValidationError("Presentation images are disabled.", "presentation.images_disabled", 503);
+    }
     const presentation = await store.writeSkillPresentation(input, actor, action, ip);
     sendJson(res, 200, { presentation }, { "Cache-Control": "private, no-store" });
     return true;
   }
   throw new ValidationError("Presentation route not found.", "presentation.route_not_found", 404);
+}
+
+async function handleImageRequest({ config, store, req, res, url, pathname, ip, readJson, sendJson }) {
+  if (!config.presentations.imagesEnabled) throw new ValidationError("Presentation images are disabled.", "presentation.images_disabled", 503);
+  const base = "/api/skill-presentations/assets";
+  const match = pathname.match(/^\/api\/skill-presentations\/assets\/(pa_[a-f0-9]{32})(\/preview)?$/);
+  const targetFromQuery = () => parsePresentationTarget({ skillId: url.searchParams.get("skillId"), version: url.searchParams.get("version") });
+  if (req.method === "GET" && pathname === base) {
+    const actor = await humanActor(config, store, req);
+    sendJson(res, 200, { assets: await store.listPresentationAssets(targetFromQuery(), actor) }, { "Cache-Control": "private, no-store" });
+    return true;
+  }
+  if (req.method === "GET" && match) {
+    const draft = !!match[2];
+    const actor = draft ? await humanActor(config, store, req) : undefined;
+    const asset = await store.getPresentationAsset(match[1], { draft, actor });
+    res.writeHead(200, { "Content-Type": "image/webp", "Content-Length": asset.data.length,
+      "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store",
+      "Content-Security-Policy": "default-src 'none'; sandbox", "Content-Disposition": `inline; filename="${asset.id}.webp"` });
+    res.end(asset.data);
+    return true;
+  }
+  const uploading = req.method === "POST" && pathname === base;
+  const deleting = req.method === "DELETE" && match && !match[2];
+  if (uploading || deleting) {
+    if (!config.presentations.writeEnabled) throw new ValidationError("Presentation editing is disabled.", "presentation.writes_disabled", 503);
+    assertJsonOrigin(config, req);
+    const actor = await humanActor(config, store, req);
+    if (deleting) {
+      const input = await readJson(req, PRESENTATION_REQUEST_MAX_BYTES);
+      const target = parsePresentationAssetWrite(input, false);
+      sendJson(res, 200, await store.deletePresentationAsset(match[1], target, actor, ip));
+      return true;
+    }
+    if (activeImageUploads >= 2) throw new ValidationError("Image processor is busy; retry later.", "presentation.image_busy", 429);
+    activeImageUploads++;
+    try {
+      const input = await readJson(req, IMAGE_REQUEST_MAX_BYTES);
+      const target = parsePresentationAssetWrite(input);
+      // Check exact publisher identity BEFORE invoking native codecs. Recheck
+      // it and quotas in the insertion transaction (including package yanks).
+      await store.checkPresentationAssetUpload(target, actor);
+      const image = await normalizePresentationImage(input.dataBase64);
+      const asset = await store.createPresentationAsset(target, actor, image, ip);
+      sendJson(res, 201, { asset }, { "Cache-Control": "private, no-store" });
+      return true;
+    } finally { activeImageUploads--; }
+  }
+  throw new ValidationError("Presentation image route not found.", "presentation.route_not_found", 404);
 }
 
 async function humanActor(config, store, req) {

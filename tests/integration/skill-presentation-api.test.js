@@ -170,7 +170,8 @@ function maximumContent(pattern) {
     tags: Array.from({ length: 5 }, (_, i) => `${i}${fill(39)}`),
     scenarios: Array.from({ length: 3 }, () => ({ title: fill(80), description: fill(400) })),
     steps: Array(6).fill(fill(400)), requirements: Array(8).fill(fill(300)), limitations: Array(8).fill(fill(300)),
-    example: { kind: "document", input: fill(2000), output: fill(2000) }, details: fill(8000)
+    example: { kind: "document", input: fill(2000), output: fill(2000) }, details: fill(8000),
+    images: Array.from({ length: 6 }, (_, i) => ({ assetId: `pa_${String(i).repeat(32)}`, alt: fill(240), caption: fill(500) }))
   };
 }
 
