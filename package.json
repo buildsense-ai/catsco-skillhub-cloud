@@ -23,6 +23,7 @@
     "test:ci": "node --test --test-concurrency=1 tests/integration/*.test.js"
   },
   "dependencies": {
-    "pg": "^8.13.1"
+    "pg": "^8.13.1",
+    "sharp": "0.35.5"
   }
 }

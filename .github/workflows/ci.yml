@@ -43,7 +43,8 @@ jobs:
           cache: npm
 
       - name: Install locked dependencies
-        run: npm ci
+        # Match the production installer, including native optional binaries.
+        run: npm ci --ignore-scripts
 
       - name: Apply database migrations
         run: npm run db:migrate

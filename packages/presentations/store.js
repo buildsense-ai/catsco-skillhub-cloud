@@ -1,5 +1,6 @@
 import { generateId, sha256, ValidationError } from "../domain/index.js";
 import { assertPresentationEditor, parsePresentationWrite, publicPresentation } from "./index.js";
+import { assertPresentationAssets } from "./asset-store.js";
 
 const visibleVersion = "v.status = 'published' AND v.yanked_at IS NULL";
 const joinedFields = "v.skill_id, v.version, v.content_hash, v.owner_user_id, p.*";
@@ -67,6 +68,7 @@ export function createPresentationStore({ query, tx }) {
         }
         const revision = (current?.revision || 0) + 1;
         const content = action === "draft" ? parsed.content : current.draft_content;
+        if (action !== "unpublish") await assertPresentationAssets(client.query.bind(client), version.id, content);
         const draftOrigin = action === "draft" ? (actor.userId === version.owner_user_id ? "author" : "admin") : current.draft_origin;
         const published = action === "publish" ? content : action === "unpublish" ? null : current?.published_content || null;
         const publishedOrigin = action === "publish" ? draftOrigin : action === "unpublish" ? null : current?.published_origin || null;

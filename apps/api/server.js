@@ -1652,7 +1652,9 @@ function sendError(res, error) {
   const status = error.status ?? (error instanceof AuthError ? 401 : 500);
   const configurationMessages = {
     "catsco.authority_unavailable": "CatsCo authentication authority is not configured correctly.",
-    "presentation.schema_unavailable": "Skill presentation storage is not ready; apply database migration 008."
+    "presentation.schema_unavailable": "Skill presentation storage is not ready; apply database migration 008.",
+    "presentation.assets_schema_unavailable": "Skill presentation image storage is not ready; apply database migration 009.",
+    "presentation.image_processor_unavailable": "Skill presentation image processing is unavailable."
   };
   const safeMessage = status >= 500
     ? (Object.hasOwn(configurationMessages, error.code) ? configurationMessages[error.code] : "服务器内部错误")

@@ -2,8 +2,8 @@ import { AuthError, ValidationError } from "../domain/index.js";
 
 // Fits every field at its individual UTF-16 limit, including 3-byte CJK.
 // The wire envelope also allows JSON Unicode escaping and target/reason fields.
-export const PRESENTATION_CONTENT_MAX_BYTES = 64 * 1024;
-export const PRESENTATION_REQUEST_MAX_BYTES = 144 * 1024;
+export const PRESENTATION_CONTENT_MAX_BYTES = 80 * 1024;
+export const PRESENTATION_REQUEST_MAX_BYTES = 176 * 1024;
 export const PRESENTATION_CATEGORIES = Object.freeze([
   { id: "research", label: "搜索与研究" },
   { id: "documents", label: "文档与写作" },
@@ -40,7 +40,7 @@ function list(value, max, parse) {
 }
 
 export function parsePresentationContent(value) {
-  object(value, ["schemaVersion", "summary", "primaryCategory", "tags", "scenarios", "steps", "example", "requirements", "limitations", "details"]);
+  object(value, ["schemaVersion", "summary", "primaryCategory", "tags", "scenarios", "steps", "example", "requirements", "limitations", "details", "images"]);
   if (value.schemaVersion !== 1) invalid("Unsupported presentation schema.");
   if (!PRESENTATION_CATEGORIES.some(({ id }) => id === value.primaryCategory)) invalid("Unknown primary category.");
   const content = {
@@ -57,6 +57,14 @@ export function parsePresentationContent(value) {
     limitations: list(value.limitations, 8, (item) => text(item, 300)),
     details: value.details === undefined ? "" : text(value.details, 8000, false)
   };
+  if (value.images !== undefined) {
+    content.images = list(value.images, 6, (item) => {
+      object(item, ["assetId", "alt", "caption"]);
+      return { assetId: parsePresentationAssetId(item.assetId), alt: text(item.alt, 240),
+        caption: item.caption === undefined ? "" : text(item.caption, 500, false) };
+    });
+    if (new Set(content.images.map((item) => item.assetId)).size !== content.images.length) invalid("Duplicate image references.");
+  }
   if (value.example !== undefined) {
     object(value.example, ["kind", "input", "output"]);
     if (!["document", "image", "generic"].includes(value.example.kind)) invalid("Unknown example template.");
@@ -68,6 +76,16 @@ export function parsePresentationContent(value) {
   }
   if (Buffer.byteLength(JSON.stringify(content), "utf8") > PRESENTATION_CONTENT_MAX_BYTES) invalid("Presentation is too large.");
   return content;
+}
+
+export function parsePresentationAssetId(value) {
+  if (typeof value !== "string" || !/^pa_[a-f0-9]{32}$/.test(value)) invalid("Invalid image reference.");
+  return value;
+}
+
+export function parsePresentationAssetWrite(value, upload = true) {
+  object(value, ["skillId", "version", "reason", ...(upload ? ["dataBase64"] : [])]);
+  return { ...parsePresentationTarget(value), reason: value.reason === undefined ? "" : text(value.reason, 500, false) };
 }
 
 export function parsePresentationTarget(value) {

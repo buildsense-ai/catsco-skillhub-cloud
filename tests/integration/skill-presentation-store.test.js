@@ -5,6 +5,8 @@ import { loadConfig } from "../../packages/config/index.js";
 import { closePools, createStore } from "../../packages/database/store.js";
 import { parsePresentationContent } from "../../packages/presentations/index.js";
 import { createPresentationStore, ensurePresentationSchema } from "../../packages/presentations/store.js";
+import { createPresentationAssetStore, ASSET_VERSION_MAX_COUNT, ensurePresentationAssetSchema } from "../../packages/presentations/asset-store.js";
+import sharp from "sharp";
 
 const databaseUrl = process.env.SKILLHUB_TEST_DATABASE_URL;
 const pg = { skip: !databaseUrl };
@@ -25,6 +27,7 @@ after(async () => {
       await client.query("DELETE FROM skill_presentation_revisions WHERE package_version_id = ANY($1::text[])", [versionIds]);
       await client.query("DELETE FROM skill_presentations WHERE package_version_id = ANY($1::text[])", [versionIds]);
       await client.query("DELETE FROM audit_logs WHERE resource_type = 'skill_presentation' AND resource_id = ANY($1::text[])", [versionIds]);
+      await client.query("DELETE FROM audit_logs WHERE resource_type = 'skill_presentation_asset' AND metadata->>'packageVersionId' = ANY($1::text[])", [versionIds]);
       await client.query("DELETE FROM skill_versions WHERE id = ANY($1::text[])", [versionIds]);
       await client.query("DELETE FROM users WHERE id = ANY($1::text[])", [userIds]);
     });
@@ -65,6 +68,122 @@ function write(item, expectedRevision, action = "draft", draft = content(), acto
   return store.writeSkillPresentation({ ...item.target, expectedRevision,
     ...(action === "draft" ? { content: draft } : {}), ...(reason === undefined ? {} : { reason }) }, actor, action, "192.0.2.10");
 }
+
+async function uploadImage(item, { actor = item.owner, reason, color = "red", assetStore = store } = {}) {
+  const data = await sharp({ create: { width: 4, height: 3, channels: 3, background: color } }).webp().toBuffer();
+  return assetStore.createPresentationAsset({ ...item.target, ...(reason ? { reason } : {}) }, actor, { data, width: 4, height: 3 }, "192.0.2.40");
+}
+
+function illustrated(asset) { return { ...content(), images: [{ assetId: asset.id, alt: "Illustrative result" }] }; }
+
+test("PostgreSQL images stay private until publication and revoke on replacement, unpublish and yank", pg, async () => {
+  const item = await fixture();
+  const before = await snapshot(item);
+  const image = await uploadImage(item);
+  assert.deepEqual(await uploadImage(item), image, "identical uploads deduplicate within the same exact version");
+  assert.equal((await store.listPresentationAssets(item.target, item.owner)).length, 1);
+  await assert.rejects(store.getPresentationAsset(image.id), { status: 404 });
+  assert.ok((await store.getPresentationAsset(image.id, { draft: true, actor: item.owner })).data.length > 0);
+  await write(item, 0, "draft", illustrated(image));
+  await assert.rejects(store.getPresentationAsset(image.id), { status: 404 });
+  await write(item, 1, "publish");
+  assert.equal((await store.getPresentationAsset(image.id)).mimeType, "image/webp");
+  await write(item, 2, "draft", content());
+  assert.ok(await store.getPresentationAsset(image.id), "new draft does not revoke the current public image");
+  await write(item, 3, "publish");
+  await assert.rejects(store.getPresentationAsset(image.id), { status: 404 });
+  await write(item, 4, "draft", illustrated(image));
+  await write(item, 5, "publish");
+  await write(item, 6, "unpublish");
+  await assert.rejects(store.getPresentationAsset(image.id), { status: 404 });
+  await write(item, 7, "publish");
+  assert.deepEqual(await snapshot(item), before, "image operations cannot change the immutable package");
+  await store.query("UPDATE skill_versions SET yanked_at = now() WHERE id = $1", [item.id]);
+  await assert.rejects(store.getPresentationAsset(image.id), { status: 404 });
+  await assert.rejects(store.getPresentationAsset(image.id, { draft: true, actor: item.owner }), { status: 404 });
+  await assert.rejects(uploadImage(item), { status: 404 });
+});
+
+test("PostgreSQL image ownership separates publishers/versions and administrator writes are audited", pg, async () => {
+  const item = await fixture();
+  const other = await fixture();
+  const later = await fixture({ owner: item.owner, skillId: item.target.skillId, version: "1.0.1" });
+  const image = await uploadImage(item);
+  await assert.rejects(uploadImage(item, { actor: other.owner }), { status: 404 });
+  await assert.rejects(store.checkPresentationAssetUpload(item.target, other.owner), { status: 404 });
+  await assert.rejects(store.listPresentationAssets(item.target, other.owner), { status: 404 });
+  await assert.rejects(store.getPresentationAsset(image.id, { draft: true, actor: other.owner }), { status: 404 });
+  await assert.rejects(uploadImage(item, { actor: { ...item.owner, role: "agent" } }), { status: 401 });
+  await assert.rejects(write(other, 0, "draft", illustrated(image)), { status: 404 });
+  await assert.rejects(write(later, 0, "draft", illustrated(image)), { status: 404 });
+  await assert.rejects(write(item, 0, "draft", illustrated({ id: `pa_${"f".repeat(32)}` })), { status: 404 });
+  const admin = await person("admin");
+  await assert.rejects(uploadImage(item, { actor: admin }), { code: "presentation.invalid" });
+  const administered = await uploadImage(item, { actor: admin, reason: "Correct misleading figure", color: "blue" });
+  const row = (await store.query("SELECT * FROM audit_logs WHERE resource_id = $1", [administered.id])).rows[0];
+  assert.equal(row.actor_user_id, admin.userId);
+  assert.equal(row.metadata.adminOverride, true);
+  assert.equal(row.metadata.reason, "Correct misleading figure");
+  assert.equal(row.ip, createHash("sha256").update("192.0.2.40").digest("hex").slice(0, 16));
+  await store.query("DELETE FROM users WHERE id = $1", [admin.userId]);
+  assert.ok(await store.getPresentationAsset(administered.id, { draft: true, actor: item.owner }));
+});
+
+test("PostgreSQL never-used uploads can be deleted but revision images and other versions cannot", pg, async () => {
+  const item = await fixture();
+  const other = await fixture();
+  const unused = await uploadImage(item);
+  await assert.rejects(store.deletePresentationAsset(unused.id, other.target, other.owner), { status: 404 });
+  const used = await uploadImage(item, { color: "blue" });
+  await write(item, 0, "draft", illustrated(used));
+  await write(item, 1, "draft", content());
+  await assert.rejects(store.deletePresentationAsset(used.id, item.target, item.owner), { code: "presentation.asset_in_use" });
+  assert.deepEqual(await store.deletePresentationAsset(unused.id, item.target, item.owner), { deleted: true });
+  await assert.rejects(store.getPresentationAsset(unused.id, { draft: true, actor: item.owner }), { status: 404 });
+  await assert.rejects(write(item, 2, "draft", illustrated(unused)), { status: 404 });
+});
+
+test("PostgreSQL image upload audit failure is atomic and missing 009 affects only images", pg, async () => {
+  const item = await fixture();
+  const failing = createPresentationAssetStore({ query: store.query, tx: (fn) => store.tx((client) => fn({ query: (sql, parameters) => {
+    if (/INSERT INTO audit_logs/.test(sql)) throw new Error("Injected image audit failure");
+    return client.query(sql, parameters);
+  } })) });
+  await assert.rejects(uploadImage(item, { assetStore: failing }), /Injected image audit failure/);
+  assert.deepEqual(await store.listPresentationAssets(item.target, item.owner), []);
+  await store.tx(async (client) => {
+    await client.query("SET LOCAL search_path TO pg_catalog");
+    await assert.rejects(ensurePresentationAssetSchema(client.query.bind(client)), { code: "presentation.assets_schema_unavailable" });
+  });
+  await write(item, 0);
+  assert.equal(typeof (await store.healthStats()).packages, "number");
+});
+
+test("PostgreSQL image quota is enforced inside concurrent transactions and duplicates stay idempotent", pg, async () => {
+  const item = await fixture();
+  const original = await uploadImage(item);
+  // Fill only this test's version with tiny synthetic rows to hit the count
+  // budget without decoding/storing 128 MiB of actual fixtures.
+  await store.query(`INSERT INTO skill_presentation_assets
+    (id,package_version_id,actor_user_id,content_sha256,width,height,data,created_at)
+    SELECT 'pa_' || md5($1 || i::text), $1,$2,md5(i::text),1,1,decode('00','hex'),now() - interval '2 minutes'
+    FROM generate_series(1,$3) i`, [item.id, item.owner.userId, ASSET_VERSION_MAX_COUNT - 2]);
+  const results = await Promise.allSettled([uploadImage(item, { color: "blue" }), uploadImage(item, { color: "green" })]);
+  assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
+  assert.equal(results.find((r) => r.status === "rejected").reason.code, "presentation.asset_quota");
+  assert.deepEqual(await uploadImage(item), original);
+  assert.equal((await store.listPresentationAssets(item.target, item.owner)).length, ASSET_VERSION_MAX_COUNT);
+});
+
+test("PostgreSQL discard/save race cannot leave a dangling image reference", pg, async () => {
+  const item = await fixture();
+  const image = await uploadImage(item);
+  const results = await Promise.allSettled([write(item, 0, "draft", illustrated(image)), store.deletePresentationAsset(image.id, item.target, item.owner)]);
+  assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
+  const state = await store.getSkillPresentation({ ...item.target, actor: item.owner, draft: true });
+  if (state.draft) assert.ok(await store.getPresentationAsset(image.id, { draft: true, actor: item.owner }));
+  else await assert.rejects(store.getPresentationAsset(image.id, { draft: true, actor: item.owner }), { status: 404 });
+});
 
 async function snapshot(item) {
   return (await store.query("SELECT * FROM skill_versions WHERE id = $1", [item.id])).rows[0];
