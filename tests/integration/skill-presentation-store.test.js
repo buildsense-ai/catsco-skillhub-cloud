@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { after, before, test } from "node:test";
 import { loadConfig } from "../../packages/config/index.js";
 import { closePools, createStore } from "../../packages/database/store.js";
 import { parsePresentationContent } from "../../packages/presentations/index.js";
-import { createPresentationStore } from "../../packages/presentations/store.js";
+import { createPresentationStore, ensurePresentationSchema } from "../../packages/presentations/store.js";
 
 const databaseUrl = process.env.SKILLHUB_TEST_DATABASE_URL;
 const pg = { skip: !databaseUrl };
@@ -70,6 +70,18 @@ async function snapshot(item) {
   return (await store.query("SELECT * FROM skill_versions WHERE id = $1", [item.id])).rows[0];
 }
 
+test("PostgreSQL feature-local readiness detects missing presentation tables without changing schema", pg, async () => {
+  await store.tx(async (client) => {
+    // Isolate name resolution instead of dropping/renaming shared test tables.
+    await client.query("SET LOCAL search_path TO pg_catalog");
+    await assert.rejects(ensurePresentationSchema((sql) => client.query(sql)), { code: "presentation.schema_unavailable", status: 503 });
+    await client.query("SET LOCAL search_path TO public");
+    await ensurePresentationSchema((sql) => client.query(sql));
+  });
+  // The legacy readiness remains independent of the new feature guard.
+  assert.equal(typeof (await store.healthStats()).packages, "number");
+});
+
 test("PostgreSQL presentation drafts remain private and editing never changes package identity", pg, async () => {
   const item = await fixture();
   const packageBefore = await snapshot(item);
@@ -112,7 +124,7 @@ test("PostgreSQL presentation drafts remain private and editing never changes pa
   assert.deepEqual(audit.map((row) => row.metadata.revision), [1, 2, 3, 4]);
   for (const row of audit) {
     assert.match(row.metadata.contentHash, /^[a-f0-9]{64}$/);
-    assert.notEqual(row.ip, "192.0.2.10");
+    assert.equal(row.ip, createHash("sha256").update("192.0.2.10").digest("hex").slice(0, 16));
     assert.equal(JSON.stringify(row).includes("Private draft details"), false);
   }
 });

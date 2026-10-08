@@ -55,6 +55,44 @@ test("CatsCo exchange pins the authority and ignores forged publisher hints whil
   assert.equal(store.sessions.size, 2);
 });
 
+test("exchange and profile sync fail closed on blank or invalid server authority without contacting request URLs", async () => {
+  let forgedRequests = 0;
+  const forgedAuthority = http.createServer((_req, res) => {
+    forgedRequests++;
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ uid: 999, username: "victim" }));
+  });
+  await listen(forgedAuthority);
+  cleanup.push(() => close(forgedAuthority));
+  const untrustedUrl = `http://127.0.0.1:${forgedAuthority.address().port}`;
+  for (const authority of ["", "  ", "not-a-url", "ftp://example.invalid", undefined]) {
+    const config = testConfig(authority);
+    // Includes a missing field in a manually assembled config; normal unset
+    // environment configuration still supplies loadConfig's trusted default.
+    config.botAuth.catsCoBaseUrl = authority;
+    config.presentations = { readEnabled: true, writeEnabled: true };
+    const store = createMemoryStore();
+    const api = createApiServer(config, { store });
+    await listen(api);
+    cleanup.push(() => close(api));
+    for (const endpoint of ["catsco-exchange", "catsco-profile-sync"]) {
+      for (const field of ["baseUrl", "httpBaseUrl"]) {
+        const result = await post(`http://127.0.0.1:${api.address().port}/api/auth/${endpoint}`, {
+          token: "local-test-only", [field]: untrustedUrl, user: { uid: "999" }
+        });
+        assert.equal(result.response.status, 503);
+        assert.equal(result.data.error.code, "catsco.authority_unavailable");
+        assert.match(result.data.error.message, /authority.*configured/);
+        assert.equal(result.response.headers.get("set-cookie"), null);
+      }
+    }
+    assert.equal(store.users.size, 0);
+    assert.equal(store.sessions.size, 0);
+    assert.equal(store.audits.length, 0);
+  }
+  assert.equal(forgedRequests, 0);
+});
+
 test("CatsCo exchange rejects a missing verified UID instead of using request-body hints", async () => {
   const catsCo = http.createServer((_req, res) => {
     res.writeHead(200, { "Content-Type": "application/json" });

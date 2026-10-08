@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { generateId, JobStatus, nowIso, sha256, ValidationError } from "../domain/index.js";
-import { createPresentationStore } from "../presentations/store.js";
+import { createPresentationStore, ensurePresentationSchema } from "../presentations/store.js";
 
 let poolByUrl = new Map();
 
@@ -121,6 +121,7 @@ export function createStore(config) {
     ...createPresentationStore({ query, tx }),
     async listCatalogueVersions() {
       await ensureSimplifiedSchema();
+      await ensurePresentationSchema(query);
       const result = await query(`SELECT v.*, publisher_profiles.display_name AS publisher_display_name,
           publisher_profiles.contact AS publisher_contact,
           p.published_revision AS presentation_revision,

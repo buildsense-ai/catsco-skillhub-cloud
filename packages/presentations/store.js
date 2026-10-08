@@ -4,6 +4,16 @@ import { assertPresentationEditor, parsePresentationWrite, publicPresentation } 
 const visibleVersion = "v.status = 'published' AND v.yanked_at IS NULL";
 const joinedFields = "v.skill_id, v.version, v.content_hash, v.owner_user_id, p.*";
 
+// Feature-local readiness: do not gate legacy catalogue, auth or /readyz.
+// No cached failure: applying 008 makes the next request usable immediately.
+export async function ensurePresentationSchema(query) {
+  const result = await query(`SELECT to_regclass('skill_presentations') IS NOT NULL
+    AND to_regclass('skill_presentation_revisions') IS NOT NULL AS ready`);
+  if (result.rows[0]?.ready !== true) {
+    throw new ValidationError("Skill presentation storage is not ready; apply database migration 008.", "presentation.schema_unavailable", 503);
+  }
+}
+
 function missing() {
   throw new ValidationError("Skill presentation not found.", "presentation.not_found", 404);
 }
@@ -23,6 +33,7 @@ function editable(row) {
 export function createPresentationStore({ query, tx }) {
   return {
     async getSkillPresentation({ skillId, version, actor, draft = false }) {
+      await ensurePresentationSchema(query);
       const result = await query(`SELECT ${joinedFields}
         FROM skill_versions v LEFT JOIN skill_presentations p ON p.package_version_id = v.id
         WHERE v.skill_id = $1 AND v.version = $2 AND ${visibleVersion}`, [skillId, version]);
@@ -38,6 +49,7 @@ export function createPresentationStore({ query, tx }) {
     async writeSkillPresentation(input, actor, action, ip = "") {
       if (!["draft", "publish", "unpublish"].includes(action)) throw new Error("Invalid presentation action");
       const parsed = parsePresentationWrite(input, action);
+      await ensurePresentationSchema(query);
       return tx(async (client) => {
         // Lock the version even before a presentation exists: concurrent first
         // drafts and package yanks serialize on the same immutable identity.

@@ -6,14 +6,14 @@ M1b will add controlled raster attachments. This foundation deliberately rejects
 
 ## Rollout and compatibility
 
-1. Apply additive migration `008_skill_presentations.sql` with `npm run db:migrate`.
+1. Apply additive migration `008_skill_presentations.sql` with `npm run db:migrate`. If it is missing while the new routes are enabled, presentation reads/writes and the new catalogue return HTTP 503 `presentation.schema_unavailable` with a migration 008 hint. This feature-local check does not gate legacy routes or `/readyz`, and a missing-schema result is not cached.
 2. Deploy API/worker normally. Neither the existing readiness check nor old catalogue reads depend on the new tables. Old `/api/skills`, share, download and private-Skill APIs retain their response contracts.
 3. In production the new routes default **off**. Enable `SKILLHUB_PRESENTATIONS_READ_ENABLED=1` when ready for integration. Enable `SKILLHUB_PRESENTATIONS_WRITE_ENABLED=1` separately for human author/admin editing. Read must be enabled for write access.
 4. Roll back by disabling write/read flags or reverting application code. Retain the additive tables; do not drop history or modify signed packages. No client permission is removed by disabling this feature.
 
 The one intentional old-search correction is that an empty query no longer defeats category filtering. The legacy default remains 30 results and retains platform-compatible older-version discovery. The new catalogue is opt-in and always classifies the latest published version, never an older compatible release in its place.
 
-The authentication prerequisite pins `/api/auth/catsco-exchange` to the server's `SKILLHUB_CATSCO_BASE_URL`, just like profile sync. Client `baseUrl`, `httpBaseUrl` and `user` hints no longer supply identity authority. Redirects during token verification are refused. Configure the actual CatsCo authority on each environment; legitimate tokens still use the same login/session flow. This does not rotate keys, change UID/namespace mappings, or invalidate current sessions.
+The authentication prerequisite pins `/api/auth/catsco-exchange` to the server's `SKILLHUB_CATSCO_BASE_URL`, just like profile sync. Client `baseUrl`, `httpBaseUrl` and `user` hints never supply identity authority, even when the server setting is blank. Unset environment configuration uses the existing trusted default; an explicitly empty/invalid authority returns HTTP 503 `catsco.authority_unavailable` before any upstream request, profile write or session creation. Redirects during token verification are refused. Configure the actual CatsCo authority on each environment; legitimate tokens still use the same login/session flow. This does not rotate keys, change UID/namespace mappings, or invalidate current sessions.
 
 ## Public reads
 
@@ -74,13 +74,13 @@ Publish/unpublish body contains only `skillId`, `version`, `expectedRevision`, a
 
 Public provenance comes from the draft's writer: admin confirmation of an author's draft remains `author`; author confirmation of an admin-written draft remains `admin`. A new author edit creates an author-origin draft without silently relabeling the already-public content.
 
-Limits: request 48 KiB; summary 240 UTF-16 units; up to 5 tags of 40; 3 scenarios (title 80, description 400); 6 steps of 400; 8 requirements and 8 limitations of 300; example input/output 2000 each; details 8000. Strings are trimmed; unpaired surrogates/control characters and unknown fields are rejected. `schemaVersion` must be 1. Image upload and AI provenance fields are intentionally unsupported here.
+Limits: normalized content serialized with compact UTF-8 JSON is capped at **64 KiB**, separately from the **144 KiB raw HTTP request-body limit**. The latter includes skillId/version/revision/reason, JSON syntax, whitespace and Unicode escapes. Field maxima: summary 240 UTF-16 units; up to 5 tags of 40; 3 scenarios (title 80, description 400); 6 steps of 400; 8 requirements and 8 limitations of 300; example input/output 2000 each; details 8000. All field maxima can coexist for CJK, emoji and quoted/backslash text within the content budget; the wire budget also accommodates serializers that escape every string character as `\uXXXX`. Arbitrary extra formatting/whitespace is still subject to the wire limit: exactly 144 KiB is accepted if valid, one extra byte returns 413. Strings are trimmed; unpaired surrogates/control characters and unknown fields are rejected. `schemaVersion` must be 1. Image upload and AI provenance fields are intentionally unsupported here.
 
 ## Storage and verification
 
 `skill_presentations` is keyed by the existing `skill_versions.id`, with private draft content/origin, confirmed content/origin and revisions. `skill_presentation_revisions` stores immutable action history. No install manifest, checksum, signature, source commit, content hash, file path or package bytes are changed.
 
-Writes lock the exact package-version row, verify availability and ownership, compare revision, and persist head/history/audit in one database transaction. Audit failure rolls back everything. The general audit contains action/revision/content digest and a hashed IP, not draft text or free-form admin reason. Deleting an underlying package through existing account cleanup cascades its dependent presentation records rather than blocking deletion; deleting an editor does not erase another owner's introduction or audit identity.
+Writes lock the exact package-version row, verify availability and ownership, compare revision, and persist head/history/audit in one database transaction. Audit failure rolls back everything. The general audit contains action/revision/content digest and a hashed IP, not draft text or free-form admin reason. IP resolution uses the same `getIp(req)` as existing routes: `X-Real-IP` is accepted only from the existing loopback proxy addresses; nonloopback peers cannot replace their address with that header. The resolved address is stored as the first 16 hex characters of SHA-256. Deleting an underlying package through existing account cleanup cascades its dependent presentation records rather than blocking deletion; deleting an editor does not erase another owner's introduction or audit identity.
 
 Verification commands:
 

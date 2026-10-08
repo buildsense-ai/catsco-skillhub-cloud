@@ -1,6 +1,9 @@
 import { AuthError, ValidationError } from "../domain/index.js";
 
-export const PRESENTATION_MAX_BYTES = 48 * 1024;
+// Fits every field at its individual UTF-16 limit, including 3-byte CJK.
+// The wire envelope also allows JSON Unicode escaping and target/reason fields.
+export const PRESENTATION_CONTENT_MAX_BYTES = 64 * 1024;
+export const PRESENTATION_REQUEST_MAX_BYTES = 144 * 1024;
 export const PRESENTATION_CATEGORIES = Object.freeze([
   { id: "research", label: "搜索与研究" },
   { id: "documents", label: "文档与写作" },
@@ -63,7 +66,7 @@ export function parsePresentationContent(value) {
       output: text(value.example.output, 2000)
     };
   }
-  if (Buffer.byteLength(JSON.stringify(content), "utf8") > PRESENTATION_MAX_BYTES) invalid("Presentation is too large.");
+  if (Buffer.byteLength(JSON.stringify(content), "utf8") > PRESENTATION_CONTENT_MAX_BYTES) invalid("Presentation is too large.");
   return content;
 }
 

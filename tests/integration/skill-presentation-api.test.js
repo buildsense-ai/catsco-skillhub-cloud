@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createApiServer } from "../../apps/api/server.js";
+import { createApiServer, getIp } from "../../apps/api/server.js";
 import { loadConfig } from "../../packages/config/index.js";
-import { parsePresentationContent, parsePresentationWrite, assertPresentationEditor } from "../../packages/presentations/index.js";
+import { parsePresentationContent, parsePresentationWrite, assertPresentationEditor, PRESENTATION_CONTENT_MAX_BYTES, PRESENTATION_REQUEST_MAX_BYTES } from "../../packages/presentations/index.js";
+import { ensurePresentationSchema, createPresentationStore } from "../../packages/presentations/store.js";
 
 const content = { schemaVersion: 1, summary: "读取用户提供的文档", primaryCategory: "documents" };
 const owner = { userId: "owner", role: "user", roles: ["user"] };
@@ -66,7 +67,7 @@ async function withApi(t, overrides = {}) {
     const response = await fetch(baseUrl + url, options);
     return { status: response.status, headers: response.headers, data: await response.json() };
   };
-  return { request, calls, config };
+  return { request, calls, config, store };
 }
 
 const draftBody = { skillId: "author/read", version: "1.0.0", expectedRevision: 0, content };
@@ -101,7 +102,7 @@ test("cookie writes reject foreign origins, non-JSON, oversized and unsupported 
     [writeOptions({ Origin: "null" }), 403],
     [writeOptions({ "Content-Type": "text/plain" }), 415],
     [{ ...writeOptions(), body: JSON.stringify({ ...draftBody, payerUID: 85 }) }, 400],
-    [{ ...writeOptions(), body: JSON.stringify({ ...draftBody, padding: "x".repeat(50 * 1024) }) }, 413]
+    [{ ...writeOptions(), body: JSON.stringify({ ...draftBody, padding: "x".repeat(PRESENTATION_REQUEST_MAX_BYTES) }) }, 413]
   ]) assert.equal((await request("/api/skill-presentations/draft", options)).status, status);
   assert.equal(calls.length, 0);
   assert.equal((await request("/api/skill-presentations/draft", writeOptions({ Origin: "https://app.catsco.cc" }))).status, 200);
@@ -149,4 +150,91 @@ test("rollout switches do not disable old catalogue operations", async (t) => {
   const production = loadConfig({ nodeEnv: "production" });
   assert.equal(production.presentations.readEnabled, false);
   assert.equal(production.presentations.writeEnabled, false);
+});
+
+test("presentation audit receives the established trusted-proxy IP, not the socket IP", async (t) => {
+  const { request, calls } = await withApi(t);
+  assert.equal((await request("/api/skill-presentations/draft", writeOptions({ "X-Real-IP": "192.0.2.10" }))).status, 200);
+  assert.equal(calls.at(-1)[3], "192.0.2.10");
+  for (const address of ["127.0.0.1", "::1", "::ffff:127.0.0.1"]) {
+    assert.equal(getIp({ socket: { remoteAddress: address }, headers: { "x-real-ip": "192.0.2.10" } }), "192.0.2.10");
+    assert.equal(getIp({ socket: { remoteAddress: address }, headers: {} }), address);
+  }
+  assert.equal(getIp({ socket: { remoteAddress: "198.51.100.20" }, headers: { "x-real-ip": "192.0.2.10" } }), "198.51.100.20");
+});
+
+function maximumContent(pattern) {
+  const fill = (length) => pattern.repeat(Math.floor(length / pattern.length)) + "x".repeat(length % pattern.length);
+  return {
+    schemaVersion: 1, summary: fill(240), primaryCategory: "documents",
+    tags: Array.from({ length: 5 }, (_, i) => `${i}${fill(39)}`),
+    scenarios: Array.from({ length: 3 }, () => ({ title: fill(80), description: fill(400) })),
+    steps: Array(6).fill(fill(400)), requirements: Array(8).fill(fill(300)), limitations: Array(8).fill(fill(300)),
+    example: { kind: "document", input: fill(2000), output: fill(2000) }, details: fill(8000)
+  };
+}
+
+test("all maximum fields fit content and request budgets for CJK, emoji and JSON escaping", async (t) => {
+  const { request } = await withApi(t);
+  for (const pattern of ["文", "📚", '"\\', "a"]) {
+    const fullContent = maximumContent(pattern);
+    const normalized = parsePresentationContent(fullContent);
+    assert.equal(normalized.details.length, 8000);
+    assert.ok(Buffer.byteLength(JSON.stringify(normalized)) <= PRESENTATION_CONTENT_MAX_BYTES);
+    const payload = { skillId: `a/${"s".repeat(238)}`, version: `1.0.0-${"x".repeat(94)}`, expectedRevision: 2147483646,
+      reason: "文".repeat(500), content: fullContent };
+    const raw = JSON.stringify(payload);
+    if (pattern === "文") assert.ok(Buffer.byteLength(raw) > 48 * 1024);
+    // Escaping all string characters (including ASCII) models verbose but
+    // valid serializers, not just JSON.stringify's compact UTF-8 encoding.
+    const escaped = raw.replace(/"(?:[^"\\]|\\.)*"/g, (quoted) => {
+      const value = JSON.parse(quoted);
+      return '"' + value.split("").map((char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`).join("") + '"';
+    });
+    for (const body of [raw, escaped]) {
+      assert.ok(Buffer.byteLength(body) < PRESENTATION_REQUEST_MAX_BYTES);
+      assert.equal((await request("/api/skill-presentations/draft", { ...writeOptions(), body })).status, 200);
+    }
+  }
+});
+
+test("wire byte limit accepts an exact boundary and rejects one extra byte before storage", async (t) => {
+  const { request, calls } = await withApi(t);
+  const raw = JSON.stringify(draftBody);
+  const exact = raw + " ".repeat(PRESENTATION_REQUEST_MAX_BYTES - Buffer.byteLength(raw));
+  assert.equal(Buffer.byteLength(exact), PRESENTATION_REQUEST_MAX_BYTES);
+  assert.equal((await request("/api/skill-presentations/draft", { ...writeOptions(), body: exact })).status, 200);
+  assert.equal(calls.length, 1);
+  const over = await request("/api/skill-presentations/draft", { ...writeOptions(), body: exact + " " });
+  assert.equal(over.status, 413);
+  assert.equal(over.data.error.code, "body.too_large");
+  assert.equal(calls.length, 1);
+});
+
+test("missing presentation migration gives a feature-local error and can recover without cached failure", async (t) => {
+  let ready = false;
+  let transactions = 0;
+  const query = async (sql) => {
+    assert.match(sql, /to_regclass\('skill_presentations'\)/);
+    assert.match(sql, /to_regclass\('skill_presentation_revisions'\)/);
+    return { rows: [{ ready }] };
+  };
+  const presentationStore = createPresentationStore({ query, tx: async () => { transactions++; } });
+  await assert.rejects(presentationStore.getSkillPresentation({ skillId: "a/b", version: "1.0.0" }), { code: "presentation.schema_unavailable", status: 503 });
+  await assert.rejects(presentationStore.writeSkillPresentation(draftBody, owner, "draft"), { code: "presentation.schema_unavailable" });
+  assert.equal(transactions, 0);
+  const { request, store } = await withApi(t);
+  store.listCatalogueVersions = async () => { await ensurePresentationSchema(query); return []; };
+  store.getSkillPresentation = presentationStore.getSkillPresentation;
+  const result = await request("/api/catalogue/skills");
+  assert.equal(result.status, 503);
+  assert.equal(result.data.error.code, "presentation.schema_unavailable");
+  assert.match(result.data.error.message, /migration 008/);
+  const detail = await request("/api/skill-presentations?skillId=a%2Fb&version=1.0.0");
+  assert.equal(detail.status, 503);
+  assert.match(detail.data.error.message, /migration 008/);
+  assert.equal((await request("/api/skills")).status, 200);
+  assert.equal((await request("/healthz")).status, 200);
+  ready = true;
+  assert.equal((await request("/api/catalogue/skills")).status, 200);
 });

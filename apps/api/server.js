@@ -87,7 +87,7 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
 
       if (await exaWebAnswer.handleHttp(req, res, pathname)) return;
 
-      if (await handlePresentationRequest({ config, store, req, res, url, pathname, readJson, sendJson })) return;
+      if (await handlePresentationRequest({ config, store, req, res, url, pathname, ip, readJson, sendJson })) return;
 
       if (req.method === "GET" && pathname === "/healthz") {
         sendJson(res, 200, { ok: true, service: "catsco-skillhub-api", time: nowIso() });
@@ -586,8 +586,7 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
       if (pathname === "/api/auth/catsco-exchange" && req.method === "POST") {
         const body = await readJson(req, 128 * 1024);
         const { user, catsCo } = await synchronizeCatsCoPublisherProfile(store, body, {
-          catsBaseUrl: config.botAuth.catsCoBaseUrl,
-          allowIdentityHints: false
+          catsBaseUrl: config.botAuth.catsCoBaseUrl
         });
         const session = await createLoginSession({ config, store, user, req, res });
         await appendAudit(store, {
@@ -611,8 +610,7 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
       if (pathname === "/api/auth/catsco-profile-sync" && req.method === "POST") {
         const body = await readJson(req, 128 * 1024);
         const { user, developerProfile, catsCo } = await synchronizeCatsCoPublisherProfile(store, body, {
-          catsBaseUrl: config.botAuth.catsCoBaseUrl,
-          allowIdentityHints: false
+          catsBaseUrl: config.botAuth.catsCoBaseUrl
         });
         await appendAudit(store, {
           actor: { userId: user.id, role: "user" },
@@ -1496,17 +1494,21 @@ async function verifyCatsCoToken(baseUrl, token) {
 }
 
 async function synchronizeCatsCoPublisherProfile(store, body, options = {}) {
-  const catsBaseUrl = normalizeHttpBaseUrl(
-    options.catsBaseUrl || body.baseUrl || body.httpBaseUrl || "https://app.catsco.cc"
-  );
+  // Only the server may choose the identity authority, including when its
+  // configuration is empty/invalid. Never recover using request-body URLs.
+  let catsBaseUrl;
+  try {
+    catsBaseUrl = normalizeHttpBaseUrl(options.catsBaseUrl);
+  } catch {
+    throw new ValidationError("CatsCo authentication authority is not configured correctly.", "catsco.authority_unavailable", 503);
+  }
   const catsToken = String(body.token || "").trim();
   if (!catsToken) throw new AuthError("CatsCo token missing", 401);
   const catsUser = await verifyCatsCoToken(catsBaseUrl, catsToken);
-  const hintUser = options.allowIdentityHints === false ? {} : body.user || {};
-  const uid = String(catsUser.uid || catsUser.id || hintUser.uid || "").trim();
+  const uid = String(catsUser.uid || catsUser.id || "").trim();
   if (!uid) throw new AuthError("CatsCo user uid missing", 401);
-  const username = String(catsUser.username || hintUser.username || `catsco_${uid}`).trim();
-  const displayName = String(catsUser.display_name || catsUser.displayName || hintUser.displayName || username).trim();
+  const username = String(catsUser.username || `catsco_${uid}`).trim();
+  const displayName = String(catsUser.display_name || catsUser.displayName || username).trim();
   const namespace = slugify(username, `catsco-${uid}`);
   if (typeof store.claimCatsCoPublisherIdentity !== "function") {
     throw new Error("CatsCo publisher identity storage is unavailable.");
@@ -1648,7 +1650,13 @@ function sendJson(res, status, body, headers = {}) {
 
 function sendError(res, error) {
   const status = error.status ?? (error instanceof AuthError ? 401 : 500);
-  const safeMessage = status >= 500 ? "服务器内部错误" : error.message;
+  const configurationMessages = {
+    "catsco.authority_unavailable": "CatsCo authentication authority is not configured correctly.",
+    "presentation.schema_unavailable": "Skill presentation storage is not ready; apply database migration 008."
+  };
+  const safeMessage = status >= 500
+    ? (Object.hasOwn(configurationMessages, error.code) ? configurationMessages[error.code] : "服务器内部错误")
+    : error.message;
   sendJson(res, status, { error: { code: error.code ?? "internal_error", message: safeMessage } });
   if (status >= 500) console.error(error);
 }
@@ -2082,7 +2090,7 @@ function assertProductionConfig(config) {
   }
 }
 
-function getIp(req) {
+export function getIp(req) {
   const remote = String(req.socket.remoteAddress ?? "").trim();
   const isLoopbackProxy = ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(remote);
   if (isLoopbackProxy) {

@@ -1,11 +1,11 @@
 import { getActorFromRequest } from "../../packages/auth/index.js";
 import { AuthError, ValidationError } from "../../packages/domain/index.js";
 import {
-  PRESENTATION_CATEGORIES, PRESENTATION_MAX_BYTES, parsePresentationTarget, parsePresentationWrite
+  PRESENTATION_CATEGORIES, PRESENTATION_REQUEST_MAX_BYTES, parsePresentationTarget, parsePresentationWrite
 } from "../../packages/presentations/index.js";
 import { searchPublishedSkillsPage } from "../../packages/search/index.js";
 
-export async function handlePresentationRequest({ config, store, req, res, url, pathname, readJson, sendJson }) {
+export async function handlePresentationRequest({ config, store, req, res, url, pathname, ip, readJson, sendJson }) {
   if (!pathname.startsWith("/api/skill-presentations") && !pathname.startsWith("/api/catalogue/")) return false;
   if (!config.presentations?.readEnabled) {
     throw new ValidationError("Skill presentations are not enabled.", "presentation.disabled", 503);
@@ -47,9 +47,9 @@ export async function handlePresentationRequest({ config, store, req, res, url, 
     }
     assertJsonOrigin(config, req);
     const actor = await humanActor(config, store, req);
-    const input = await readJson(req, PRESENTATION_MAX_BYTES);
+    const input = await readJson(req, PRESENTATION_REQUEST_MAX_BYTES);
     parsePresentationWrite(input, action);
-    const presentation = await store.writeSkillPresentation(input, actor, action, req.socket.remoteAddress || "");
+    const presentation = await store.writeSkillPresentation(input, actor, action, ip);
     sendJson(res, 200, { presentation }, { "Cache-Control": "private, no-store" });
     return true;
   }
