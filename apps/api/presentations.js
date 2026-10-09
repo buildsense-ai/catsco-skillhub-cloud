@@ -22,11 +22,12 @@ export async function handlePresentationRequest({ config, store, req, res, url, 
     return true;
   }
   if (pathname === "/api/catalogue/skills" && req.method === "GET") {
+    const actor = await getActorFromRequest(config, store, req, { allowPublic: true, allowAgent: true });
     const rawLimit = url.searchParams.get("limit");
     if (rawLimit !== null && !/^[1-9][0-9]{0,2}$/.test(rawLimit)) {
       throw new ValidationError("Catalogue limit must be an integer between 1 and 100.", "catalogue.limit_invalid", 400);
     }
-    const result = searchPublishedSkillsPage(await store.listCatalogueVersions(), url.searchParams.get("q") || "", {
+    const result = searchPublishedSkillsPage(await store.listCatalogueVersions(skillVisibilityViewer(actor)), url.searchParams.get("q") || "", {
       category: url.searchParams.get("category") || "",
       platform: url.searchParams.get("platform") || "",
       agentVersion: url.searchParams.get("agent_version") || "",
@@ -39,8 +40,10 @@ export async function handlePresentationRequest({ config, store, req, res, url, 
   }
   if (req.method === "GET" && ["/api/skill-presentations", "/api/skill-presentations/draft"].includes(pathname)) {
     const draft = pathname.endsWith("/draft");
-    const actor = draft ? await humanActor(config, store, req) : undefined;
     const target = parsePresentationTarget({ skillId: url.searchParams.get("skillId"), version: url.searchParams.get("version") });
+    const viewer = await getActorFromRequest(config, store, req, { allowPublic: true, allowAgent: true });
+    const actor = draft ? await humanActor(config, store, req) : undefined;
+    if (!draft) await assertSkillVersionVisible(store, target, skillVisibilityViewer(viewer));
     const presentation = await store.getSkillPresentation({ ...target, draft, actor });
     sendJson(res, 200, { presentation }, { "Cache-Control": "private, no-store" });
     return true;
@@ -78,8 +81,14 @@ async function handleImageRequest({ config, store, req, res, url, pathname, ip, 
   }
   if (req.method === "GET" && match) {
     const draft = !!match[2];
+    const viewer = await getActorFromRequest(config, store, req, { allowPublic: true, allowAgent: true });
     const actor = draft ? await humanActor(config, store, req) : undefined;
-    const asset = await store.getPresentationAsset(match[1], { draft, actor });
+    if (!draft) {
+      if (url.searchParams.has("skillId") || url.searchParams.has("version")) {
+        await assertSkillVersionVisible(store, targetFromQuery(), skillVisibilityViewer(viewer));
+      }
+    }
+    const asset = await store.getPresentationAsset(match[1], { draft, actor, viewer });
     res.writeHead(200, { "Content-Type": "image/webp", "Content-Length": asset.data.length,
       "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store",
       "Content-Security-Policy": "default-src 'none'; sandbox", "Content-Disposition": `inline; filename="${asset.id}.webp"` });
@@ -113,6 +122,20 @@ async function handleImageRequest({ config, store, req, res, url, pathname, ip, 
     } finally { activeImageUploads--; }
   }
   throw new ValidationError("Presentation image route not found.", "presentation.route_not_found", 404);
+}
+
+function skillVisibilityViewer(actor) {
+  return {
+    viewerUserId: actor?.userId ?? null,
+    viewerCatsCoUid: actor?.developerProfile?.catsCoUid ?? null,
+    includeAll: Boolean(actor?.permissions?.includes("system.manage"))
+  };
+}
+
+async function assertSkillVersionVisible(store, target, viewer) {
+  if (typeof store.findPublishedVersion !== "function") return;
+  const version = await store.findPublishedVersion(target.skillId, target.version, viewer);
+  if (!version) throw new ValidationError("Skill 不存在或未发布", "skill.not_found", 404);
 }
 
 async function humanActor(config, store, req) {

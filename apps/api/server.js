@@ -851,7 +851,7 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
         const files = filesFromSubmissionBody(body, config.limits);
         let manifest = namespaceQuickShareManifest(buildManifestDraft({ form: body.manifest ?? body.form ?? {}, files }), actor);
         let normalizedFiles = upsertManifestFile(files, manifest);
-        const publishedVersions = await store.listPublishedVersionsForSkill(manifest.id);
+        const publishedVersions = await store.listPublishedVersionsForSkill(manifest.id, skillVisibilityViewer(actor));
         const historicalVersions = typeof store.listPackageVersionsForSkill === "function"
           ? await store.listPackageVersionsForSkill(manifest.id)
           : publishedVersions;
@@ -1275,8 +1275,49 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
         return;
       }
 
+      const visibilityMatch = pathname.match(/^\/api\/skills\/(.+)\/visibility$/);
+      if (visibilityMatch && (req.method === "GET" || req.method === "PATCH")) {
+        const actor = await requireAuthenticatedActor(config, store, req);
+        const skillId = visibilityMatch[1];
+        const current = await store.getSkillVisibility(skillId);
+        if (!current) throw new ValidationError("Skill 不存在或未发布", "skill.not_found", 404);
+        const isAdmin = actor.permissions?.includes("system.manage");
+        if (!isAdmin && current.ownerUserId !== actor.userId) {
+          throw new ValidationError("只有 Skill Owner 或管理员可以查看可见范围", "skill.visibility_forbidden", 403);
+        }
+        if (req.method === "GET") {
+          sendJson(res, 200, { visibility: current });
+          return;
+        }
+        const body = await readJson(req, 64 * 1024);
+        const visibility = await store.updateSkillVisibility({
+          skillId,
+          actorUserId: actor.userId,
+          isAdmin,
+          visibilityScope: body.visibilityScope,
+          sharedUserUids: body.sharedUserUids,
+          expectedRevision: body.expectedRevision
+        });
+        if (!visibility) throw new ValidationError("Skill 不存在或未发布", "skill.not_found", 404);
+        await appendAudit(store, {
+          actor,
+          action: "skill.visibility.updated",
+          resourceType: "skill",
+          resourceId: skillId,
+          metadata: {
+            visibilityScope: visibility.visibilityScope,
+            sharedUserCount: visibility.sharedUserUids.length,
+            visibilityRevision: visibility.visibilityRevision
+          },
+          ip
+        });
+        sendJson(res, 200, { visibility });
+        return;
+      }
+
       if (pathname === "/api/skills" && req.method === "GET") {
-        const versions = await store.listPublishedVersions();
+        const actor = await getActorFromRequest(config, store, req, { allowPublic: true, allowAgent: true });
+        const versions = await store.listPublishedVersions(skillVisibilityViewer(actor));
         const skills = searchPublishedSkills(versions, url.searchParams.get("q") ?? "", {
           category: url.searchParams.get("category") ?? "",
           agentVersion: url.searchParams.get("agent_version") ?? "",
@@ -1289,14 +1330,16 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
 
       const versionsMatch = pathname.match(/^\/api\/skills\/(.+)\/versions$/);
       if (versionsMatch && req.method === "GET") {
-        const versions = await store.listPublishedVersionsForSkill(versionsMatch[1]);
+        const actor = await getActorFromRequest(config, store, req, { allowPublic: true, allowAgent: true });
+        const versions = await store.listPublishedVersionsForSkill(versionsMatch[1], skillVisibilityViewer(actor));
         sendJson(res, 200, { versions: versions.map(toRegistryEntry) });
         return;
       }
 
       const versionMatch = pathname.match(/^\/api\/skills\/(.+)\/versions\/([^/]+)$/);
       if (versionMatch && req.method === "GET") {
-        const version = await store.findPublishedVersion(versionMatch[1], versionMatch[2]);
+        const actor = await getActorFromRequest(config, store, req, { allowPublic: true, allowAgent: true });
+        const version = await store.findPublishedVersion(versionMatch[1], versionMatch[2], skillVisibilityViewer(actor));
         if (!version) throw new ValidationError("版本不存在或未发布", "version.not_found", 404);
         await assertStoredGitVersion(config, version, "public");
         sendJson(res, 200, { version: toRegistryEntry(version) });
@@ -1306,7 +1349,7 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
       const downloadMatch = pathname.match(/^\/api\/skills\/(.+)\/versions\/([^/]+)\/download$/);
       if (downloadMatch && req.method === "GET") {
         const actor = await getActorFromRequest(config, store, req, { allowPublic: true, allowAgent: true });
-        const version = await store.findPublishedVersion(downloadMatch[1], downloadMatch[2]);
+        const version = await store.findPublishedVersion(downloadMatch[1], downloadMatch[2], skillVisibilityViewer(actor));
         if (!version) throw new ValidationError("版本不存在或未发布", "version.not_found", 404);
         await assertStoredGitVersion(config, version, "public");
         await store.incrementDownload({ packageVersionId: version.id, userId: actor.userId, ip, userAgent: req.headers["user-agent"] ?? "" });
@@ -1320,7 +1363,8 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
 
       const skillMatch = pathname.match(/^\/api\/skills\/(.+)$/);
       if (skillMatch && req.method === "GET") {
-        const versions = await store.listPublishedVersionsForSkill(skillMatch[1]);
+        const actor = await getActorFromRequest(config, store, req, { allowPublic: true, allowAgent: true });
+        const versions = await store.listPublishedVersionsForSkill(skillMatch[1], skillVisibilityViewer(actor));
         if (!versions.length) throw new ValidationError("Skill 不存在或未发布", "skill.not_found", 404);
         sendJson(res, 200, { skill: toRegistryEntry(versions[0]), versions: versions.map(toRegistryEntry) });
         return;
@@ -1381,6 +1425,14 @@ async function requireAdminActor(config, store, req, permission) {
 
 async function requireAuthenticatedActor(config, store, req) {
   return getActorFromRequest(config, store, req, { allowAgent: true });
+}
+
+function skillVisibilityViewer(actor) {
+  return {
+    viewerUserId: actor?.userId ?? null,
+    viewerCatsCoUid: actor?.developerProfile?.catsCoUid ?? null,
+    includeAll: Boolean(actor?.permissions?.includes("system.manage"))
+  };
 }
 
 async function createLoginSession({ config, store, user, req, res }) {
