@@ -125,7 +125,8 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
       }
 
       if (req.method === "GET" && pathname.startsWith("/packages/")) {
-        await servePackagePath(config, res, pathname);
+        const actor = await getActorFromRequest(config, store, req, { allowPublic: true, allowAgent: true });
+        await servePackagePath(config, store, res, pathname, skillVisibilityViewer(actor));
         return;
       }
 
@@ -1715,21 +1716,25 @@ function sendError(res, error) {
   if (status >= 500) console.error(error);
 }
 
-async function servePackagePath(config, res, pathname) {
+async function servePackagePath(config, store, res, pathname, viewer) {
   const relative = pathname.replace(/^\/packages\//, "");
   const parts = relative.split("/").map(decodeURIComponent).filter(Boolean);
+  let absolute;
+  let artifactSha256 = null;
   if (parts[0] === "sha256" && parts.length === 2) {
     const match = parts[1].match(/^([a-f0-9]{64})\.skillpkg$/);
     if (!match) throw new ValidationError("包路径不存在", "package_path.invalid", 404);
-    const absolute = await safeJoin(config.paths.artifacts, `${match[1].slice(0, 2)}/${parts[1]}`);
-    await serveStaticFile(res, absolute, "application/octet-stream", {
-      "Cache-Control": "public, max-age=31536000, immutable"
-    });
-    return;
+    artifactSha256 = match[1];
+    absolute = await safeJoin(config.paths.artifacts, `${match[1].slice(0, 2)}/${parts[1]}`);
+  } else {
+    if (parts.length < 3) throw new ValidationError("包路径不存在", "package_path.invalid", 404);
+    absolute = await safeJoin(config.paths.packages, parts.join("/"));
   }
-  if (parts.length < 3) throw new ValidationError("包路径不存在", "package_path.invalid", 404);
-  const absolute = await safeJoin(config.paths.packages, parts.join("/"));
-  await serveStaticFile(res, absolute, "application/octet-stream", { "Cache-Control": "public, max-age=31536000, immutable" });
+  const version = await store.findPublishedVersionByPackagePath(absolute, { artifactSha256, ...viewer });
+  if (!version) throw new ValidationError("包路径不存在", "package_path.not_found", 404);
+  // Visibility can change after a URL was issued. Do not let an earlier
+  // public cache continue serving a package that is now shared/private.
+  await serveStaticFile(res, absolute, "application/octet-stream", { "Cache-Control": "private, no-store" });
 }
 
 async function serveStaticFile(res, filePath, contentType, extraHeaders = {}) {

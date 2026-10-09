@@ -891,6 +891,35 @@ export function createStore(config) {
       return result.rows[0] ? mapPackageVersion(result.rows[0]) : null;
     },
 
+    async findPublishedVersionByPackagePath(packagePath, {
+      artifactSha256 = null,
+      viewerUserId = null,
+      viewerCatsCoUid = null,
+      includeAll = false
+    } = {}) {
+      await ensureSimplifiedSchema();
+      const result = await query(
+        `SELECT skill_versions.*,
+                publisher_profiles.display_name AS publisher_display_name,
+                publisher_profiles.contact AS publisher_contact,
+                s.visibility_scope, s.visibility_revision, s.visibility_updated_at
+         FROM skill_versions
+         LEFT JOIN publisher_profiles ON publisher_profiles.user_id = skill_versions.owner_user_id
+         LEFT JOIN skills s ON s.id = skill_versions.skill_id
+         LEFT JOIN skill_visibility_grants g ON g.skill_id = s.id AND g.catsco_uid = $3
+         WHERE (skill_versions.package_path = $1
+                OR ($2::text IS NOT NULL AND skill_versions.artifact_sha256 = $2))
+           AND skill_versions.status = 'published' AND skill_versions.yanked_at IS NULL
+           AND ($4::boolean OR COALESCE(s.visibility_scope, 'public') = 'public'
+             OR ($5::text IS NOT NULL AND COALESCE(s.owner_user_id, skill_versions.owner_user_id) = $5)
+             OR ($3::text IS NOT NULL AND COALESCE(s.visibility_scope, 'public') = 'shared' AND g.catsco_uid IS NOT NULL))
+         ORDER BY skill_versions.published_at DESC
+         LIMIT 1`,
+        [packagePath, artifactSha256, viewerCatsCoUid, includeAll, viewerUserId]
+      );
+      return result.rows[0] ? mapPackageVersion(result.rows[0]) : null;
+    },
+
     async findRecoverablePublishedVersion(skillId, version) {
       await ensureSimplifiedSchema();
       const result = await query(

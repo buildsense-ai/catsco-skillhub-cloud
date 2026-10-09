@@ -78,7 +78,8 @@ export function createApiServer(config = loadConfig()) {
       }
 
       if (req.method === "GET" && pathname.startsWith("/packages/")) {
-        await servePackagePath(config, res, pathname);
+        const actor = await getActorFromRequest(config, store, req, { allowPublic: true, allowAgent: true });
+        await servePackagePath(config, store, res, pathname, skillVisibilityViewer(actor));
         return;
       }
 
@@ -1221,12 +1222,14 @@ function sendError(res, error) {
   if (status >= 500) console.error(error);
 }
 
-async function servePackagePath(config, res, pathname) {
+async function servePackagePath(config, store, res, pathname, viewer) {
   const relative = pathname.replace(/^\/packages\//, "");
   const parts = relative.split("/").map(decodeURIComponent).filter(Boolean);
   if (parts.length < 3) throw new ValidationError("包路径不存在", "package_path.invalid", 404);
   const absolute = await safeJoin(config.paths.packages, parts.join("/"));
-  await serveStaticFile(res, absolute, "application/octet-stream", { "Cache-Control": "public, max-age=31536000, immutable" });
+  const version = await store.findPublishedVersionByPackagePath(absolute, { ...viewer });
+  if (!version) throw new ValidationError("包路径不存在", "package_path.not_found", 404);
+  await serveStaticFile(res, absolute, "application/octet-stream", { "Cache-Control": "private, no-store" });
 }
 
 async function serveStaticFile(res, filePath, contentType, extraHeaders = {}) {

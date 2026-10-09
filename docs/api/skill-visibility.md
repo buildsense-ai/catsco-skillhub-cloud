@@ -10,7 +10,11 @@ PR A 为逻辑 Skill 增加三档服务端可见范围：`public`、`shared`、`
 - 登录用户可以看到公开 Skill、自己拥有的 Skill，以及 `shared` 且共享给自己 CatsCo UID 的 Skill。
 - Owner 可以看到自己 Skill 的所有公开版本；管理员具有管理读取权限。
 - 无权限的详情、版本和下载统一按“不存在或未发布”处理，避免泄露私有 Skill 是否存在。
+- 直接访问历史 `packageUrl`（包括 `/packages/sha256/<sha>.skillpkg`）也必须通过同一 ACL；未知、已撤销或无权限的包统一返回 `404`。
+- 包响应使用 `private, no-store`，避免公开缓存继续暴露后来改为共享/私有的包。
 - 共享名单不随普通目录、详情或版本接口返回。
+
+共享授权记录中的 `granted_by_user_id` 只是当前操作者的可选审计指针。操作者账号被删除时，授权规则保留，指针置空，不会阻塞账号删除（已有数据库由 `011_skill_visibility_grant_writer_delete.sql` 补齐该约束）。
 
 ## Owner 接口
 

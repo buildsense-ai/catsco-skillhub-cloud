@@ -16,7 +16,10 @@ ALTER TABLE skills
 CREATE TABLE IF NOT EXISTS skill_visibility_grants (
   skill_id TEXT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
   catsco_uid TEXT NOT NULL,
-  granted_by_user_id TEXT NOT NULL REFERENCES users(id),
+  -- This is the current grant writer, not the grant's owner. Keep the
+  -- visibility rule when that account is removed, while dropping the stale
+  -- audit pointer instead of blocking account deletion.
+  granted_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (skill_id, catsco_uid),
   CONSTRAINT skill_visibility_grants_uid_valid

@@ -120,6 +120,56 @@ test("PostgreSQL-backed current share flow works", { skip: !databaseUrl }, async
   });
   assert.equal(packageObject.payload.manifest.displayName, `Contract Review Assistant ${suffix}`);
 
+  // The package URL is also a public-facing download surface. Verify that it
+  // is backed by the same ACL as the catalogue before changing visibility.
+  const publicPackage = await fetch(skill.packageUrl);
+  assert.equal(publicPackage.status, 200);
+  assert.equal(publicPackage.headers.get("cache-control"), "private, no-store");
+  const ownerPackage = await fetch(skill.packageUrl, { headers: { Cookie: cookies } });
+  assert.equal(ownerPackage.status, 200);
+
+  const visibilityBefore = await getJson(`/api/skills/${encodeURIComponent(skill.skillId)}/visibility`);
+  const privateUpdate = await patchJson(`/api/skills/${encodeURIComponent(skill.skillId)}/visibility`, {
+    visibilityScope: "private",
+    expectedRevision: visibilityBefore.visibility.visibilityRevision
+  });
+  assert.equal(privateUpdate.visibility.visibilityScope, "private");
+  const hiddenPackage = await fetch(skill.packageUrl);
+  assert.equal(hiddenPackage.status, 404);
+  const ownerPackageAfterPrivate = await fetch(skill.packageUrl, { headers: { Cookie: cookies } });
+  assert.equal(ownerPackageAfterPrivate.status, 200);
+
+  // Deleting the administrator who wrote a grant must not delete or block the
+  // grant itself; only its optional audit pointer is cleared.
+  const grantWriterId = `visibility-grant-writer-${suffix}`;
+  await store.query(
+    "INSERT INTO users (id, email, password_hash, display_name) VALUES ($1, $2, 'disabled-test-password', 'Visibility grant writer')",
+    [grantWriterId, `${grantWriterId}@example.invalid`]
+  );
+  const sharedUpdate = await store.updateSkillVisibility({
+    skillId: skill.skillId,
+    actorUserId: grantWriterId,
+    isAdmin: true,
+    visibilityScope: "shared",
+    sharedUserUids: [`shared-${suffix}`],
+    expectedRevision: privateUpdate.visibility.visibilityRevision
+  });
+  await store.query("DELETE FROM users WHERE id = $1", [grantWriterId]);
+  const grant = await store.query(
+    "SELECT catsco_uid, granted_by_user_id FROM skill_visibility_grants WHERE skill_id = $1",
+    [skill.skillId]
+  );
+  assert.deepEqual(grant.rows, [{ catsco_uid: `shared-${suffix}`, granted_by_user_id: null }]);
+  assert.equal((await fetch(skill.packageUrl)).status, 404);
+  assert.equal((await fetch(skill.packageUrl, { headers: { Cookie: cookies } })).status, 200);
+
+  await store.updateSkillVisibility({
+    skillId: skill.skillId,
+    actorUserId: (await store.getUserByEmail(`developer-${suffix}@example.com`)).id,
+    visibilityScope: "public",
+    expectedRevision: sharedUpdate.visibilityRevision
+  });
+
   const published = await store.findPublishedVersion(skill.skillId, skill.latestVersion);
   assert.ok(published);
   await store.yankPackageVersion(published.id);
@@ -264,6 +314,17 @@ async function postJson(pathname, body) {
 async function getJson(pathname) {
   const response = await fetch(`${baseUrl}${pathname}`, {
     headers: cookies ? { Cookie: cookies } : {}
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(JSON.stringify(data));
+  return data;
+}
+
+async function patchJson(pathname, body) {
+  const response = await fetch(`${baseUrl}${pathname}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Cookie: cookies },
+    body: JSON.stringify(body)
   });
   const data = await response.json();
   if (!response.ok) throw new Error(JSON.stringify(data));
