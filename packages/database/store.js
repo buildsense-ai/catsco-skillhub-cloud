@@ -96,7 +96,15 @@ export function createStore(config) {
             WHERE table_schema = current_schema()
               AND table_name = 'skill_versions'
               AND column_name = 'git_commit_sha'
-          ) AS git_columns
+          ) AS git_columns,
+          to_regclass('public.skill_visibility_grants') IS NOT NULL AS skill_visibility_grants,
+          EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND table_name = 'skills'
+              AND column_name = 'visibility_scope'
+          ) AS skill_visibility_columns
       `);
       const schema = result.rows[0] || {};
       if (
@@ -105,8 +113,10 @@ export function createStore(config) {
         || !schema.skill_versions
         || !schema.catsco_identity_column
         || !schema.git_columns
+        || !schema.skill_visibility_grants
+        || !schema.skill_visibility_columns
       ) {
-        throw new Error("SkillHub database schema is incomplete; run npm run db:migrate");
+        throw new Error("SkillHub database schema is incomplete; run npm run db:migrate (including migration 010_skill_visibility)");
       }
       simplifiedSchemaReady = true;
     })().catch((error) => {
@@ -121,19 +131,25 @@ export function createStore(config) {
     tx,
     ...createPresentationStore({ query, tx }),
     ...createPresentationAssetStore({ query, tx }),
-    async listCatalogueVersions() {
+    async listCatalogueVersions({ viewerUserId = null, viewerCatsCoUid = null, includeAll = false } = {}) {
       await ensureSimplifiedSchema();
       await ensurePresentationSchema(query);
       const result = await query(`SELECT v.*, publisher_profiles.display_name AS publisher_display_name,
           publisher_profiles.contact AS publisher_contact,
+          s.visibility_scope, s.visibility_revision, s.visibility_updated_at,
           p.published_revision AS presentation_revision,
           p.published_content->>'summary' AS presentation_summary,
           p.published_content->>'primaryCategory' AS presentation_category
         FROM skill_versions v
         LEFT JOIN publisher_profiles ON publisher_profiles.user_id = v.owner_user_id
+        LEFT JOIN skills s ON s.id = v.skill_id
+        LEFT JOIN skill_visibility_grants g ON g.skill_id = s.id AND g.catsco_uid = $2
         LEFT JOIN skill_presentations p ON p.package_version_id = v.id
         WHERE v.status = 'published' AND v.yanked_at IS NULL
-        ORDER BY v.published_at DESC`);
+          AND ($3::boolean OR COALESCE(s.visibility_scope, 'public') = 'public'
+            OR ($1::text IS NOT NULL AND COALESCE(s.owner_user_id, v.owner_user_id) = $1)
+            OR ($2::text IS NOT NULL AND COALESCE(s.visibility_scope, 'public') = 'shared' AND g.catsco_uid IS NOT NULL))
+        ORDER BY v.published_at DESC`, [viewerUserId, viewerCatsCoUid, includeAll]);
       return result.rows.map((row) => ({
         ...mapPackageVersion(row),
         ...(row.presentation_revision ? { presentationSummary: {
@@ -833,31 +849,73 @@ export function createStore(config) {
       });
     },
 
-    async listPublishedVersions() {
+    async listPublishedVersions({ viewerUserId = null, viewerCatsCoUid = null, includeAll = false } = {}) {
       await ensureSimplifiedSchema();
       const result = await query(
         `SELECT skill_versions.*,
                 publisher_profiles.display_name AS publisher_display_name,
-                publisher_profiles.contact AS publisher_contact
+                publisher_profiles.contact AS publisher_contact,
+                s.visibility_scope, s.visibility_revision, s.visibility_updated_at
          FROM skill_versions
          LEFT JOIN publisher_profiles ON publisher_profiles.user_id = skill_versions.owner_user_id
+         LEFT JOIN skills s ON s.id = skill_versions.skill_id
+         LEFT JOIN skill_visibility_grants g ON g.skill_id = s.id AND g.catsco_uid = $2
          WHERE skill_versions.status = 'published' AND skill_versions.yanked_at IS NULL
-         ORDER BY skill_versions.published_at DESC`
+           AND ($3::boolean OR COALESCE(s.visibility_scope, 'public') = 'public'
+             OR ($1::text IS NOT NULL AND COALESCE(s.owner_user_id, skill_versions.owner_user_id) = $1)
+             OR ($2::text IS NOT NULL AND COALESCE(s.visibility_scope, 'public') = 'shared' AND g.catsco_uid IS NOT NULL))
+         ORDER BY skill_versions.published_at DESC`,
+        [viewerUserId, viewerCatsCoUid, includeAll]
       );
       return result.rows.map(mapPackageVersion);
     },
 
-    async findPublishedVersion(skillId, version) {
+    async findPublishedVersion(skillId, version, { viewerUserId = null, viewerCatsCoUid = null, includeAll = false } = {}) {
       await ensureSimplifiedSchema();
       const result = await query(
         `SELECT skill_versions.*,
                 publisher_profiles.display_name AS publisher_display_name,
-                publisher_profiles.contact AS publisher_contact
+                publisher_profiles.contact AS publisher_contact,
+                s.visibility_scope, s.visibility_revision, s.visibility_updated_at
          FROM skill_versions
          LEFT JOIN publisher_profiles ON publisher_profiles.user_id = skill_versions.owner_user_id
+         LEFT JOIN skills s ON s.id = skill_versions.skill_id
+         LEFT JOIN skill_visibility_grants g ON g.skill_id = s.id AND g.catsco_uid = $3
          WHERE skill_versions.skill_id = $1 AND skill_versions.version = $2
-           AND skill_versions.status = 'published' AND skill_versions.yanked_at IS NULL`,
-        [skillId, version]
+           AND skill_versions.status = 'published' AND skill_versions.yanked_at IS NULL
+           AND ($4::boolean OR COALESCE(s.visibility_scope, 'public') = 'public'
+             OR ($5::text IS NOT NULL AND COALESCE(s.owner_user_id, skill_versions.owner_user_id) = $5)
+             OR ($3::text IS NOT NULL AND COALESCE(s.visibility_scope, 'public') = 'shared' AND g.catsco_uid IS NOT NULL) )`,
+        [skillId, version, viewerCatsCoUid, includeAll, viewerUserId]
+      );
+      return result.rows[0] ? mapPackageVersion(result.rows[0]) : null;
+    },
+
+    async findPublishedVersionByPackagePath(packagePath, {
+      artifactSha256 = null,
+      viewerUserId = null,
+      viewerCatsCoUid = null,
+      includeAll = false
+    } = {}) {
+      await ensureSimplifiedSchema();
+      const result = await query(
+        `SELECT skill_versions.*,
+                publisher_profiles.display_name AS publisher_display_name,
+                publisher_profiles.contact AS publisher_contact,
+                s.visibility_scope, s.visibility_revision, s.visibility_updated_at
+         FROM skill_versions
+         LEFT JOIN publisher_profiles ON publisher_profiles.user_id = skill_versions.owner_user_id
+         LEFT JOIN skills s ON s.id = skill_versions.skill_id
+         LEFT JOIN skill_visibility_grants g ON g.skill_id = s.id AND g.catsco_uid = $3
+         WHERE (skill_versions.package_path = $1
+                OR ($2::text IS NOT NULL AND skill_versions.artifact_sha256 = $2))
+           AND skill_versions.status = 'published' AND skill_versions.yanked_at IS NULL
+           AND ($4::boolean OR COALESCE(s.visibility_scope, 'public') = 'public'
+             OR ($5::text IS NOT NULL AND COALESCE(s.owner_user_id, skill_versions.owner_user_id) = $5)
+             OR ($3::text IS NOT NULL AND COALESCE(s.visibility_scope, 'public') = 'shared' AND g.catsco_uid IS NOT NULL))
+         ORDER BY skill_versions.published_at DESC
+         LIMIT 1`,
+        [packagePath, artifactSha256, viewerCatsCoUid, includeAll, viewerUserId]
       );
       return result.rows[0] ? mapPackageVersion(result.rows[0]) : null;
     },
@@ -872,18 +930,24 @@ export function createStore(config) {
       return result.rows[0] ? mapPackageVersion(result.rows[0]) : null;
     },
 
-    async listPublishedVersionsForSkill(skillId) {
+    async listPublishedVersionsForSkill(skillId, { viewerUserId = null, viewerCatsCoUid = null, includeAll = false } = {}) {
       await ensureSimplifiedSchema();
       const result = await query(
         `SELECT skill_versions.*,
                 publisher_profiles.display_name AS publisher_display_name,
-                publisher_profiles.contact AS publisher_contact
+                publisher_profiles.contact AS publisher_contact,
+                s.visibility_scope, s.visibility_revision, s.visibility_updated_at
          FROM skill_versions
          LEFT JOIN publisher_profiles ON publisher_profiles.user_id = skill_versions.owner_user_id
+         LEFT JOIN skills s ON s.id = skill_versions.skill_id
+         LEFT JOIN skill_visibility_grants g ON g.skill_id = s.id AND g.catsco_uid = $2
          WHERE skill_versions.skill_id = $1
            AND skill_versions.status = 'published' AND skill_versions.yanked_at IS NULL
+           AND ($3::boolean OR COALESCE(s.visibility_scope, 'public') = 'public'
+             OR ($4::text IS NOT NULL AND COALESCE(s.owner_user_id, skill_versions.owner_user_id) = $4)
+             OR ($2::text IS NOT NULL AND COALESCE(s.visibility_scope, 'public') = 'shared' AND g.catsco_uid IS NOT NULL))
          ORDER BY skill_versions.published_at DESC`,
-        [skillId]
+        [skillId, viewerCatsCoUid, includeAll, viewerUserId]
       );
       return result.rows.map(mapPackageVersion);
     },
@@ -891,9 +955,11 @@ export function createStore(config) {
     async listPackageVersionsForSkill(skillId) {
       await ensureSimplifiedSchema();
       const result = await query(
-        `SELECT * FROM skill_versions
-         WHERE skill_id = $1
-         ORDER BY published_at DESC NULLS LAST, created_at DESC`,
+        `SELECT skill_versions.*, s.visibility_scope, s.visibility_revision, s.visibility_updated_at
+         FROM skill_versions
+         LEFT JOIN skills s ON s.id = skill_versions.skill_id
+         WHERE skill_versions.skill_id = $1
+         ORDER BY skill_versions.published_at DESC NULLS LAST, skill_versions.created_at DESC`,
         [skillId]
       );
       return result.rows.map(mapPackageVersion);
@@ -903,14 +969,110 @@ export function createStore(config) {
       await ensureSimplifiedSchema();
       const cappedLimit = Math.min(Math.max(Number(limit) || 100, 1), 200);
       const result = await query(
-        `SELECT *
+        `SELECT skill_versions.*, s.visibility_scope, s.visibility_revision, s.visibility_updated_at
          FROM skill_versions
-         WHERE owner_user_id = $1
+         LEFT JOIN skills s ON s.id = skill_versions.skill_id
+         WHERE skill_versions.owner_user_id = $1
          ORDER BY published_at DESC NULLS LAST, created_at DESC
          LIMIT $2`,
         [ownerUserId, cappedLimit]
       );
       return result.rows.map(mapPackageVersion);
+    },
+
+    async getSkillVisibility(skillId) {
+      await ensureSimplifiedSchema();
+      const skill = await query(
+        `SELECT id, owner_user_id, visibility_scope, visibility_revision, visibility_updated_at
+         FROM skills WHERE id = $1`,
+        [skillId]
+      );
+      if (!skill.rows[0]) return null;
+      const grants = await query(
+        `SELECT catsco_uid, created_at
+         FROM skill_visibility_grants
+         WHERE skill_id = $1
+         ORDER BY created_at, catsco_uid`,
+        [skillId]
+      );
+      const row = skill.rows[0];
+      return {
+        skillId: row.id,
+        ownerUserId: row.owner_user_id,
+        visibilityScope: row.visibility_scope || "public",
+        visibilityRevision: Number(row.visibility_revision || 1),
+        visibilityUpdatedAt: iso(row.visibility_updated_at),
+        sharedUserUids: grants.rows.map((grant) => grant.catsco_uid)
+      };
+    },
+
+    async updateSkillVisibility({
+      skillId,
+      actorUserId,
+      isAdmin = false,
+      visibilityScope,
+      sharedUserUids = [],
+      expectedRevision
+    }) {
+      await ensureSimplifiedSchema();
+      const normalizedScope = String(visibilityScope ?? "").trim().toLowerCase();
+      if (!["public", "shared", "private"].includes(normalizedScope)) {
+        throw new ValidationError("visibilityScope 必须是 public、shared 或 private", "skill.visibility_scope_invalid");
+      }
+      if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) {
+        throw new ValidationError("expectedRevision 必须是正整数", "skill.visibility_revision_invalid");
+      }
+      const normalizedUids = [...new Set((Array.isArray(sharedUserUids) ? sharedUserUids : [])
+        .map((uid) => String(uid ?? "").trim())
+        .filter(Boolean))];
+      if (normalizedUids.length > 200 || normalizedUids.some((uid) => !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(uid))) {
+        throw new ValidationError("sharedUserUids 包含无效的 CatsCo UID", "skill.visibility_uid_invalid");
+      }
+      if (normalizedScope === "shared" && normalizedUids.length === 0) {
+        throw new ValidationError("指定共享至少需要一个 CatsCo UID", "skill.visibility_grants_required");
+      }
+      return tx(async (client) => {
+        const current = await client.query(
+          `SELECT id, owner_user_id, visibility_revision
+           FROM skills WHERE id = $1 FOR UPDATE`,
+          [skillId]
+        );
+        const skill = current.rows[0];
+        if (!skill) return null;
+        if (!isAdmin && skill.owner_user_id !== actorUserId) {
+          throw new ValidationError("只有 Skill Owner 或管理员可以修改可见范围", "skill.visibility_forbidden", 403);
+        }
+        if (Number(skill.visibility_revision || 1) !== expectedRevision) {
+          throw new ValidationError("Skill 可见范围已被其他操作更新，请刷新后重试", "skill.visibility_conflict", 409);
+        }
+        const updated = await client.query(
+          `UPDATE skills
+           SET visibility_scope = $2,
+               visibility_revision = visibility_revision + 1,
+               visibility_updated_at = now(),
+               updated_at = now()
+           WHERE id = $1
+           RETURNING id, owner_user_id, visibility_scope, visibility_revision, visibility_updated_at`,
+          [skillId, normalizedScope]
+        );
+        await client.query(`DELETE FROM skill_visibility_grants WHERE skill_id = $1`, [skillId]);
+        for (const uid of normalizedScope === "shared" ? normalizedUids : []) {
+          await client.query(
+            `INSERT INTO skill_visibility_grants (skill_id, catsco_uid, granted_by_user_id)
+             VALUES ($1, $2, $3)`,
+            [skillId, uid, actorUserId]
+          );
+        }
+        const row = updated.rows[0];
+        return {
+          skillId: row.id,
+          ownerUserId: row.owner_user_id,
+          visibilityScope: row.visibility_scope,
+          visibilityRevision: Number(row.visibility_revision),
+          visibilityUpdatedAt: iso(row.visibility_updated_at),
+          sharedUserUids: normalizedScope === "shared" ? normalizedUids : []
+        };
+      });
     },
 
     async listPackageVersionsForAdmin({ status = "", search = "", limit = 100 } = {}) {
@@ -2017,6 +2179,9 @@ function mapPackageVersion(row) {
       downloadCount: Number(row.download_count ?? 0),
       createdAt: iso(row.created_at),
       ownerUserId: row.owner_user_id,
+      visibilityScope: row.visibility_scope || "public",
+      visibilityRevision: Number(row.visibility_revision ?? 1),
+      visibilityUpdatedAt: iso(row.visibility_updated_at),
       publisherDisplayName: row.publisher_display_name || null,
       publisherContact: row.publisher_contact || null,
       storageBackend: row.storage_backend || "legacy-fs",

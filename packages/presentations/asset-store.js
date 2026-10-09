@@ -97,17 +97,26 @@ export function createPresentationAssetStore({ query, tx }) {
       return rows.map(metadata);
     },
 
-    async getPresentationAsset(id, { actor, draft = false } = {}) {
+    async getPresentationAsset(id, { actor, draft = false, viewer = null } = {}) {
       parsePresentationAssetId(id);
       await ensurePresentationAssetSchema(query);
+      const viewerUserId = viewer?.userId ?? null;
+      const viewerCatsCoUid = viewer?.developerProfile?.catsCoUid ?? null;
+      const includeAll = Boolean(viewer?.permissions?.includes("system.manage"));
       // Public access requires a reference in the CURRENT published content.
       // No filesystem URLs, old revision URLs or browser caching can bypass it.
       const row = (await query(`SELECT ${fields}, a.data, v.owner_user_id FROM skill_presentation_assets a
         JOIN skill_versions v ON v.id = a.package_version_id
+        LEFT JOIN skills s ON s.id = v.skill_id
+        LEFT JOIN skill_visibility_grants g ON g.skill_id = s.id AND g.catsco_uid = $5
         LEFT JOIN skill_presentations p ON p.package_version_id = v.id
         WHERE a.id = $1 AND ${visible}
-        AND ($2::boolean OR coalesce(p.published_content->'images','[]'::jsonb) @> $3::jsonb)`,
-      [id, draft, JSON.stringify([{ assetId: id }])])).rows[0];
+        AND ($2::boolean OR (
+          coalesce(p.published_content->'images','[]'::jsonb) @> $3::jsonb
+          AND ($6::boolean OR coalesce(s.visibility_scope, 'public') = 'public'
+            OR ($4::text IS NOT NULL AND coalesce(s.owner_user_id, v.owner_user_id) = $4)
+            OR ($5::text IS NOT NULL AND coalesce(s.visibility_scope, 'public') = 'shared' AND g.catsco_uid IS NOT NULL))))`,
+      [id, draft, JSON.stringify([{ assetId: id }]), viewerUserId, viewerCatsCoUid, includeAll])).rows[0];
       if (!row) missing();
       if (draft) assertPresentationEditor(actor, row.owner_user_id);
       return { ...metadata(row), data: row.data };

@@ -26,6 +26,29 @@ test("production deploy validates the release symlink before side effects", asyn
   }
 });
 
+test("production deploy applies the release Nginx ACL proxy and rolls it back on failure", async () => {
+  const script = await fs.readFile(
+    path.join(root, "infra", "deploy", "deploy-catsco-skillhub"),
+    "utf8"
+  );
+
+  assert.match(script, /infra\/nginx\/skillhub\.conf/);
+  assert.match(script, /nginx -t/);
+  assert.match(script, /systemctl reload nginx/);
+  assert.match(script, /pre-deploy-\$\{RELEASE_ID\}\.nginx\.conf/);
+  assert.match(script, /restoring the previous Nginx configuration/);
+  const missingConfigGuard = script.slice(
+    script.indexOf('Release is missing infra/nginx/skillhub.conf.'),
+    script.indexOf('cp -p -- "${NGINX_CONFIG_PATH}"', script.indexOf('Release is missing infra/nginx/skillhub.conf.'))
+  );
+  assert.match(missingConfigGuard, /false/);
+  assert.doesNotMatch(missingConfigGuard, /exit 4/);
+  assert.ok(
+    script.indexOf("wait_for_health") < script.lastIndexOf("nginx -t"),
+    "Nginx must be switched only after the new API is healthy"
+  );
+});
+
 test("first-install documentation creates a release-backed app link", async () => {
   const guide = await fs.readFile(
     path.join(root, "docs", "operations", "deployment.md"),

@@ -38,11 +38,14 @@ readonly RELEASE_ID="$(date -u +%Y%m%d-%H%M%S)-${GIT_SHA:0:12}"
 readonly RELEASE_PATH="${RELEASES_ROOT}/${RELEASE_ID}"
 readonly INCOMING_PATH="${RELEASES_ROOT}/.incoming-${RELEASE_ID}"
 readonly BACKUP_PATH="${ROOT}/backups/pre-deploy-${RELEASE_ID}.sql"
+readonly NGINX_CONFIG_PATH="/etc/nginx/sites-available/catsco-skillhub"
+readonly NGINX_BACKUP_PATH="${ROOT}/backups/pre-deploy-${RELEASE_ID}.nginx.conf"
 readonly NEXT_LINK="${ROOT}/.app-next-${GIT_SHA}"
 readonly ROLLBACK_LINK="${ROOT}/.app-rollback-${GIT_SHA}"
 
 previous_release=""
 switched=0
+nginx_switched=0
 
 wait_for_health() {
   local attempt
@@ -61,6 +64,17 @@ wait_for_health() {
 rollback_on_error() {
   local status=$?
   trap - ERR
+
+  if [[ "${nginx_switched}" -eq 1 ]]; then
+    echo "Deployment failed; restoring the previous Nginx configuration." >&2
+    if [[ -f "${NGINX_BACKUP_PATH}" ]]; then
+      install -o root -g root -m 0644 "${NGINX_BACKUP_PATH}" "${NGINX_CONFIG_PATH}"
+      nginx -t && systemctl reload nginx || true
+    else
+      rm -f -- "${NGINX_CONFIG_PATH}"
+      nginx -t && systemctl reload nginx || true
+    fi
+  fi
 
   rm -rf -- "${INCOMING_PATH}"
   rm -f -- "${NEXT_LINK}" "${ROLLBACK_LINK}"
@@ -102,6 +116,8 @@ fi
 [[ -f "${CHECKSUM_PATH}" ]] || { echo "Missing ${CHECKSUM_PATH}." >&2; exit 4; }
 [[ -f "${ENV_FILE}" ]] || { echo "Missing ${ENV_FILE}." >&2; exit 4; }
 [[ -x "${NODE_BIN}/node" ]] || { echo "Node.js 22 runtime is unavailable." >&2; exit 4; }
+command -v nginx >/dev/null 2>&1 || { echo "Nginx is unavailable." >&2; exit 4; }
+[[ -f "${NGINX_CONFIG_PATH}" ]] || { echo "Nginx site configuration is missing at ${NGINX_CONFIG_PATH}." >&2; exit 4; }
 [[ ! -e "${RELEASE_PATH}" ]] || { echo "Release ${RELEASE_PATH} already exists." >&2; exit 4; }
 
 (
@@ -155,8 +171,20 @@ switched=1
 systemctl restart "${API_SERVICE}" "${WORKER_SERVICE}"
 wait_for_health
 
+if [[ ! -f "${RELEASE_PATH}/infra/nginx/skillhub.conf" ]]; then
+  echo "Release is missing infra/nginx/skillhub.conf." >&2
+  false
+fi
+cp -p -- "${NGINX_CONFIG_PATH}" "${NGINX_BACKUP_PATH}"
+nginx_switched=1
+install -o root -g root -m 0644 "${RELEASE_PATH}/infra/nginx/skillhub.conf" "${NGINX_CONFIG_PATH}"
+nginx -t
+systemctl reload nginx
+
 switched=0
+nginx_switched=0
 rm -f -- "${ARTIFACT_PATH}" "${CHECKSUM_PATH}"
 
 echo "Deployed ${GIT_SHA} to ${RELEASE_PATH}."
 echo "Previous release remains available at ${previous_release}."
+echo "Nginx configuration synchronized and reloaded."

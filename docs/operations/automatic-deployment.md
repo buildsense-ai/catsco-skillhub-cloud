@@ -18,9 +18,14 @@ main push
   -> 原子切换 /opt/catsco/skillhub/app 符号链接
   -> 重启 API 和 Worker
   -> 检查内部及公网 healthz/readyz
+  -> 同步 release 内 Nginx 配置并执行 nginx -t + reload
 ```
 
 生产部署使用 GitHub `production` Environment，并通过并发锁保证同一时刻只有一个发布任务。
+应用健康检查通过后，服务器端发布程序会把 release 内的
+`infra/nginx/skillhub.conf` 同步到 `/etc/nginx/sites-available/catsco-skillhub`，执行
+`nginx -t` 后 reload。这样 `/packages/*` 不会继续走旧的文件系统 `alias`，而会进入 API
+执行可见性 ACL。配置切换失败会恢复部署前的 Nginx 配置，同时触发应用回滚。
 部署 SSH 密钥只属于 `skillhub-deploy` 用户；该用户只能向 staging 目录写入发布包，并通过
 受限的 `sudo` 命令调用服务器端发布程序。GitHub 中不保存 root 密码、数据库密码或 SkillHub
 运行时 `.env`。
@@ -58,6 +63,8 @@ SKILLHUB_PROD_KNOWN_HOSTS
 
 仓库中的 `infra/deploy/deploy-catsco-skillhub` 是服务器发布程序的受审版本。修改该文件后，
 需要由服务器管理员复核并手动安装，普通 GitHub Actions 发布不能自行替换 root 级部署程序。
+安装本次版本的发布程序后，后续应用发布会自动同步并校验 Nginx 配置；不应再只手动拷贝
+一次配置后长期依赖旧文件。
 
 自动部署要求 `/opt/catsco/skillhub/app` 是指向 `/opt/catsco/skillhub/releases/` 子目录的符号链接。
 新服务器必须按 [首次部署文档](deployment.md)直接创建 release；已有实体 `app` 目录的旧服务器，
