@@ -173,7 +173,7 @@ wait_for_health
 
 if [[ ! -f "${RELEASE_PATH}/infra/nginx/skillhub.conf" ]]; then
   echo "Release is missing infra/nginx/skillhub.conf." >&2
-  exit 4
+  false
 fi
 cp -p -- "${NGINX_CONFIG_PATH}" "${NGINX_BACKUP_PATH}"
 nginx_switched=1
