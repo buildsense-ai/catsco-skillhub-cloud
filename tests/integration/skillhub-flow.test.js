@@ -180,7 +180,7 @@ test("PostgreSQL-backed current share flow works", { skip: !databaseUrl }, async
 
   // Publishing a newer release must keep the Skill-level visibility policy;
   // a version update must not silently make a shared Skill public.
-  const nextVersion = `1.0.${Number(skill.version.split(".").at(-1)) + 1}`;
+  const nextVersion = `1.0.${Number(String(skill.latestVersion).split(".").at(-1)) + 1}`;
   await postJson("/api/skills/share", {
     source: {
       type: "files",
