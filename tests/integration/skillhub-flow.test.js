@@ -216,6 +216,9 @@ test("PostgreSQL-backed current share flow works", { skip: !databaseUrl }, async
   const published = await store.findPublishedVersion(skill.skillId, skill.latestVersion);
   assert.ok(published);
   await store.yankPackageVersion(published.id);
+  const newerPublished = await store.findPublishedVersion(skill.skillId, nextVersion);
+  assert.ok(newerPublished);
+  await store.yankPackageVersion(newerPublished.id);
   const hiddenAfterYank = await getJson(`/api/skills?q=${encodeURIComponent(suffix)}`);
   assert.equal(hiddenAfterYank.skills.some((item) => item.skillId === skill.skillId), false);
   const recoverable = await store.findRecoverablePublishedVersion(skill.skillId, skill.latestVersion);
