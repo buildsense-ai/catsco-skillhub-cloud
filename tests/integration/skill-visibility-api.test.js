@@ -137,6 +137,27 @@ test("only the owner can change visibility and the mutation is audited", async (
   assert.equal((await ownerCatalogue.json()).skills.length, 1);
   assert.equal((await granteeCatalogue.json()).skills.length, 1);
   assert.equal((await foreignCatalogue.json()).skills.length, 0);
+
+  // A Bot that was offline while the ACL changed must observe the current
+  // policy on its next request; no reconnect-time snapshot may resurrect the
+  // previous grant.
+  const privateUpdate = await fetch(`${baseUrl}/api/skills/${encodeURIComponent(skill.skillId)}/visibility`, {
+    method: "PATCH",
+    headers: { Cookie: ownerCookie, "Content-Type": "application/json" },
+    body: JSON.stringify({ visibilityScope: "private", expectedRevision: 2 })
+  });
+  assert.equal(privateUpdate.status, 200);
+  const granteeAfterRevoke = await fetch(`${baseUrl}/api/skills`, { headers: { Cookie: granteeCookie } });
+  assert.equal((await granteeAfterRevoke.json()).skills.length, 0);
+
+  const publicUpdate = await fetch(`${baseUrl}/api/skills/${encodeURIComponent(skill.skillId)}/visibility`, {
+    method: "PATCH",
+    headers: { Cookie: ownerCookie, "Content-Type": "application/json" },
+    body: JSON.stringify({ visibilityScope: "public", expectedRevision: 3 })
+  });
+  assert.equal(publicUpdate.status, 200);
+  const foreignAfterRestore = await fetch(`${baseUrl}/api/skills`, { headers: { Cookie: foreignCookie } });
+  assert.equal((await foreignAfterRestore.json()).skills.length, 1);
 });
 
 test("only administrators can read filtered visibility audit records", async () => {
