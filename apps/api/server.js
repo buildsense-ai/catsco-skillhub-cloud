@@ -1307,6 +1307,7 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
           resourceId: skillId,
           metadata: {
             visibilityScope: visibility.visibilityScope,
+            sharedUserUids: visibility.visibilityScope === "shared" ? visibility.sharedUserUids : [],
             sharedUserCount: visibility.sharedUserUids.length,
             visibilityRevision: visibility.visibilityRevision
           },

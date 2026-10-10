@@ -22,23 +22,29 @@ let baseUrl;
 let ownerCookie;
 let granteeCookie;
 let foreignCookie;
+let adminCookie;
 let calls;
 let visibility;
+let auditQueries;
 
 before(async () => {
   const config = loadConfig({ nodeEnv: "test", sessionSecret: "visibility-test-session-secret" });
   const ownerToken = createSessionToken();
   const granteeToken = createSessionToken();
   const foreignToken = createSessionToken();
+  const adminToken = createSessionToken();
   ownerCookie = `${config.session.cookieName}=${ownerToken}`;
   granteeCookie = `${config.session.cookieName}=${granteeToken}`;
   foreignCookie = `${config.session.cookieName}=${foreignToken}`;
+  adminCookie = `${config.session.cookieName}=${adminToken}`;
   const sessions = new Map([
     [hashSessionToken(ownerToken, config.session.secret), "owner"],
     [hashSessionToken(granteeToken, config.session.secret), "grantee"],
-    [hashSessionToken(foreignToken, config.session.secret), "foreign"]
+    [hashSessionToken(foreignToken, config.session.secret), "foreign"],
+    [hashSessionToken(adminToken, config.session.secret), "admin"]
   ]);
   calls = [];
+  auditQueries = [];
   visibility = {
     skillId: skill.skillId,
     ownerUserId: "owner",
@@ -53,7 +59,7 @@ before(async () => {
   const store = {
     getSessionByTokenHash: async (hash) => sessions.has(hash) ? { userId: sessions.get(hash) } : null,
     getUserById: async (id) => ({ id, email: `${id}@example.com`, displayName: id }),
-    getRoles: async () => ["user"],
+    getRoles: async (id) => id === "admin" ? ["admin"] : ["user"],
     getDeveloperProfile: async (id) => id === "owner" ? { catsCoUid: "42001" }
       : id === "grantee" ? { catsCoUid: "42002" } : { catsCoUid: "42003" },
     listPublishedVersions: async (viewer) => { calls.push(["list", viewer]); return canSee(viewer) ? [skill] : []; },
@@ -70,7 +76,16 @@ before(async () => {
       };
       return visibility;
     },
-    appendAudit: async (entry) => calls.push(["audit", entry])
+    appendAudit: async (entry) => calls.push(["audit", entry]),
+    listAuditLogs: async (query) => {
+      auditQueries.push(query);
+      return [{
+        action: "skill.visibility.updated",
+        resourceType: "skill",
+        resourceId: skill.skillId,
+        metadata: { visibilityScope: "shared", sharedUserUids: ["42002"] }
+      }];
+    }
   };
   server = createApiServer(config, { store });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -111,7 +126,7 @@ test("only the owner can change visibility and the mutation is audited", async (
   assert.deepEqual(calls[0][0], "update");
   assert.equal(calls[0][1].actorUserId, "owner");
   assert.deepEqual(calls.find(([kind]) => kind === "audit")[1].metadata, {
-    visibilityScope: "shared", sharedUserCount: 1, visibilityRevision: 2
+    visibilityScope: "shared", sharedUserUids: ["42002"], sharedUserCount: 1, visibilityRevision: 2
   });
 
   calls.length = 0;
@@ -122,6 +137,27 @@ test("only the owner can change visibility and the mutation is audited", async (
   assert.equal((await ownerCatalogue.json()).skills.length, 1);
   assert.equal((await granteeCatalogue.json()).skills.length, 1);
   assert.equal((await foreignCatalogue.json()).skills.length, 0);
+});
+
+test("only administrators can read filtered visibility audit records", async () => {
+  const forbidden = await fetch(`${baseUrl}/api/admin/audit-logs?resourceType=skill&action=skill.visibility.updated`, {
+    headers: { Cookie: ownerCookie }
+  });
+  assert.equal(forbidden.status, 403);
+
+  auditQueries.length = 0;
+  const response = await fetch(
+    `${baseUrl}/api/admin/audit-logs?resourceType=skill&action=skill.visibility.updated&actorUserId=owner&limit=25`,
+    { headers: { Cookie: adminCookie } }
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(auditQueries, [{
+    action: "skill.visibility.updated",
+    resourceType: "skill",
+    actorUserId: "owner",
+    limit: 25
+  }]);
+  assert.deepEqual((await response.json()).auditLogs[0].metadata.sharedUserUids, ["42002"]);
 });
 
 test("hidden skill details use the same ACL context as catalogue discovery", async () => {
