@@ -160,6 +160,24 @@ test("PostgreSQL-backed current share flow works", { skip: !databaseUrl }, async
     [skill.skillId]
   );
   assert.deepEqual(grant.rows, [{ catsco_uid: `shared-${suffix}`, granted_by_user_id: null }]);
+
+  // Catalogue discovery and version reads must use the same ACL.  A shared
+  // skill is visible to its owner and the granted CatsCo UID, but not to an
+  // unrelated UID or an anonymous viewer.  Keep this at the store boundary
+  // so the regression remains covered even when the HTTP proxy is unavailable.
+  const owner = await store.getUserByEmail(`developer-${suffix}@example.com`);
+  const ownerViewer = { viewerUserId: owner.id, viewerCatsCoUid: null, includeAll: false };
+  const granteeViewer = { viewerUserId: null, viewerCatsCoUid: `shared-${suffix}`, includeAll: false };
+  const foreignViewer = { viewerUserId: null, viewerCatsCoUid: `foreign-${suffix}`, includeAll: false };
+  const visibleToOwner = await store.listCatalogueVersions(ownerViewer);
+  const visibleToGrantee = await store.listCatalogueVersions(granteeViewer);
+  const visibleToForeign = await store.listCatalogueVersions(foreignViewer);
+  assert.ok(visibleToOwner.some((item) => item.skillId === skill.skillId));
+  assert.ok(visibleToGrantee.some((item) => item.skillId === skill.skillId));
+  assert.equal(visibleToForeign.some((item) => item.skillId === skill.skillId), false);
+  assert.equal((await store.findPublishedVersion(skill.skillId, skill.latestVersion, foreignViewer)), null);
+  assert.ok(await store.findPublishedVersion(skill.skillId, skill.latestVersion, granteeViewer));
+
   assert.equal((await fetch(skill.packageUrl)).status, 404);
   assert.equal((await fetch(skill.packageUrl, { headers: { Cookie: cookies } })).status, 200);
 

@@ -20,6 +20,7 @@ const skill = {
 let server;
 let baseUrl;
 let ownerCookie;
+let granteeCookie;
 let foreignCookie;
 let calls;
 let visibility;
@@ -27,11 +28,14 @@ let visibility;
 before(async () => {
   const config = loadConfig({ nodeEnv: "test", sessionSecret: "visibility-test-session-secret" });
   const ownerToken = createSessionToken();
+  const granteeToken = createSessionToken();
   const foreignToken = createSessionToken();
   ownerCookie = `${config.session.cookieName}=${ownerToken}`;
+  granteeCookie = `${config.session.cookieName}=${granteeToken}`;
   foreignCookie = `${config.session.cookieName}=${foreignToken}`;
   const sessions = new Map([
     [hashSessionToken(ownerToken, config.session.secret), "owner"],
+    [hashSessionToken(granteeToken, config.session.secret), "grantee"],
     [hashSessionToken(foreignToken, config.session.secret), "foreign"]
   ]);
   calls = [];
@@ -43,14 +47,18 @@ before(async () => {
     visibilityUpdatedAt: "2026-10-09T00:00:00.000Z",
     sharedUserUids: []
   };
+  const canSee = (viewer = {}) => visibility.visibilityScope === "public"
+    || viewer.viewerUserId === visibility.ownerUserId
+    || (visibility.visibilityScope === "shared" && viewer.viewerCatsCoUid === "42002");
   const store = {
     getSessionByTokenHash: async (hash) => sessions.has(hash) ? { userId: sessions.get(hash) } : null,
     getUserById: async (id) => ({ id, email: `${id}@example.com`, displayName: id }),
     getRoles: async () => ["user"],
-    getDeveloperProfile: async (id) => id === "owner" ? { catsCoUid: "42001" } : { catsCoUid: "42002" },
-    listPublishedVersions: async (viewer) => { calls.push(["list", viewer]); return [skill]; },
-    listPublishedVersionsForSkill: async (_skillId, viewer) => { calls.push(["detail", viewer]); return [skill]; },
-    findPublishedVersion: async (_skillId, _version, viewer) => { calls.push(["version", viewer]); return skill; },
+    getDeveloperProfile: async (id) => id === "owner" ? { catsCoUid: "42001" }
+      : id === "grantee" ? { catsCoUid: "42002" } : { catsCoUid: "42003" },
+    listPublishedVersions: async (viewer) => { calls.push(["list", viewer]); return canSee(viewer) ? [skill] : []; },
+    listPublishedVersionsForSkill: async (_skillId, viewer) => { calls.push(["detail", viewer]); return canSee(viewer) ? [skill] : []; },
+    findPublishedVersion: async (_skillId, _version, viewer) => { calls.push(["version", viewer]); return canSee(viewer) ? skill : null; },
     getSkillVisibility: async () => ({ ...visibility, sharedUserUids: [...visibility.sharedUserUids] }),
     updateSkillVisibility: async (input) => {
       calls.push(["update", input]);
@@ -105,6 +113,14 @@ test("only the owner can change visibility and the mutation is audited", async (
   assert.deepEqual(calls.find(([kind]) => kind === "audit")[1].metadata, {
     visibilityScope: "shared", sharedUserCount: 1, visibilityRevision: 2
   });
+
+  calls.length = 0;
+  const ownerCatalogue = await fetch(`${baseUrl}/api/skills`, { headers: { Cookie: ownerCookie } });
+  const granteeCatalogue = await fetch(`${baseUrl}/api/skills`, { headers: { Cookie: granteeCookie } });
+  const foreignCatalogue = await fetch(`${baseUrl}/api/skills`, { headers: { Cookie: foreignCookie } });
+  assert.equal((await ownerCatalogue.json()).skills.length, 1);
+  assert.equal((await granteeCatalogue.json()).skills.length, 1);
+  assert.equal((await foreignCatalogue.json()).skills.length, 0);
 });
 
 test("hidden skill details use the same ACL context as catalogue discovery", async () => {
