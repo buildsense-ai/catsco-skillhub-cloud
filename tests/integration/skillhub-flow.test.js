@@ -178,6 +178,31 @@ test("PostgreSQL-backed current share flow works", { skip: !databaseUrl }, async
   assert.equal((await store.findPublishedVersion(skill.skillId, skill.latestVersion, foreignViewer)), null);
   assert.ok(await store.findPublishedVersion(skill.skillId, skill.latestVersion, granteeViewer));
 
+  // Publishing a newer release must keep the Skill-level visibility policy;
+  // a version update must not silently make a shared Skill public.
+  const nextVersion = `1.0.${Number(skill.version.split(".").at(-1)) + 1}`;
+  await postJson("/api/skills/share", {
+    source: {
+      type: "files",
+      files: [{
+        path: "SKILL.md",
+        content: `# Contract Review Assistant ${suffix} v${nextVersion}\n\nUpdated test release.\n`
+      }]
+    },
+    manifest: {
+      displayName: `Contract Review Assistant ${suffix}`,
+      version: nextVersion,
+      description: "Reviews contract clauses, payment terms, liability and legal risks.",
+      author: { name: "CatsCo Test" },
+      license: "MIT",
+      permissions: { filesystem: "user_selected", network: "none", shell: "none", secrets: "none" }
+    },
+    confirmVersionPublish: true,
+    runJobsInline: true
+  });
+  assert.equal((await store.findPublishedVersion(skill.skillId, nextVersion, foreignViewer)), null);
+  assert.ok(await store.findPublishedVersion(skill.skillId, nextVersion, granteeViewer));
+
   assert.equal((await fetch(skill.packageUrl)).status, 404);
   assert.equal((await fetch(skill.packageUrl, { headers: { Cookie: cookies } })).status, 200);
 

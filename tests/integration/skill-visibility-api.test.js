@@ -118,6 +118,7 @@ test("only the owner can change visibility and the mutation is audited", async (
   const ownerCatalogue = await fetch(`${baseUrl}/api/skills`, { headers: { Cookie: ownerCookie } });
   const granteeCatalogue = await fetch(`${baseUrl}/api/skills`, { headers: { Cookie: granteeCookie } });
   const foreignCatalogue = await fetch(`${baseUrl}/api/skills`, { headers: { Cookie: foreignCookie } });
+  assert.match(ownerCatalogue.headers.get("cache-control") || "", /no-store/);
   assert.equal((await ownerCatalogue.json()).skills.length, 1);
   assert.equal((await granteeCatalogue.json()).skills.length, 1);
   assert.equal((await foreignCatalogue.json()).skills.length, 0);
