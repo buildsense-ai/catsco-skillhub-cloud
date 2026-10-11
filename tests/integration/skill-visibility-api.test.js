@@ -4,6 +4,7 @@ import { after, before, test } from "node:test";
 import { createApiServer } from "../../apps/api/server.js";
 import { loadConfig } from "../../packages/config/index.js";
 import { createSessionToken, hashSessionToken } from "../../packages/auth/index.js";
+import { ValidationError } from "../../packages/domain/index.js";
 
 const skill = {
   id: "skill_visibility_test",
@@ -68,6 +69,12 @@ before(async () => {
     getSkillVisibility: async () => ({ ...visibility, sharedUserUids: [...visibility.sharedUserUids] }),
     updateSkillVisibility: async (input) => {
       calls.push(["update", input]);
+      if (input.expectedRevision !== visibility.visibilityRevision) {
+        throw new ValidationError("visibility revision conflict", "skill.visibility_conflict", 409);
+      }
+      if (!input.isAdmin && input.actorUserId !== visibility.ownerUserId) {
+        throw new ValidationError("visibility owner required", "skill.visibility_forbidden", 403);
+      }
       visibility = {
         ...visibility,
         visibilityScope: input.visibilityScope,
@@ -137,6 +144,44 @@ test("only the owner can change visibility and the mutation is audited", async (
   assert.equal((await ownerCatalogue.json()).skills.length, 1);
   assert.equal((await granteeCatalogue.json()).skills.length, 1);
   assert.equal((await foreignCatalogue.json()).skills.length, 0);
+
+  // A later request must observe the current policy after an ACL change;
+  // there must be no stale viewer snapshot between requests.
+  const beforeRevoke = await fetch(`${baseUrl}/api/skills/${encodeURIComponent(skill.skillId)}/visibility`, {
+    headers: { Cookie: ownerCookie }
+  });
+  const beforeRevokeBody = await beforeRevoke.json();
+  const staleRevoke = await fetch(`${baseUrl}/api/skills/${encodeURIComponent(skill.skillId)}/visibility`, {
+    method: "PATCH",
+    headers: { Cookie: ownerCookie, "Content-Type": "application/json" },
+    body: JSON.stringify({ visibilityScope: "private", expectedRevision: beforeRevokeBody.visibility.visibilityRevision - 1 })
+  });
+  assert.equal(staleRevoke.status, 409);
+  const privateUpdate = await fetch(`${baseUrl}/api/skills/${encodeURIComponent(skill.skillId)}/visibility`, {
+    method: "PATCH",
+    headers: { Cookie: ownerCookie, "Content-Type": "application/json" },
+    body: JSON.stringify({ visibilityScope: "private", expectedRevision: beforeRevokeBody.visibility.visibilityRevision })
+  });
+  assert.equal(privateUpdate.status, 200);
+  const privateUpdateBody = await privateUpdate.json();
+  assert.equal(privateUpdateBody.visibility.visibilityRevision, beforeRevokeBody.visibility.visibilityRevision + 1);
+  const granteeAfterRevoke = await fetch(`${baseUrl}/api/skills`, { headers: { Cookie: granteeCookie } });
+  assert.equal((await granteeAfterRevoke.json()).skills.length, 0);
+
+  const beforeRestore = await fetch(`${baseUrl}/api/skills/${encodeURIComponent(skill.skillId)}/visibility`, {
+    headers: { Cookie: ownerCookie }
+  });
+  const beforeRestoreBody = await beforeRestore.json();
+  const publicUpdate = await fetch(`${baseUrl}/api/skills/${encodeURIComponent(skill.skillId)}/visibility`, {
+    method: "PATCH",
+    headers: { Cookie: ownerCookie, "Content-Type": "application/json" },
+    body: JSON.stringify({ visibilityScope: "public", expectedRevision: beforeRestoreBody.visibility.visibilityRevision })
+  });
+  assert.equal(publicUpdate.status, 200);
+  const publicUpdateBody = await publicUpdate.json();
+  assert.equal(publicUpdateBody.visibility.visibilityRevision, beforeRestoreBody.visibility.visibilityRevision + 1);
+  const foreignAfterRestore = await fetch(`${baseUrl}/api/skills`, { headers: { Cookie: foreignCookie } });
+  assert.equal((await foreignAfterRestore.json()).skills.length, 1);
 });
 
 test("only administrators can read filtered visibility audit records", async () => {
