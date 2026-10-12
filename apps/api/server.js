@@ -1624,9 +1624,9 @@ function catsCoUidQuery(value) {
   return `?q=${encodeURIComponent(uid)}&mode=uid`;
 }
 
-async function fetchCatsCoTargetList({ baseUrl, token, path: targetPath, query = "" }) {
+async function fetchCatsCoTargetList({ baseUrl, token, path: targetPath, query = "", timeoutMs = 8_000 }) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 8_000);
+  const timer = setTimeout(() => controller.abort(), Math.max(1, Math.min(8_000, timeoutMs)));
   let response;
   try {
     response = await fetch(`${baseUrl}${targetPath}${query}`, {
@@ -1695,16 +1695,23 @@ async function validateCatsCoHumanTargets({ baseUrl, token, uids }) {
     throw new ValidationError("共享目标必须是有效的 CatsCo 用户 UID", "skill.visibility_uid_invalid", 400);
   }
   const checks = [];
+  // The CatsCo proxy gives this request 25 seconds. Keep validation below
+  // that budget even when a large grant list causes several sequential
+  // batches; individual lookups still retain the normal 8 second timeout.
+  const deadline = Date.now() + 20_000;
   // Keep a maliciously large (but valid) grant list from opening 200 upstream
   // sockets at once. The database cap remains the final bound.
   for (let offset = 0; offset < normalized.length; offset += 16) {
     const batch = normalized.slice(offset, offset + 16);
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) throw new AuthError("CatsCo 用户查询超时", 408);
     checks.push(...await Promise.all(batch.map(async (uid) => {
       const payload = await fetchCatsCoTargetList({
         baseUrl,
         token,
         path: "/api/users/search",
-        query: catsCoUidQuery(uid)
+        query: catsCoUidQuery(uid),
+        timeoutMs: remainingMs
       });
       const users = Array.isArray(payload?.users) ? payload.users : [];
       return users.some((user) => {

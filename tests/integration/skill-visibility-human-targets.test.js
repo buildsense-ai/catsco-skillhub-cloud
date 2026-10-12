@@ -27,6 +27,8 @@ before(async () => {
     if (req.url === `/api/users/search?q=${uid}&mode=uid`) {
       const user = uid === "951"
         ? { id: 951, username: "john", display_name: "John", account_type: "human" }
+        : uid === "952"
+          ? { id: 952, username: "legacy", display_name: "Legacy" }
         : uid === "44"
           ? { id: 44, username: "agent", display_name: "Agent", account_type: "bot" }
           : null;
@@ -103,6 +105,14 @@ test("shared visibility accepts a human CatsCo account", async () => {
 
 test("shared visibility rejects a Bot UID before persistence", async () => {
   const response = await patchVisibility(["44"]);
+  assert.equal(response.status, 400);
+  const body = await response.json();
+  assert.equal(body.error.code, "skill.visibility_target_invalid");
+  assert.equal(calls.length, 1);
+});
+
+test("shared visibility rejects a target without an account type", async () => {
+  const response = await patchVisibility(["952"]);
   assert.equal(response.status, 400);
   const body = await response.json();
   assert.equal(body.error.code, "skill.visibility_target_invalid");
