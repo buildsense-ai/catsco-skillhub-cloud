@@ -1327,6 +1327,23 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
           return;
         }
         const body = await readJson(req, 64 * 1024);
+        if (String(body.visibilityScope || "").trim().toLowerCase() === "shared") {
+          // A shared grant is an account-level permission. Never trust a
+          // client-supplied UID alone: resolve every target against the
+          // current CatsCo identity and reject Bots/services before writing.
+          const token = readCatsCoTargetToken(req);
+          const catsUser = await verifyCatsCoToken(normalizeHttpBaseUrl(config.botAuth.catsCoBaseUrl), token);
+          const verifiedUid = String(catsUser.uid || catsUser.id || "").trim();
+          const actorCatsCoUid = String(actor.developerProfile?.catsCoUid || "").trim();
+          if (!verifiedUid || !actorCatsCoUid || verifiedUid !== actorCatsCoUid) {
+            throw new AuthError("CatsCo 身份与当前 SkillHub 会话不一致", 403);
+          }
+          await validateCatsCoHumanTargets({
+            baseUrl: normalizeHttpBaseUrl(config.botAuth.catsCoBaseUrl),
+            token,
+            uids: body.sharedUserUids
+          });
+        }
         const visibility = await store.updateSkillVisibility({
           skillId,
           actorUserId: actor.userId,
@@ -1599,6 +1616,14 @@ function catsCoSearchQuery(value) {
   return `?q=${encodeURIComponent(query)}&mode=name`;
 }
 
+function catsCoUidQuery(value) {
+  const uid = String(value || "").trim();
+  if (!/^\d+$/.test(uid) || uid === "0" || uid.length > 32) {
+    throw new ValidationError("共享目标必须是有效的 CatsCo 用户 UID", "skill.visibility_uid_invalid", 400);
+  }
+  return `?q=${encodeURIComponent(uid)}&mode=uid`;
+}
+
 async function fetchCatsCoTargetList({ baseUrl, token, path: targetPath, query = "" }) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 8_000);
@@ -1644,16 +1669,54 @@ function sanitizeCatsCoSearchList(payload) {
 }
 
 function sanitizeCatsCoUsers(users, limit) {
-  return users.slice(0, limit).map((user) => {
+  return users.map((user) => {
     const uid = String(user?.uid ?? user?.id ?? user?.user_id ?? "").trim();
     const username = String(user?.username ?? "").trim();
     const displayName = String(user?.display_name ?? user?.displayName ?? username).trim();
+    const accountType = String(user?.account_type ?? user?.accountType ?? "").trim().toLowerCase();
     return {
       uid,
       username: username || `catsco_${uid}`,
-      displayName: displayName || username || `CatsCo 用户 ${uid}`
+      displayName: displayName || username || `CatsCo 用户 ${uid}`,
+      accountType
     };
-  }).filter((user) => /^\d+$/.test(user.uid) && user.uid && user.username);
+  }).filter((user) => /^\d+$/.test(user.uid) && user.uid && user.username && user.accountType === "human")
+    .slice(0, limit)
+    .map(({ accountType, ...user }) => user);
+}
+
+async function validateCatsCoHumanTargets({ baseUrl, token, uids }) {
+  const normalized = [...new Set((Array.isArray(uids) ? uids : [])
+    .map((uid) => String(uid ?? "").trim()).filter(Boolean))];
+  if (normalized.length === 0) {
+    throw new ValidationError("指定共享至少需要一个 CatsCo 用户", "skill.visibility_grants_required", 400);
+  }
+  if (normalized.length > 200 || normalized.some((uid) => !/^\d+$/.test(uid) || uid === "0")) {
+    throw new ValidationError("共享目标必须是有效的 CatsCo 用户 UID", "skill.visibility_uid_invalid", 400);
+  }
+  const checks = [];
+  // Keep a maliciously large (but valid) grant list from opening 200 upstream
+  // sockets at once. The database cap remains the final bound.
+  for (let offset = 0; offset < normalized.length; offset += 16) {
+    const batch = normalized.slice(offset, offset + 16);
+    checks.push(...await Promise.all(batch.map(async (uid) => {
+      const payload = await fetchCatsCoTargetList({
+        baseUrl,
+        token,
+        path: "/api/users/search",
+        query: catsCoUidQuery(uid)
+      });
+      const users = Array.isArray(payload?.users) ? payload.users : [];
+      return users.some((user) => {
+        const targetUid = String(user?.uid ?? user?.id ?? user?.user_id ?? "").trim();
+        const accountType = String(user?.account_type ?? user?.accountType ?? "").trim().toLowerCase();
+        return targetUid === uid && accountType === "human";
+      });
+    })));
+  }
+  if (checks.some((valid) => !valid)) {
+    throw new ValidationError("指定共享目标必须是存在的 CatsCo 用户账号，不能选择 Bot", "skill.visibility_target_invalid", 400);
+  }
 }
 
 async function synchronizeCatsCoPublisherProfile(store, body, options = {}) {

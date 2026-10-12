@@ -28,14 +28,15 @@ before(async () => {
     }
     if (req.url === "/api/friends") {
       res.end(JSON.stringify({ friends: [
-        { id: 951, username: "john", display_name: "John", email: "private@example.com" },
-        { id: 12, username: "friend-two", display_name: "Friend Two", avatar_url: "private" }
+        { id: 951, username: "john", display_name: "John", account_type: "human", email: "private@example.com" },
+        { id: 12, username: "friend-two", display_name: "Friend Two", account_type: "human", avatar_url: "private" },
+        { id: 44, username: "agent", display_name: "Agent", account_type: "bot" }
       ] }));
       return;
     }
     if (req.url === "/api/users/search?q=john&mode=name") {
       res.end(JSON.stringify({ users: [
-        { id: 951, username: "john", display_name: "John", email: "private@example.com" }
+        { id: 951, username: "john", display_name: "John", account_type: "human", email: "private@example.com" }
       ] }));
       return;
     }
