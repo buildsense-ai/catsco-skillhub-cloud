@@ -62,6 +62,7 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
   });
   const botReadLimiter = new RateLimiter({ windowMs: 60_000, limit: 600, maxBuckets: 20_000 });
   const botHistoryLimiter = new RateLimiter({ windowMs: 60_000, limit: 120, maxBuckets: 20_000 });
+  const catsCoTargetLimiter = new RateLimiter({ windowMs: 60_000, limit: 30, maxBuckets: 20_000 });
   let activePrivateUploads = 0;
   const exaWebAnswer = createExaWebAnswerService();
 
@@ -647,6 +648,41 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
           permissions: actor.permissions,
           developerProfile: actor.developerProfile
         });
+        return;
+      }
+
+      const catsCoTargetsMatch = pathname.match(/^\/api\/catsco\/share-targets\/(friends|search)$/);
+      if (catsCoTargetsMatch && req.method === "GET") {
+        const actor = await requireAuthenticatedActor(config, store, req);
+        if (!catsCoTargetLimiter.check(`${getIp(req)}:${actor.userId}`)) {
+          throw new AuthError("请求过于频繁", 429);
+        }
+        const catsCoUid = String(actor.developerProfile?.catsCoUid || "").trim();
+        if (!catsCoUid) {
+          throw new AuthError("当前账号尚未绑定 CatsCo 身份", 409);
+        }
+        const token = readCatsCoTargetToken(req);
+        const catsUser = await verifyCatsCoToken(normalizeHttpBaseUrl(config.botAuth.catsCoBaseUrl), token);
+        const verifiedUid = String(catsUser.uid || catsUser.id || "").trim();
+        if (!verifiedUid || verifiedUid !== catsCoUid) {
+          throw new AuthError("CatsCo 身份与当前 SkillHub 会话不一致", 403);
+        }
+        const targetPath = catsCoTargetsMatch[1] === "friends"
+          ? "/api/friends"
+          : "/api/users/search";
+        const query = catsCoTargetsMatch[1] === "search"
+          ? catsCoSearchQuery(url.searchParams.get("q"))
+          : "";
+        const payload = await fetchCatsCoTargetList({
+          baseUrl: normalizeHttpBaseUrl(config.botAuth.catsCoBaseUrl),
+          token,
+          path: targetPath,
+          query
+        });
+        const users = catsCoTargetsMatch[1] === "friends"
+          ? sanitizeCatsCoFriendList(payload)
+          : sanitizeCatsCoSearchList(payload);
+        sendJson(res, 200, { users }, { "Cache-Control": "private, no-store" });
         return;
       }
 
@@ -1545,6 +1581,79 @@ async function verifyCatsCoToken(baseUrl, token) {
     throw new AuthError(data?.error || data?.message || "CatsCo token 无效", response.status);
   }
   return data;
+}
+
+function readCatsCoTargetToken(req) {
+  const raw = String(req.headers["x-catsco-access-token"] || "").trim();
+  if (!raw || raw.length > 4096) {
+    throw new AuthError("CatsCo access token missing", 401);
+  }
+  return raw;
+}
+
+function catsCoSearchQuery(value) {
+  const query = String(value || "").trim();
+  if (query.length < 2 || query.length > 64) {
+    throw new ValidationError("用户名搜索至少需要 2 个字符", "catsco.target_query.invalid", 400);
+  }
+  return `?q=${encodeURIComponent(query)}&mode=name`;
+}
+
+async function fetchCatsCoTargetList({ baseUrl, token, path: targetPath, query = "" }) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8_000);
+  let response;
+  try {
+    response = await fetch(`${baseUrl}${targetPath}${query}`, {
+      method: "GET",
+      redirect: "error",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json"
+      },
+      signal: controller.signal
+    });
+  } catch (error) {
+    if (error?.name === "AbortError") throw new AuthError("CatsCo 用户查询超时", 408);
+    throw new AuthError("CatsCo 用户查询失败", 502);
+  } finally {
+    clearTimeout(timer);
+  }
+  const text = await response.text();
+  let data = {};
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    throw new AuthError("CatsCo 用户查询返回无效数据", 502);
+  }
+  if (!response.ok) {
+    const status = response.status === 401 || response.status === 403 ? response.status : 502;
+    throw new AuthError(status === 502 ? "CatsCo 用户查询失败" : "CatsCo 登录状态已失效", status);
+  }
+  return data;
+}
+
+function sanitizeCatsCoFriendList(payload) {
+  const users = Array.isArray(payload?.friends) ? payload.friends : [];
+  return sanitizeCatsCoUsers(users, 100);
+}
+
+function sanitizeCatsCoSearchList(payload) {
+  const users = Array.isArray(payload?.users) ? payload.users : [];
+  return sanitizeCatsCoUsers(users, 20);
+}
+
+function sanitizeCatsCoUsers(users, limit) {
+  return users.slice(0, limit).map((user) => {
+    const uid = String(user?.uid ?? user?.id ?? user?.user_id ?? "").trim();
+    const username = String(user?.username ?? "").trim();
+    const displayName = String(user?.display_name ?? user?.displayName ?? username).trim();
+    return {
+      uid,
+      username: username || `catsco_${uid}`,
+      displayName: displayName || username || `CatsCo 用户 ${uid}`
+    };
+  }).filter((user) => /^\d+$/.test(user.uid) && user.uid && user.username);
 }
 
 async function synchronizeCatsCoPublisherProfile(store, body, options = {}) {
