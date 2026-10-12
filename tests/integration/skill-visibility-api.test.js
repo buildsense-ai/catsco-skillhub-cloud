@@ -19,6 +19,7 @@ const skill = {
 };
 
 let server;
+let catsServer;
 let baseUrl;
 let ownerCookie;
 let granteeCookie;
@@ -29,7 +30,31 @@ let visibility;
 let auditQueries;
 
 before(async () => {
-  const config = loadConfig({ nodeEnv: "test", sessionSecret: "visibility-test-session-secret" });
+  catsServer = http.createServer((req, res) => {
+    if (req.headers.authorization !== "Bearer cats-token") {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "unauthorized" }));
+      return;
+    }
+    res.setHeader("Content-Type", "application/json");
+    if (req.url === "/api/me") {
+      res.end(JSON.stringify({ uid: 42001, username: "owner", display_name: "Owner", account_type: "human" }));
+      return;
+    }
+    const uid = new URL(req.url, "http://cats.test").searchParams.get("q");
+    if (req.url === `/api/users/search?q=${uid}&mode=uid`) {
+      const user = uid === "42002"
+        ? { id: 42002, username: "grantee", display_name: "Grantee", account_type: "human" }
+        : null;
+      res.end(JSON.stringify({ users: user ? [user] : [] }));
+      return;
+    }
+    res.writeHead(404);
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+  await new Promise((resolve) => catsServer.listen(0, "127.0.0.1", resolve));
+  const catsBaseUrl = `http://127.0.0.1:${catsServer.address().port}`;
+  const config = loadConfig({ nodeEnv: "test", sessionSecret: "visibility-test-session-secret", catsCoBaseUrl: catsBaseUrl });
   const ownerToken = createSessionToken();
   const granteeToken = createSessionToken();
   const foreignToken = createSessionToken();
@@ -101,6 +126,7 @@ before(async () => {
 
 after(async () => {
   if (server) await new Promise((resolve) => server.close(resolve));
+  if (catsServer) await new Promise((resolve) => catsServer.close(resolve));
 });
 
 test("catalogue forwards the logged-in CatsCo UID while public requests stay public", async () => {
@@ -126,7 +152,7 @@ test("only the owner can change visibility and the mutation is audited", async (
   calls.length = 0;
   const updated = await fetch(`${baseUrl}/api/skills/${encodeURIComponent(skill.skillId)}/visibility`, {
     method: "PATCH",
-    headers: { Cookie: ownerCookie, "Content-Type": "application/json" },
+    headers: { Cookie: ownerCookie, "X-CatsCo-Access-Token": "cats-token", "Content-Type": "application/json" },
     body: JSON.stringify({ visibilityScope: "shared", sharedUserUids: ["42002"], expectedRevision: 1 })
   });
   assert.equal(updated.status, 200);
