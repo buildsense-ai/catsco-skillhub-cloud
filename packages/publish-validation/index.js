@@ -1,13 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
-import { parseTree } from "jsonc-parser";
-import { parseDocument } from "yaml";
+import { visit } from "jsonc-parser";
+import { Lexer, Parser, parseDocument } from "yaml";
 import { decodeSource, IntakeError } from "./intake.js";
 
-export const RULE_VERSION = "skillhub-publish-v1.0.0";
+export const RULE_VERSION = "skillhub-publish-v1.0.1";
 const DEFAULT_LIMITS = Object.freeze({
   uploadMaxBytes: 50 * 1024 * 1024, maxRequestBytes: 75 * 1024 * 1024, maxFiles: 500,
   maxSingleFileBytes: 5 * 1024 * 1024, maxExpandedBytes: 100 * 1024 * 1024,
   maxPathLength: 180, maxPathDepth: 12, maxDepth: 64, maxNodes: 100_000,
+  maxYamlTokens: 100_000,
   maxReportBytes: 48 * 1024, maxIssues: 50
 });
 const object = value => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -61,27 +62,30 @@ function guardJsonDepth(text, limits) {
 export function parseStrictJson(text, inputLimits = {}) {
   const limits = effectiveLimits(inputLimits);
   guardJsonDepth(text, limits);
-  const errors = [];
-  const tree = parseTree(text, errors, { allowTrailingComma: false, disallowComments: true });
-  if (!tree || errors.length) throw new InputError("json.invalid", "JSON 格式无效。");
   let count = 0;
-  const pending = [tree];
-  while (pending.length) {
-    const node = pending.pop();
-    if (++count > limits.maxNodes) throw new InputError("json.limit_exceeded", "JSON 节点超过处理限制。", 413);
-    if (node.type === "number" && !Number.isFinite(node.value)) throw new InputError("json.number_invalid", "JSON 数值超出支持范围。");
-    if (node.type === "object") {
-      const names = new Set();
-      for (const property of node.children ?? []) {
-        const key = property.children[0].value;
-        if (names.has(key)) throw new InputError("json.duplicate_key", "JSON 存在重复字段。");
-        names.add(key);
-      }
-    }
-    const children = node.children ?? [];
-    if (count + pending.length + children.length > limits.maxNodes) throw new InputError("json.limit_exceeded", "JSON 节点超过处理限制。", 413);
-    for (const child of children) pending.push(child);
-  }
+  const objects = [];
+  const consume = (nodes = 1) => {
+    count += nodes;
+    if (count > limits.maxNodes) throw new InputError("json.limit_exceeded", "JSON 节点超过处理限制。", 413);
+  };
+  // visit emits events without building an AST or a value tree. Charge the same
+  // node units as the old AST (including property + key) BEFORE materialization.
+  visit(text, {
+    onObjectBegin() { consume(); objects.push(new Set()); },
+    onObjectEnd() { objects.pop(); },
+    onObjectProperty(key) {
+      consume(2);
+      const names = objects.at(-1);
+      if (names.has(key)) throw new InputError("json.duplicate_key", "JSON 存在重复字段。");
+      names.add(key);
+    },
+    onArrayBegin() { consume(); },
+    onLiteralValue(value) {
+      consume();
+      if (typeof value === "number" && !Number.isFinite(value)) throw new InputError("json.number_invalid", "JSON 数值超出支持范围。");
+    },
+    onError() { throw new InputError("json.invalid", "JSON 格式无效。"); }
+  }, { allowTrailingComma: false, disallowComments: true });
   // JSON.parse preserves own __proto__ as data; never merge this into configuration.
   try { return JSON.parse(text); }
   catch { throw new InputError("json.invalid", "JSON 格式无效。"); }
@@ -196,7 +200,29 @@ function textFile(file) {
   return new TextDecoder("utf-8", { fatal: true }).decode(file.buffer);
 }
 
+function guardYamlBudget(text, limits) {
+  const exceeded = () => { throw new InputError("frontmatter.limit_exceeded", "入口 frontmatter 超过解析预算。", 413); };
+  // Streaming lexer: never collect tokens into an array. Count whitespace and
+  // comments too, since those also allocate CST structures. A quoted/block
+  // scalar is emitted as scalar content, not punctuation to be reinterpreted.
+  let tokens = 0;
+  for (const _lexeme of new Lexer().lex(text)) {
+    if (++tokens > limits.maxYamlTokens) exceeded();
+  }
+  // Only token-budgeted input reaches CST parsing. Bound the public parser
+  // stack before recursive AST composition, including block/indentless forms
+  // and inline '- - -'. The two extra frames are document/scalar overhead;
+  // the existing exact AST depth/node checks remain independent below.
+  const parser = new Parser();
+  for (const lexeme of new Lexer().lex(text)) {
+    for (const _token of parser.next(lexeme)) { /* discard completed CST */ }
+    if (parser.stack.length > limits.maxDepth + 2) exceeded();
+  }
+  for (const _token of parser.end()) { /* discard completed CST */ }
+}
+
 function yamlMetadata(text, limits) {
+  guardYamlBudget(text, limits);
   const doc = parseDocument(text, { uniqueKeys: true, strict: true, version: "1.2", schema: "core" });
   if (doc.errors.length) throw new InputError(doc.errors.some(e => e.code === "DUPLICATE_KEY") ? "frontmatter.duplicate_key" : "frontmatter.invalid", "入口 frontmatter 语法无效或字段重复。");
   if (doc.warnings.length) throw new InputError("frontmatter.unsupported", "入口 frontmatter 含不支持的标签或语法。");

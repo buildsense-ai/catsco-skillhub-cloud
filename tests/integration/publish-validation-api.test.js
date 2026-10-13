@@ -89,6 +89,24 @@ test("preflight enforces actor rate limits", async () => {
   });
 });
 
+test("wide JSON/YAML requests return non-retryable 413 over HTTP, not worker failure", async () => {
+  await withServer({ publishValidationWorkerMemoryMb: 128 }, async base => {
+    const yaml = JSON.parse(valid);
+    yaml.source.files[0].content = '---\nname: sample\ndescription: useful\nx: [' + '1,'.repeat(600_000) + '1]\n---\n';
+    const requests = [
+      [JSON.stringify(yaml), "frontmatter.limit_exceeded"],
+      [valid.slice(0, -1) + ',"manifest":{"wide":[' + '1,'.repeat(600_000) + '1]}}', "json.limit_exceeded"]
+    ];
+    for (const [body, code] of requests) {
+      const res = await fetch(base + endpoint, { method: "POST", headers, body });
+      assert.equal(res.status, 413);
+      assert.equal((await res.json()).error.code, code);
+    }
+    assert.equal((await fetch(base + "/healthz")).status, 200);
+    assert.equal((await fetch(base + endpoint, { method: "POST", headers, body: valid })).status, 200);
+  });
+});
+
 test("preflight bounds slow/chunked reads and releases capacity", async () => {
   await withServer({ publishValidationMaxConcurrent: 1, publishValidationReadTimeoutMs: 200 }, async base => {
     let first;
@@ -131,9 +149,79 @@ test("worker timeout and disconnect cancellation terminate CPU work", async () =
   await assert.rejects(pending, { status: 503 });
 });
 
-test("invalid deployment budgets fail configuration", () => {
+async function assertFeatureIsolation(overrides, expectedStatus) {
+  const store = new Proxy({ listPublishedVersions: async () => [] }, {
+    get(target, name) {
+      if (Object.hasOwn(target, name)) return target[name];
+      throw new Error(`Unexpected store access: ${String(name)}`);
+    }
+  });
+  await withServer(overrides, async base => {
+    for (const [pathname, options] of [
+      [endpoint, { method: "POST", headers, body: valid }],
+      [endpoint + "/rules", { headers }]
+    ]) {
+      const res = await fetch(base + pathname, options);
+      assert.equal(res.status, expectedStatus);
+      assert.equal(res.headers.get("cache-control"), "no-store");
+      assert.deepEqual(await res.json(), { error: expectedStatus === 404
+        ? { code: "not_found", message: "Publication validation is disabled." }
+        : { code: "skillhub.publish_validation_unavailable", message: "Publication validation is unavailable." }
+      });
+    }
+    const health = await fetch(base + "/healthz");
+    assert.equal(health.status, 200);
+    assert.equal((await health.json()).ok, true);
+    const catalog = await fetch(base + "/api/skills");
+    assert.equal(catalog.status, 200);
+    assert.deepEqual(await catalog.json(), { skills: [] });
+  }, store);
+}
+
+test("bad preflight environment budgets stay feature-local in production and development", async () => {
+  const budgetNames = [
+    "SKILLHUB_PUBLISH_VALIDATION_MAX_CONCURRENT",
+    "SKILLHUB_PUBLISH_VALIDATION_REQUESTS_PER_MINUTE",
+    "SKILLHUB_PUBLISH_VALIDATION_READ_TIMEOUT_MS",
+    "SKILLHUB_PUBLISH_VALIDATION_WORKER_TIMEOUT_MS",
+    "SKILLHUB_PUBLISH_VALIDATION_WORKER_MEMORY_MB",
+    "SKILLHUB_PUBLISH_VALIDATION_MAX_REQUEST_BYTES"
+  ];
+  for (const name of budgetNames) {
+    const previous = process.env[name];
+    try {
+      for (const value of ["0", "-1", "NaN", "1.5"]) {
+        process.env[name] = value;
+        for (const nodeEnv of ["production", "development"]) {
+          // No automatic fallback to a relaxed/default budget; enabled
+          // preflight fails closed while disabled preflight remains a 404.
+          for (const enabled of [false, true]) {
+            await assertFeatureIsolation({ nodeEnv, publishValidationEnabled: enabled }, enabled ? 503 : 404);
+          }
+        }
+      }
+    } finally {
+      if (previous === undefined) delete process.env[name];
+      else process.env[name] = previous;
+    }
+  }
+});
+
+test("bad effective shared limits do not crash the API or enable disabled preflight", async () => {
+  for (const limits of [{ maxFiles: 0 }, { maxPathDepth: 0 }]) {
+    for (const nodeEnv of ["production", "development"]) {
+      for (const enabled of [false, true]) {
+        await assertFeatureIsolation({ ...limits, nodeEnv, publishValidationEnabled: enabled }, enabled ? 503 : 404);
+      }
+    }
+  }
+});
+
+test("invalid direct budget overrides are preserved and fail only the feature", async () => {
   for (const value of [0, -1, NaN, 1.5]) {
-    assert.throws(() => loadConfig({ publishValidationMaxConcurrent: value }), /Invalid publish validation budget/);
+    const overrides = { publishValidationMaxConcurrent: value };
+    assert.ok(Object.is(loadConfig(overrides).publishValidation.maxConcurrent, value));
+    await assertFeatureIsolation({ ...overrides, publishValidationEnabled: true }, 503);
   }
 });
 

@@ -8,6 +8,8 @@ The existing `POST /api/skills/share` pipeline is unchanged. Enabling this endpo
 
 `SKILLHUB_PUBLISH_VALIDATION_ENABLED` defaults to `false` in **all** environments. Both routes return 404 while disabled. Deploying this PR does not enable preflight in production. Use isolated test accounts/packages for opt-in testing.
 
+Optional-feature budget validation is isolated from API startup. Disabled preflight ignores invalid preflight budget values and stays 404. When enabled, invalid execution budgets or effective shared file/path limits make only these two endpoints return 503 `skillhub.publish_validation_unavailable`; they neither crash the API nor silently substitute more permissive defaults. Correct the configuration and restart to recover. This does not sanitize shared configuration for other features or alter their existing behavior.
+
 | Setting | Default |
 | --- | --- |
 | `SKILLHUB_PUBLISH_VALIDATION_MAX_CONCURRENT` | 2 per API process, including request reads and authentication |
@@ -19,7 +21,11 @@ The existing `POST /api/skills/share` pipeline is unchanged. Enabling this endpo
 
 Existing upload limits (`uploadMaxBytes`, `maxFiles`, `maxSingleFileBytes`, `maxExpandedBytes`, `maxPathLength`, `maxPathDepth`) also apply. Defaults: 50 MiB ZIP, 500 entries, 5 MiB/file, 100 MiB expanded, 180 path characters, 12 path segments. The encoded JSON limit is separate from archive and expanded bytes. Rules responses show actual effective values.
 
-Protocol ceilings: 50 issues, 48 KiB for the **entire pretty-printed JSON response**, JSON/YAML depth 64 and 100,000 nodes. Parser work runs in a disposable Worker, terminated on deadline or disconnect. Worker heap limits are not a total process RSS guarantee: input/output Buffers additionally remain bounded by intake budgets and admission limits. No unlimited worker queue is created.
+Report ceilings: 50 issues and 48 KiB for the **entire pretty-printed JSON response**. Default parser budgets: JSON/YAML depth 64, 100,000 nodes, and a separate `maxYamlTokens=100,000` lexical-token budget. Rule version `skillhub-publish-v1.0.1` advertises that additional pre-materialization budget in the rules endpoint.
+
+JSON uses a streaming visitor to check width, duplicate keys and node counts **before** `JSON.parse` constructs values; it does not first allocate an AST. YAML first streams lexical tokens without collecting them, then checks the bounded CST parser stack (document/scalar overhead: at most two frames beyond the depth budget) before recursive AST composition. Lexical tokens include whitespace/comments but never reinterpret punctuation inside quoted/block scalar text as collection nesting. Exact AST node/depth and alias checks remain additional constraints. Exceeding these input budgets returns 413, not a retryable Worker failure. The lexical budget is intentionally separate from node count: token-heavy input can hit it before the node budget.
+
+Parser work runs in a disposable Worker, terminated on deadline or disconnect. Worker heap limits are not a total process RSS guarantee: input/output Buffers additionally remain bounded by intake budgets and admission limits. No unlimited worker queue is created. Worker isolation remains a backstop, not the ordinary mechanism for rejecting oversized structures.
 
 CPU work is stopped before releasing its slot. An authentication database query cannot be cancelled by aborting HTTP; its admission slot remains reserved until that query settles, while the client can already receive the timeout response. No global database configuration is changed.
 

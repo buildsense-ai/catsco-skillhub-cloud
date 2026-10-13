@@ -40,14 +40,28 @@ function withAbort(promise, signal) {
 
 export function createPublishValidationHandler(config, store) {
   const settings = config.publishValidation;
-  const limiter = new RateLimiter({ limit: settings.requestsPerMinute, windowMs: 60000, maxBuckets: 20000 });
-  const rules = settings.enabled ? { ...describeRules({ ...config.limits, ...settings.limits }), execution: {
-    maxConcurrent: settings.maxConcurrent,
-    requestsPerMinute: settings.requestsPerMinute,
-    readTimeoutMs: settings.readTimeoutMs,
-    workerTimeoutMs: settings.workerTimeoutMs,
-    workerMemoryMb: settings.workerMemoryMb
-  } } : null;
+  let limiter;
+  let rules;
+  if (settings.enabled) {
+    try {
+      const execution = {
+        maxConcurrent: settings.maxConcurrent,
+        requestsPerMinute: settings.requestsPerMinute,
+        readTimeoutMs: settings.readTimeoutMs,
+        workerTimeoutMs: settings.workerTimeoutMs,
+        workerMemoryMb: settings.workerMemoryMb
+      };
+      if (Object.values(execution).some(value => !Number.isSafeInteger(value) || value <= 0)) {
+        throw new Error("Invalid publication validation configuration");
+      }
+      rules = { ...describeRules({ ...config.limits, ...settings.limits }), execution };
+      limiter = new RateLimiter({ limit: settings.requestsPerMinute, windowMs: 60000, maxBuckets: 20000 });
+    } catch {
+      // Fail closed for this optional feature only. Do not expose/log raw
+      // settings, replace invalid budgets with defaults, or crash API startup.
+      rules = null;
+    }
+  }
   let active = 0;
   return async ({ req, res, pathname, sendJson }) => {
     const isRules = req.method === "GET" && pathname === "/api/skills/publish-validation/rules";
@@ -61,6 +75,10 @@ export function createPublishValidationHandler(config, store) {
     };
     if (!settings.enabled) {
       reply(404, { error: { code: "not_found", message: "Publication validation is disabled." } });
+      return true;
+    }
+    if (!rules) {
+      reply(503, { error: { code: "skillhub.publish_validation_unavailable", message: "Publication validation is unavailable." } });
       return true;
     }
     if (active >= settings.maxConcurrent) {

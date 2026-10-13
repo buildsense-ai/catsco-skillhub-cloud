@@ -21,11 +21,6 @@ function splitList(value) {
     .filter(Boolean);
 }
 
-function positiveBudget(value, name) {
-  if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`Invalid publish validation budget: ${name}`);
-  return value;
-}
-
 export function loadConfig(overrides = {}) {
   const nodeEnv = overrides.nodeEnv ?? process.env.NODE_ENV ?? "development";
   const root = path.resolve(overrides.root ?? process.env.SKILLHUB_ROOT ?? repoRoot);
@@ -43,13 +38,16 @@ export function loadConfig(overrides = {}) {
     databaseUrl: overrides.databaseUrl ?? process.env.SKILLHUB_DATABASE_URL ?? "",
     publishValidation: {
       enabled: overrides.publishValidationEnabled ?? readBool("SKILLHUB_PUBLISH_VALIDATION_ENABLED", false),
-      maxConcurrent: positiveBudget(overrides.publishValidationMaxConcurrent ?? Number(process.env.SKILLHUB_PUBLISH_VALIDATION_MAX_CONCURRENT ?? 2), "maxConcurrent"),
-      requestsPerMinute: positiveBudget(overrides.publishValidationRequestsPerMinute ?? Number(process.env.SKILLHUB_PUBLISH_VALIDATION_REQUESTS_PER_MINUTE ?? 30), "requestsPerMinute"),
-      readTimeoutMs: positiveBudget(overrides.publishValidationReadTimeoutMs ?? Number(process.env.SKILLHUB_PUBLISH_VALIDATION_READ_TIMEOUT_MS ?? 15000), "readTimeoutMs"),
-      workerTimeoutMs: positiveBudget(overrides.publishValidationWorkerTimeoutMs ?? Number(process.env.SKILLHUB_PUBLISH_VALIDATION_WORKER_TIMEOUT_MS ?? 10000), "workerTimeoutMs"),
-      workerMemoryMb: positiveBudget(overrides.publishValidationWorkerMemoryMb ?? Number(process.env.SKILLHUB_PUBLISH_VALIDATION_WORKER_MEMORY_MB ?? 512), "workerMemoryMb"),
+      // Optional-feature budgets are validated inside its handler boundary.
+      // Preserve invalid values rather than silently replacing/relaxing them;
+      // a bad preflight setting must never prevent the rest of the API starting.
+      maxConcurrent: overrides.publishValidationMaxConcurrent ?? Number(process.env.SKILLHUB_PUBLISH_VALIDATION_MAX_CONCURRENT ?? 2),
+      requestsPerMinute: overrides.publishValidationRequestsPerMinute ?? Number(process.env.SKILLHUB_PUBLISH_VALIDATION_REQUESTS_PER_MINUTE ?? 30),
+      readTimeoutMs: overrides.publishValidationReadTimeoutMs ?? Number(process.env.SKILLHUB_PUBLISH_VALIDATION_READ_TIMEOUT_MS ?? 15000),
+      workerTimeoutMs: overrides.publishValidationWorkerTimeoutMs ?? Number(process.env.SKILLHUB_PUBLISH_VALIDATION_WORKER_TIMEOUT_MS ?? 10000),
+      workerMemoryMb: overrides.publishValidationWorkerMemoryMb ?? Number(process.env.SKILLHUB_PUBLISH_VALIDATION_WORKER_MEMORY_MB ?? 512),
       limits: {
-        maxRequestBytes: positiveBudget(overrides.publishValidationMaxRequestBytes ?? Number(process.env.SKILLHUB_PUBLISH_VALIDATION_MAX_REQUEST_BYTES ?? 75 * 1024 * 1024), "maxRequestBytes")
+        maxRequestBytes: overrides.publishValidationMaxRequestBytes ?? Number(process.env.SKILLHUB_PUBLISH_VALIDATION_MAX_REQUEST_BYTES ?? 75 * 1024 * 1024)
       }
     },
     presentations: {
