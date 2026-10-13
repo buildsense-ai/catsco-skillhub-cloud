@@ -36,6 +36,20 @@ export function loadConfig(overrides = {}) {
     publicBaseUrl: overrides.publicBaseUrl ?? process.env.SKILLHUB_PUBLIC_BASE_URL ?? "http://127.0.0.1:9000",
     packageBaseUrl: overrides.packageBaseUrl ?? process.env.SKILLHUB_PACKAGE_BASE_URL ?? "http://127.0.0.1:9000/packages",
     databaseUrl: overrides.databaseUrl ?? process.env.SKILLHUB_DATABASE_URL ?? "",
+    publishValidation: {
+      enabled: overrides.publishValidationEnabled ?? readBool("SKILLHUB_PUBLISH_VALIDATION_ENABLED", false),
+      // Optional-feature budgets are validated inside its handler boundary.
+      // Preserve invalid values rather than silently replacing/relaxing them;
+      // a bad preflight setting must never prevent the rest of the API starting.
+      maxConcurrent: overrides.publishValidationMaxConcurrent ?? Number(process.env.SKILLHUB_PUBLISH_VALIDATION_MAX_CONCURRENT ?? 2),
+      requestsPerMinute: overrides.publishValidationRequestsPerMinute ?? Number(process.env.SKILLHUB_PUBLISH_VALIDATION_REQUESTS_PER_MINUTE ?? 30),
+      readTimeoutMs: overrides.publishValidationReadTimeoutMs ?? Number(process.env.SKILLHUB_PUBLISH_VALIDATION_READ_TIMEOUT_MS ?? 15000),
+      workerTimeoutMs: overrides.publishValidationWorkerTimeoutMs ?? Number(process.env.SKILLHUB_PUBLISH_VALIDATION_WORKER_TIMEOUT_MS ?? 10000),
+      workerMemoryMb: overrides.publishValidationWorkerMemoryMb ?? Number(process.env.SKILLHUB_PUBLISH_VALIDATION_WORKER_MEMORY_MB ?? 512),
+      limits: {
+        maxRequestBytes: overrides.publishValidationMaxRequestBytes ?? Number(process.env.SKILLHUB_PUBLISH_VALIDATION_MAX_REQUEST_BYTES ?? 75 * 1024 * 1024)
+      }
+    },
     presentations: {
       imagesEnabled: overrides.presentationImagesEnabled ?? readBool("SKILLHUB_PRESENTATION_IMAGES_ENABLED", nodeEnv !== "production"),
       readEnabled: overrides.presentationsReadEnabled ?? readBool("SKILLHUB_PRESENTATIONS_READ_ENABLED", nodeEnv !== "production"),
