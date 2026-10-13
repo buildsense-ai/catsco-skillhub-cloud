@@ -13,7 +13,7 @@ Optional-feature budget validation is isolated from API startup. Disabled prefli
 | Setting | Default |
 | --- | --- |
 | `SKILLHUB_PUBLISH_VALIDATION_MAX_CONCURRENT` | 2 per API process, including request reads and authentication |
-| `SKILLHUB_PUBLISH_VALIDATION_REQUESTS_PER_MINUTE` | 30 per authenticated actor per API process |
+| `SKILLHUB_PUBLISH_VALIDATION_REQUESTS_PER_MINUTE` | 30 per human user; one shared 30/min service-agent bucket per API process |
 | `SKILLHUB_PUBLISH_VALIDATION_MAX_REQUEST_BYTES` | 75 MiB encoded HTTP JSON |
 | `SKILLHUB_PUBLISH_VALIDATION_READ_TIMEOUT_MS` | 15,000 including authentication |
 | `SKILLHUB_PUBLISH_VALIDATION_WORKER_TIMEOUT_MS` | 10,000 |
@@ -32,6 +32,8 @@ CPU work is stopped before releasing its slot. An authentication database query 
 ## Authentication
 
 Both endpoints use the same authenticated session/service-agent mechanism as the existing share endpoint. Unauthenticated users cannot trigger file decoding. Request byte and connection/admission budgets apply before parsing, including during authentication. A successful preflight does not establish Skill ownership, authorize publication, prove redistribution rights, or authorize billing.
+
+Rate limits cover both routes together. Human sessions are bucketed by authenticated user ID. All clients using `SKILLHUB_AGENT_CLIENT_SECRET` share a single service-agent bucket: this credential authenticates the service, not an individual Bot. A busy client can exhaust that shared allowance and cause other service-agent clients to receive 429; P1 does **not** promise per-Bot fairness. Client-supplied Bot IDs or forwarding headers do not create new buckets. Per-Bot isolation requires a verified Bot identity in a later authentication contract, not an arbitrary caller-provided identifier.
 
 There is no API for retrieving another caller's report or files. `reportId` is a diagnostic identifier, not a bearer capability or persisted task ID. Responses use `Cache-Control: no-store`. A caller that needs durable results must wait for the later publication-task API.
 
@@ -74,7 +76,7 @@ Top-level JSON, skill.json and explicit JSON frontmatter reject duplicate keys (
 | 400 | Invalid request JSON, fields or encoding; safe `error.code/message` |
 | 413 | Transport, file, expansion or parser budget exceeded; not an invitation to retry unchanged files indefinitely |
 | 401/403 | Authentication/authorization failure; do not start file repair |
-| 429 | Actor rate limit |
+| 429 | Human-user rate limit or shared service-agent rate limit |
 | 503 | Busy, timeout or execution failure; never reported as format rejection or passed |
 
 Old clients may only retain `error.code/message`. Rich report rendering and persistence are separate client work. `200 passed` is not `published`; existing share `200 existing`, `200 requiresConfirmation` and `201 accepted` keep their old meanings.

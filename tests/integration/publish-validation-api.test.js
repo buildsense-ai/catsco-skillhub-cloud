@@ -89,6 +89,29 @@ test("preflight enforces actor rate limits", async () => {
   });
 });
 
+test("service agents share a bucket while authenticated human users have independent quotas", async () => {
+  const secret = "preflight-rate-test-secret";
+  const sessions = new Map(["alice", "bob"].map(id => [hashSessionToken(id, secret), { userId: id }]));
+  const store = {
+    getSessionByTokenHash: async hash => sessions.get(hash),
+    getUserById: async id => ({ id, email: `${id}@example.test`, displayName: id }),
+    getRoles: async () => ["user"],
+    getDeveloperProfile: async () => null
+  };
+  await withServer({ publishValidationRequestsPerMinute: 1, sessionSecret: secret, cookieName: "preflight_rate" }, async base => {
+    const rules = base + endpoint + "/rules";
+    assert.equal((await fetch(rules, { headers: { ...headers, "X-Bot-Id": "bot-a" } })).status, 200);
+    // Neither a new client identity claim nor a different route resets quota.
+    assert.equal((await fetch(base + endpoint, { method: "POST", body: valid,
+      headers: { ...headers, "X-Bot-Id": "bot-b", "X-Forwarded-For": "192.0.2.10" } })).status, 429);
+    for (const id of ["alice", "bob"]) {
+      const humanHeaders = { Cookie: `preflight_rate=${id}` };
+      assert.equal((await fetch(rules, { headers: humanHeaders })).status, 200);
+      assert.equal((await fetch(rules, { headers: humanHeaders })).status, 429);
+    }
+  }, store);
+});
+
 test("wide JSON/YAML requests return non-retryable 413 over HTTP, not worker failure", async () => {
   await withServer({ publishValidationWorkerMemoryMb: 128 }, async base => {
     const yaml = JSON.parse(valid);

@@ -105,6 +105,8 @@ export function createPublishValidationHandler(config, store) {
       // in-flight query. Track its real settlement, not just the HTTP timeout.
       authPromise.then(() => { authSettled = true; }, () => { authSettled = true; });
       const actor = await withAbort(authPromise, controller.signal);
+      // Shared service credentials identify one service actor, not a verified
+      // Bot. Do not shard that bucket using untrusted caller-provided IDs.
       if (!limiter.check(actor.userId ?? actor.id)) throw failure(429, "rate_limited", "Publication validation requests are too frequent.");
       if (isRules) {
         reply(200, rules);
