@@ -48,6 +48,7 @@ import {
 } from "../../packages/signing/index.js";
 import { createExaWebAnswerService } from "../../packages/web-answer/index.js";
 import { handlePresentationRequest } from "./presentations.js";
+import { createPublishValidationHandler } from "./publish-validation.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const adminIndexPath = path.resolve(here, "../admin/public/index-v2.html");
@@ -65,6 +66,7 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
   const catsCoTargetLimiter = new RateLimiter({ windowMs: 60_000, limit: 30, maxBuckets: 20_000 });
   let activePrivateUploads = 0;
   const exaWebAnswer = createExaWebAnswerService();
+  const handlePublishValidation = createPublishValidationHandler(config, store);
 
   return http.createServer(async (req, res) => {
     res.setHeader("X-Request-Id", randomId());
@@ -85,6 +87,8 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
     try {
       const url = new URL(req.url ?? "/", config.publicBaseUrl);
       const pathname = decodeURIComponent(url.pathname);
+
+      if (await handlePublishValidation({ req, res, pathname, sendJson })) return;
 
       if (await exaWebAnswer.handleHttp(req, res, pathname)) return;
 

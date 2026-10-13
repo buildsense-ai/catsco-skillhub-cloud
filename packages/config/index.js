@@ -21,6 +21,11 @@ function splitList(value) {
     .filter(Boolean);
 }
 
+function positiveBudget(value, name) {
+  if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`Invalid publish validation budget: ${name}`);
+  return value;
+}
+
 export function loadConfig(overrides = {}) {
   const nodeEnv = overrides.nodeEnv ?? process.env.NODE_ENV ?? "development";
   const root = path.resolve(overrides.root ?? process.env.SKILLHUB_ROOT ?? repoRoot);
@@ -36,6 +41,17 @@ export function loadConfig(overrides = {}) {
     publicBaseUrl: overrides.publicBaseUrl ?? process.env.SKILLHUB_PUBLIC_BASE_URL ?? "http://127.0.0.1:9000",
     packageBaseUrl: overrides.packageBaseUrl ?? process.env.SKILLHUB_PACKAGE_BASE_URL ?? "http://127.0.0.1:9000/packages",
     databaseUrl: overrides.databaseUrl ?? process.env.SKILLHUB_DATABASE_URL ?? "",
+    publishValidation: {
+      enabled: overrides.publishValidationEnabled ?? readBool("SKILLHUB_PUBLISH_VALIDATION_ENABLED", false),
+      maxConcurrent: positiveBudget(overrides.publishValidationMaxConcurrent ?? Number(process.env.SKILLHUB_PUBLISH_VALIDATION_MAX_CONCURRENT ?? 2), "maxConcurrent"),
+      requestsPerMinute: positiveBudget(overrides.publishValidationRequestsPerMinute ?? Number(process.env.SKILLHUB_PUBLISH_VALIDATION_REQUESTS_PER_MINUTE ?? 30), "requestsPerMinute"),
+      readTimeoutMs: positiveBudget(overrides.publishValidationReadTimeoutMs ?? Number(process.env.SKILLHUB_PUBLISH_VALIDATION_READ_TIMEOUT_MS ?? 15000), "readTimeoutMs"),
+      workerTimeoutMs: positiveBudget(overrides.publishValidationWorkerTimeoutMs ?? Number(process.env.SKILLHUB_PUBLISH_VALIDATION_WORKER_TIMEOUT_MS ?? 10000), "workerTimeoutMs"),
+      workerMemoryMb: positiveBudget(overrides.publishValidationWorkerMemoryMb ?? Number(process.env.SKILLHUB_PUBLISH_VALIDATION_WORKER_MEMORY_MB ?? 512), "workerMemoryMb"),
+      limits: {
+        maxRequestBytes: positiveBudget(overrides.publishValidationMaxRequestBytes ?? Number(process.env.SKILLHUB_PUBLISH_VALIDATION_MAX_REQUEST_BYTES ?? 75 * 1024 * 1024), "maxRequestBytes")
+      }
+    },
     presentations: {
       imagesEnabled: overrides.presentationImagesEnabled ?? readBool("SKILLHUB_PRESENTATION_IMAGES_ENABLED", nodeEnv !== "production"),
       readEnabled: overrides.presentationsReadEnabled ?? readBool("SKILLHUB_PRESENTATIONS_READ_ENABLED", nodeEnv !== "production"),
