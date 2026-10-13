@@ -2,12 +2,34 @@ import { pathToFileURL } from "node:url";
 import { loadConfig } from "../../packages/config/index.js";
 import { ensureRuntimeDirectories } from "../../packages/database/store.js";
 import { processJobs, processNextJob } from "../../packages/queue/index.js";
+import { createStore } from "../../packages/database/store.js";
+import { processPublicationTask } from "../../packages/publication-tasks/worker.js";
+import { publicationTaskSettings } from "../../packages/publication-tasks/config.js";
 
 export async function startWorker(config = loadConfig(), { once = false } = {}) {
   await ensureRuntimeDirectories(config);
+  const taskStore = createStore(config);
+  let tasksEnabled = false;
+  try { tasksEnabled = Boolean(publicationTaskSettings(config)); } catch { /* optional feature fails closed */ }
+  let lastTaskMaintenance = 0;
+  const tickTasks = async () => {
+    if (!tasksEnabled) return null;
+    try {
+      if (Date.now() - lastTaskMaintenance >= 60000) {
+        await taskStore.maintainPublicationTasks();
+        lastTaskMaintenance = Date.now();
+      }
+      return await processPublicationTask(config, { store: taskStore });
+    } catch {
+      // Optional task storage failure must not stop the legacy publishing worker.
+      console.warn('Publication task processing is unavailable.');
+      return null;
+    }
+  };
 
   if (once) {
     const results = await processJobs(config);
+    while (await tickTasks()) { /* drain due validation tasks; retries have backoff */ }
     console.log(JSON.stringify({ processed: results.length, results: results.map((item) => ({ jobId: item.job.id, type: item.job.type, status: item.status })) }, null, 2));
     return results;
   }
@@ -22,7 +44,8 @@ export async function startWorker(config = loadConfig(), { once = false } = {}) 
 
   while (!stopped) {
     const result = await processNextJob(config);
-    if (!result) await sleep(config.worker.pollMs);
+    const taskResult = await tickTasks();
+    if (!result && !taskResult) await sleep(config.worker.pollMs);
   }
   console.log("CatsCo SkillHub worker stopped");
 }

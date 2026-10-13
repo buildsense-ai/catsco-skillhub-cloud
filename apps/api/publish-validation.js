@@ -6,7 +6,7 @@ function failure(status, code, message) {
   return Object.assign(new Error(message), { status, code });
 }
 
-function readRaw(req, limit, signal) {
+export function readRaw(req, limit, signal) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let bytes = 0;
@@ -29,7 +29,7 @@ function readRaw(req, limit, signal) {
   });
 }
 
-function withAbort(promise, signal) {
+export function withAbort(promise, signal) {
   return new Promise((resolve, reject) => {
     const abort = () => reject(failure(503, "skillhub.publish_validation_unavailable", "Publication validation timed out. Please retry."));
     signal.addEventListener("abort", abort, { once: true });

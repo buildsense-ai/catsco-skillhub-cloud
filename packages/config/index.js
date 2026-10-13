@@ -36,6 +36,16 @@ export function loadConfig(overrides = {}) {
     publicBaseUrl: overrides.publicBaseUrl ?? process.env.SKILLHUB_PUBLIC_BASE_URL ?? "http://127.0.0.1:9000",
     packageBaseUrl: overrides.packageBaseUrl ?? process.env.SKILLHUB_PACKAGE_BASE_URL ?? "http://127.0.0.1:9000/packages",
     databaseUrl: overrides.databaseUrl ?? process.env.SKILLHUB_DATABASE_URL ?? "",
+    publicationTasks: {
+      enabled: overrides.publicationTasksEnabled ?? readBool("SKILLHUB_PUBLICATION_TASKS_ENABLED", false),
+      maxTasks: overrides.publicationTasksMaxTasks ?? Number(process.env.SKILLHUB_PUBLICATION_TASKS_MAX_TASKS ?? 10000),
+      maxTasksPerOwner: overrides.publicationTasksMaxTasksPerOwner ?? Number(process.env.SKILLHUB_PUBLICATION_TASKS_MAX_TASKS_PER_OWNER ?? 100),
+      maxStoredBytes: overrides.publicationTasksMaxStoredBytes ?? Number(process.env.SKILLHUB_PUBLICATION_TASKS_MAX_STORED_BYTES ?? 2 * 1024 ** 3),
+      maxStoredBytesPerOwner: overrides.publicationTasksMaxStoredBytesPerOwner ?? Number(process.env.SKILLHUB_PUBLICATION_TASKS_MAX_STORED_BYTES_PER_OWNER ?? 256 * 1024 ** 2),
+      candidateTtlMs: overrides.publicationTasksCandidateTtlMs ?? Number(process.env.SKILLHUB_PUBLICATION_TASKS_CANDIDATE_TTL_MS ?? 7 * 86400000),
+      retentionMs: overrides.publicationTasksRetentionMs ?? Number(process.env.SKILLHUB_PUBLICATION_TASKS_RETENTION_MS ?? 30 * 86400000),
+      leaseMs: overrides.publicationTasksLeaseMs ?? Number(process.env.SKILLHUB_PUBLICATION_TASKS_LEASE_MS ?? 30000)
+    },
     publishValidation: {
       enabled: overrides.publishValidationEnabled ?? readBool("SKILLHUB_PUBLISH_VALIDATION_ENABLED", false),
       // Optional-feature budgets are validated inside its handler boundary.

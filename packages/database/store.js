@@ -3,6 +3,7 @@ import path from "node:path";
 import { generateId, JobStatus, nowIso, sha256, ValidationError } from "../domain/index.js";
 import { createPresentationStore, ensurePresentationSchema } from "../presentations/store.js";
 import { createPresentationAssetStore } from "../presentations/asset-store.js";
+import { createPublicationTaskStore } from "../publication-tasks/store.js";
 
 let poolByUrl = new Map();
 
@@ -131,6 +132,7 @@ export function createStore(config) {
     tx,
     ...createPresentationStore({ query, tx }),
     ...createPresentationAssetStore({ query, tx }),
+    ...createPublicationTaskStore({ query, tx }),
     async listCatalogueVersions({ viewerUserId = null, viewerCatsCoUid = null, includeAll = false } = {}) {
       await ensureSimplifiedSchema();
       await ensurePresentationSchema(query);

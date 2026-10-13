@@ -49,6 +49,7 @@ import {
 import { createExaWebAnswerService } from "../../packages/web-answer/index.js";
 import { handlePresentationRequest } from "./presentations.js";
 import { createPublishValidationHandler } from "./publish-validation.js";
+import { createPublicationTasksHandler } from "./publication-tasks.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const adminIndexPath = path.resolve(here, "../admin/public/index-v2.html");
@@ -67,6 +68,7 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
   let activePrivateUploads = 0;
   const exaWebAnswer = createExaWebAnswerService();
   const handlePublishValidation = createPublishValidationHandler(config, store);
+  const handlePublicationTasks = createPublicationTasksHandler(config, store);
 
   return http.createServer(async (req, res) => {
     res.setHeader("X-Request-Id", randomId());
@@ -89,6 +91,7 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
       const pathname = decodeURIComponent(url.pathname);
 
       if (await handlePublishValidation({ req, res, pathname, sendJson })) return;
+      if (await handlePublicationTasks({ req, res, pathname, sendJson })) return;
 
       if (await exaWebAnswer.handleHttp(req, res, pathname)) return;
 
@@ -2020,7 +2023,7 @@ function applyCors(config, req, res) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Access-Control-Allow-Credentials", "true");
     res.setHeader("Vary", "Origin");
-    res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Requested-With, X-CatsCo-Bot-Id");
+    res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Requested-With, X-CatsCo-Bot-Id, Idempotency-Key");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
   }
 }
