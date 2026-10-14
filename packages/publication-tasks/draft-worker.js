@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { normalizeManifest, slugify } from '../domain/index.js';
 import { validatePublishRequest, parseStrictJson, readEntryFrontmatter, effectiveLimits } from '../publish-validation/index.js';
 import { decodeSource } from '../publish-validation/intake.js';
+import { preparePublication } from './prepare.js';
 
 try {
   const { candidate, requestHash, candidateHash, namespace } = workerData.rawJson;
@@ -26,7 +27,14 @@ try {
     manifest.author.name = slugify(namespace,'user');
     // Bound private intent metadata independently from candidate-file budgets.
     if (Buffer.byteLength(JSON.stringify(manifest)) > 32768) throw new Error();
-    parentPort.postMessage({ status:200,manifest });
+    // Run the same side-effect-free preparation before allocating a permanent
+    // version. This preview identity is internal only: discard its material and
+    // receipt. The commit worker MUST prepare again with the reserved identity.
+    const preview = preparePublication({rawJson:candidate,requestHash,candidateHash,manifest,
+      identity:{ownerId:'preflight',uploadId:'preflight',skillId:manifest.id,
+        version:manifest.version,releaseAt:'2000-01-01T00:00:00.000Z'}},limits);
+    parentPort.postMessage(preview.status === 200 ? {status:200,manifest}
+      : {status:preview.status,body:preview.body});
   }
 } catch {
   parentPort.postMessage({ status:422,body:{error:{code:'skillhub.publication_task_manifest_invalid',

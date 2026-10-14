@@ -2,7 +2,11 @@
 
 This completes the Cloud commit path after PR27's version reservations and
 PR28's final-package preparation. Migration `014_publication_commits` is required
-before deploying API/Worker. The new path is separately **default-off**. It does
+before starting **any** API/Worker build from this PR, even with both feature
+flags disabled: the legacy writer also queries `publication_commits` to prevent
+bypassing task completion. Default-off preserves caller semantics only after
+migrations through 014 are applied; it is not compatibility with schema 013.
+The new path is separately **default-off**. It does
 not connect CatsCo chats, authorize access to a Bot's workspace, install a Skill,
 run uploaded code, repair descriptions, or generate a Chinese guide.
 
@@ -25,6 +29,15 @@ ID, package/scan IDs, receipts and timestamps are server-derived. Service bearer
 credentials and other accounts cannot publish or discover this task. A live
 `ready` candidate, an active Cloud user and an active publisher profile are
 required. The namespace is derived with the existing publisher slug convention.
+
+Before reserving a version, the isolated draft worker runs the same read-only
+preparation routine using a throwaway server-side preview identity. Deterministic
+structural failures (such as nested `skill.json` that packaging would remove)
+return a bounded error without an intent or reservation. Preview material and
+receipt are discarded, never returned or used to authorize publication. Final
+preparation still runs with the exact reserved version and release identity;
+changed rules, identity-dependent size limits, authority and infrastructure can
+still fail after acceptance. A 202 is not a guarantee of successful publication.
 
 The task ID is the publication idempotency key. Accepted requests return 202
 with a task and `replayed` flag; **202 is not published**. Repeat the same body
@@ -104,13 +117,19 @@ rewritten to match a new rule implementation.
 
 ## Retention and quotas
 
-Before the commit boundary, normal candidate expiry and metadata retention still
-apply. Once a receipt exists, incomplete work (including terminal publish failures)
-retains its candidate and intent for recovery even past those dates. It continues
+Before **publication acceptance**, normal candidate expiry and metadata retention
+apply. Once an intent/reservation exists, incomplete work (including queued work,
+pre-receipt preparation and terminal publish failures) retains its candidate and
+intent for recovery even past those dates. The exposed expiry/purge dates remain
+the original validation-task deadlines, not deletion deadlines for accepted work.
+It continues
 to consume task and byte quotas; it is not silently garbage-collected. Successful
 completion clears candidate bytes and retains result metadata for at least the
 configured retention period after completion. Normal maintenance can then purge
-it. Reservations remain independent and permanent.
+it. Before a receipt exists, the owner can still cancel accepted work even after
+those deadlines; cancellation clears the candidate, invalidates worker leases,
+and allows ordinary retention cleanup. Reservations remain independent and
+permanent, including after deliberate cancellation.
 
 Intent, receipt and checkpoint sizes are accounted in `commit_bytes` under the
 same global intake lock used for candidate quota enforcement. No second durable
@@ -130,7 +149,12 @@ publishing is enabled, `/api/skills/share` returns a compatible 409 code/message
 requesting the task workflow. Uncommitted legacy queue jobs are blocked from
 writing Git/catalogue entries; previously committed legacy jobs may finish their
 idempotent acknowledgement. Private backup, download and model-switch routes
-are unchanged. Do not enable publishing with tasks disabled.
+are unchanged. Do not enable publishing with tasks disabled: this invalid
+combination is explicitly rejected by the task configuration validator. The
+legacy share route (after authentication) and task routes return 503
+`skillhub.publication_task_configuration_invalid`, rather than redirecting to a
+disabled task flow or reopening the legacy writer. This feature-local failure
+does not stop API health or unrelated routes; workers do not claim commit work.
 
 After activation, rollback must quiesce **all public publishing** before changing
 flags/binaries. Turning the publishing flag off reopens the legacy HTTP writer;

@@ -27,6 +27,9 @@ export function createPublicationTasksHandler(config, store) {
       }
       sendJson(res, status, body);
     };
+    if (config.publicationPublishing?.enabled && !config.publicationTasks?.enabled) {
+      reply(503, {error:{code:'skillhub.publication_task_configuration_invalid',message:'Publication publishing requires publication tasks to be enabled.'}}); return true;
+    }
     if (!config.publicationTasks?.enabled) { reply(404, { error: { code: 'not_found', message: 'Publication tasks are disabled.' } }); return true; }
     if (!settings) { reply(503, { error: { code: 'skillhub.publication_task_unavailable', message: 'Publication tasks are unavailable.' } }); return true; }
     if (active >= settings.execution.maxConcurrent) { reply(503, { error: { code: 'skillhub.publication_task_busy', message: 'Publication tasks are busy.' } }); return true; }

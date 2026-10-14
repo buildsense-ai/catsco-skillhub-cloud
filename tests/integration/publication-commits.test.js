@@ -15,6 +15,7 @@ import {publicTask} from '../../packages/publication-tasks/store.js';
 import {runPreparePublication} from '../../packages/publication-tasks/prepare.js';
 import {issueSigningKeyCertificate} from '../../packages/signing/index.js';
 import {commitGitVersion} from '../../packages/git-storage/index.js';
+import {runPublishValidation} from '../../packages/publish-validation/runner.js';
 
 const databaseUrl=process.env.SKILLHUB_TEST_DATABASE_URL, pg={skip:!databaseUrl};
 const hash=value=>createHash('sha256').update(value).digest('hex');
@@ -24,7 +25,7 @@ before(async()=>{
   if (!databaseUrl) return;
   root=await fs.mkdtemp(path.join(os.tmpdir(),'skillhub-commits-'));
   config=loadConfig({root,databaseUrl,nodeEnv:'test',publicationTasksEnabled:true,publicationPublishingEnabled:true,
-    allowAutoKeygen:true,sessionSecret:'commit-tests'});
+    allowAutoKeygen:true,sessionSecret:'commit-tests',agentClientSecret:'commit-tests-service-only'});
   store=createStore(config); settings=publicationTaskSettings(config);
   await issueSigningKeyCertificate(config);
 });
@@ -50,9 +51,9 @@ async function fixture() {
   f.manifest={id:f.skillId,name:'sample',displayName:'Sample',description:'Useful',version:'1.0.0',entrypoints:{skillFile:'SKILL.md'}};
   return f;
 }
-async function ready(f,suffix='') {
+async function ready(f,suffix='',extraFiles=[]) {
   const candidate=Buffer.from(JSON.stringify({source:{type:'files',files:[{path:'SKILL.md',
-    content:`---\nname: sample\ndescription: Useful\n---\nPrivate instructions ${suffix}\n`}]}}));
+    content:`---\nname: sample\ndescription: Useful\n---\nPrivate instructions ${suffix}\n`},...extraFiles]}}));
   const result=validatePublishRequest(candidate.toString());
   const saved=await store.createPublicationTask({ownerId:f.ownerId,requestKey:`key-${randomUUID()}`,requestHash:hash(candidate),
     candidateHash:result.body.validation.candidateHash,candidate,result,settings});
@@ -69,7 +70,7 @@ async function withApi(f,callback,extra={}) {
   const url=`http://127.0.0.1:${server.address().port}`;
   const req=async(route,body,auth=true)=>{
     const r=await fetch(url+route,{method:body===undefined?'GET':'POST',headers:{'content-type':'application/json',
-      ...(auth?{cookie:'catsco_session=owner'}:{authorization:'Bearer not-a-session'})},body:body===undefined?undefined:JSON.stringify(body)});
+      ...(auth?{cookie:'catsco_session=owner'}:{authorization:`Bearer ${config.agent.clientSecret}`})},body:body===undefined?undefined:JSON.stringify(body)});
     return {status:r.status,body:await r.json()};
   };
   try {await callback(req);} finally {server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
@@ -82,7 +83,100 @@ test('publication is separately default-off and does not reinterpret completed t
     created_at:0,updated_at:0,expires_at:1,purge_after:2};
   assert.equal(publicTask(row).state,'published');
   assert.equal(publicTask({...row,state:'committing',commit_started:true}).state,'committing');
+  for (const state of ['publish_queued','publishing','publish_failed']) {
+    assert.equal(publicTask({...row,state,publication_accepted:true}).state,state);
+    assert.equal(publicTask({...row,state,intent:{receipt:null}}).state,state);
+  }
   assert.equal(publicTask({...row,state:'ready',publication_result:null}).state,'expired');
+});
+
+test('draft preflight rejects final preparation failures without returning preview material',async()=>{
+  for (const nested of [false,true]) {
+    const candidate=Buffer.from(JSON.stringify({source:{type:'files',files:[
+      {path:'SKILL.md',content:'---\nname: sample\ndescription: Useful\n---\nPrivate instructions\n'},
+      ...(nested?[{path:'scripts/skill.json',content:'{}'}]:[])]}}));
+    const validation=validatePublishRequest(candidate.toString());assert.equal(validation.status,200);
+    const result=await runPublishValidation({candidate,requestHash:hash(candidate),
+      candidateHash:validation.body.validation.candidateHash,namespace:'publisher'}, {}, {
+      workerUrl:new URL('../../packages/publication-tasks/draft-worker.js',import.meta.url)});
+    assert.equal(result.status,nested?422:200,JSON.stringify(result));
+    if (nested) assert.equal(result.body.error.code,'skillhub.publication_prepare_file_would_be_removed');
+    assert.equal('prepared' in result,false);assert.equal(JSON.stringify(result).includes('Private instructions'),false);
+  }
+});
+
+test('inconsistent publishing flags fail closed with explicit HTTP configuration errors without breaking health',async()=>{
+  const invalid=loadConfig({nodeEnv:'test',publicationTasksEnabled:false,publicationPublishingEnabled:true,
+    agentClientSecret:'invalid-config-test-service'});
+  assert.throws(()=>publicationTaskSettings(invalid),/requires publication tasks/);
+  const server=createApiServer(invalid,{store:{}});
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  try {
+    const base=`http://127.0.0.1:${server.address().port}`;
+    for (const [route,method] of [['/api/skills/share','POST'],['/api/skills/publication-tasks','GET'],
+      [`/api/skills/publication-tasks/pubtask_${randomUUID()}/publish`,'POST']]) {
+      const response=await fetch(base+route,{method,headers:{authorization:`Bearer ${invalid.agent.clientSecret}`}});
+      assert.equal(response.status,503);
+      assert.equal((await response.json()).error.code,'skillhub.publication_task_configuration_invalid');
+    }
+    assert.equal((await fetch(base+'/healthz')).status,200);
+    assert.equal(await processPublicationCommit(invalid,{store:{claimPublicationCommit(){throw new Error('must not claim');}}}),null);
+  } finally {server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
+});
+
+test('PostgreSQL HTTP preflight rejection creates no intent or reservation and leaves version 1.0.0 available',pg,async()=>{
+  const f=await ready(await fixture(),'',[{path:'scripts/skill.json',content:'{}'}]);
+  await withApi(f,async req=>{
+    const response=await req(`/api/skills/publication-tasks/${f.id}/publish`,{candidateHash:f.candidateHash,confirmVersionPublish:false});
+    assert.equal(response.status,422,JSON.stringify(response.body));
+    assert.equal(response.body.error.code,'skillhub.publication_prepare_file_would_be_removed');
+    const row=await store.getPublicationRequest(f.ownerId,f.id);
+    assert.equal(row.state,'ready');assert.equal(row.intent,null);
+    assert.equal((await store.query('SELECT * FROM publication_version_reservations WHERE owner_user_id=$1',[f.ownerId])).rowCount,0);
+    assert.equal((await countVersions(f)).rowCount,0);
+    const fixed=await ready(f);
+    assert.equal((await req(`/api/skills/publication-tasks/${fixed.id}/publish`,{candidateHash:fixed.candidateHash,confirmVersionPublish:false})).status,202);
+    assert.equal((await store.getPublicationRequest(f.ownerId,fixed.id)).intent.identity.version,'1.0.0');
+    await processPublicationCommit(config,{store});
+    assert.equal((await store.getPublicationTask(f.ownerId,fixed.id)).state,'published');
+  });
+});
+
+for (const state of ['publish_queued','publishing','publish_failed']) test(`PostgreSQL accepted ${state} survives TTL and retention before receipt and resumes the reserved version`,pg,async()=>{
+  const f=await ready(await fixture());await enqueue(f);
+  const identity=(await store.getPublicationRequest(f.ownerId,f.id)).intent.identity;
+  if (state!=='publish_queued') {
+    const task=await store.claimPublicationCommit(settings);
+    if (state==='publish_failed') await store.failPublicationCommit(task,{retry:false});
+  }
+  await store.query("UPDATE publication_tasks SET expires_at=now()-interval '2 days',purge_after=now()-interval '1 day',lease_until=now()-interval '1 second' WHERE id=$1",[f.id]);
+  await store.maintainPublicationTasks();
+  assert.equal((await store.getPublicationTask(f.ownerId,f.id)).state,state);
+  assert.equal((await store.listPublicationTasks(f.ownerId))[0].state,state);
+  const row=await store.getPublicationRequest(f.ownerId,f.id);
+  assert.ok(row.candidate);assert.ok(Number(row.commit_bytes)>0);assert.equal(row.intent.receipt,null);
+  assert.equal((await store.findPublicationTaskForRequest(f.ownerId,row.request_key,row.request_hash)).state,state);
+  const limitedSettings={...settings,maxStoredBytesPerOwner:Number(row.candidate_bytes)+Number(row.commit_bytes)};
+  await assert.rejects(store.createPublicationTask({ownerId:f.ownerId,requestKey:`key-${randomUUID()}`,requestHash:row.request_hash,
+    candidateHash:row.candidate_hash,candidate:row.candidate,result:row.intake_result,settings:limitedSettings}),{code:'skillhub.publication_task_storage_limit'});
+  if (state==='publish_failed') await enqueue(f);
+  await processPublicationCommit(config,{store});
+  const completed=await store.getPublicationRequest(f.ownerId,f.id);
+  assert.equal(completed.state,'published',JSON.stringify(publicTask(completed)));
+  assert.deepEqual(completed.intent.identity,identity);
+  assert.equal((await countVersions(f)).rowCount,1);
+});
+
+test('PostgreSQL expired accepted intent can still be cancelled before receipt, then purged without recycling reservation',pg,async()=>{
+  const f=await ready(await fixture());await enqueue(f);
+  const task=await store.claimPublicationCommit(settings);
+  await store.query("UPDATE publication_tasks SET expires_at=now()-interval '2 days',purge_after=now()-interval '1 day' WHERE id=$1",[f.id]);
+  assert.equal((await store.cancelPublicationTask(f.ownerId,f.id)).state,'cancelled');
+  assert.equal(await store.renewPublicationCommit(task,settings),false);
+  assert.equal(await store.claimPublicationCommit(settings),null);
+  await store.maintainPublicationTasks();
+  assert.equal(await store.getPublicationRequest(f.ownerId,f.id),null);
+  assert.equal((await store.query('SELECT * FROM publication_version_reservations WHERE owner_user_id=$1',[f.ownerId])).rowCount,1);
 });
 
 test('publication Git abort closes its writer and a later attempt can acquire the repository lock',async()=>{

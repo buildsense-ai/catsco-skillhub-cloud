@@ -68,7 +68,7 @@ export function createPublicationCommitStore({ query, tx, config }) {
         if (row.intent) {
           if (row.intent.confirm_version !== confirmVersionPublish) throw taskError(409,'request_conflict','Publication confirmation differs from the accepted request.');
           await authority(client,ownerId,row.intent);
-          if (row.state === 'publish_failed' && row.candidate && (row.intent.receipt || row.candidate_live)) {
+          if (row.state === 'publish_failed' && row.candidate) {
             await client.query("UPDATE publication_commits SET attempts=0 WHERE task_id=$1",[id]);
             const resumed = await client.query(`UPDATE publication_tasks SET state='publish_queued',error_code=NULL,
               run_after=now(),lease_token=NULL,lease_until=NULL,updated_at=now() WHERE id=$1 RETURNING *`,[id]);
@@ -97,7 +97,7 @@ export function createPublicationCommitStore({ query, tx, config }) {
         await charge(client,id,ownerId);
         const accepted = await client.query(`UPDATE publication_tasks SET state='publish_queued',error_code=NULL,
           run_after=now(),updated_at=now() WHERE id=$1 RETURNING *`,[id]);
-        return {task:publicTask(accepted.rows[0]),replayed:false};
+        return {task:publicTask({...accepted.rows[0],publication_accepted:true}),replayed:false};
       });
     },
     async claimPublicationCommit(settings) {
@@ -108,7 +108,6 @@ export function createPublicationCommitStore({ query, tx, config }) {
            WHERE t.state IN ('publishing','committing') AND t.lease_until<=now() AND c.attempts>=$1
            LIMIT 100 FOR UPDATE OF t SKIP LOCKED)`,[MAX_ATTEMPTS]);
         const selected = (await client.query(`${privateSelect} WHERE c.attempts<$1 AND t.candidate IS NOT NULL
-          AND (t.expires_at>now() OR c.receipt IS NOT NULL)
           AND ((t.state='publish_queued' AND t.run_after<=now()) OR (t.state IN ('publishing','committing') AND t.lease_until<=now()))
           ORDER BY t.created_at FOR UPDATE OF t SKIP LOCKED LIMIT 1`,[MAX_ATTEMPTS])).rows[0];
         if (!selected) return null;
@@ -129,8 +128,7 @@ export function createPublicationCommitStore({ query, tx, config }) {
     async beginPublicationCommit(task,receipt,validationResult=null) {
       return transaction(async client => {
         const row = await ownedLease(client,task);
-        if ((!row.intent.receipt && !row.candidate_live) ||
-          receipt.candidateHash!==row.candidate_hash || receipt.requestHash!==row.request_hash ||
+        if (receipt.candidateHash!==row.candidate_hash || receipt.requestHash!==row.request_hash ||
           canonicalJson(receipt.identity)!==canonicalJson(row.intent.identity) ||
           (row.intent.receipt && canonicalJson(row.intent.receipt)!==canonicalJson(receipt))) {
           throw taskError(409,'prepared_changed','Prepared publication no longer matches the accepted candidate.');
