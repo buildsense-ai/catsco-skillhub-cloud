@@ -4,6 +4,7 @@ import { generateId, JobStatus, nowIso, sha256, ValidationError } from "../domai
 import { createPresentationStore, ensurePresentationSchema } from "../presentations/store.js";
 import { createPresentationAssetStore } from "../presentations/asset-store.js";
 import { createPublicationTaskStore } from "../publication-tasks/store.js";
+import { createPublicVersionStore, adoptPublicVersion, comparePublicVersions } from "../publication-tasks/versions.js";
 
 let poolByUrl = new Map();
 
@@ -133,6 +134,7 @@ export function createStore(config) {
     ...createPresentationStore({ query, tx }),
     ...createPresentationAssetStore({ query, tx }),
     ...createPublicationTaskStore({ query, tx }),
+    ...createPublicVersionStore({ tx }),
     async listCatalogueVersions({ viewerUserId = null, viewerCatsCoUid = null, includeAll = false } = {}) {
       await ensureSimplifiedSchema();
       await ensurePresentationSchema(query);
@@ -799,6 +801,19 @@ export function createStore(config) {
     async createPackageVersion(packageVersion, submission) {
       await ensureSimplifiedSchema();
       return tx(async (client) => {
+        await adoptPublicVersion(client, { uploadId: submission.id, skillId: packageVersion.skillId,
+          ownerId: submission.submitterId, version: packageVersion.version });
+        const previous = (await client.query('SELECT * FROM skill_versions WHERE skill_id=$1 AND version=$2',
+          [packageVersion.skillId, packageVersion.version])).rows[0];
+        if (previous) {
+          if (previous.upload_id !== submission.id || previous.checksum_sha256 !== packageVersion.checksumSha256) {
+            throw new ValidationError('Publication version already has different content.', 'skillhub.publication_version_conflict', 409);
+          }
+          return mapPackageVersion(previous);
+        }
+        const current = (await client.query('SELECT latest_version FROM skills WHERE id=$1', [packageVersion.skillId])).rows[0];
+        const latestVersion = current?.latest_version && comparePublicVersions(current.latest_version, packageVersion.version) > 0
+          ? current.latest_version : packageVersion.version;
         await client.query(
           `INSERT INTO skills (id, name, display_name, owner_user_id, latest_version, status)
            VALUES ($1, $2, $3, $4, $5, 'published')
@@ -808,7 +823,7 @@ export function createStore(config) {
              latest_version = EXCLUDED.latest_version,
              status = 'published',
              updated_at = now()`,
-          [packageVersion.skillId, packageVersion.skillName, packageVersion.displayName, submission.submitterId, packageVersion.version]
+          [packageVersion.skillId, packageVersion.skillName, packageVersion.displayName, submission.submitterId, latestVersion]
         );
         await client.query(
           `INSERT INTO skill_versions
