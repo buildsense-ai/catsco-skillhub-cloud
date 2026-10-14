@@ -5,7 +5,7 @@ import { sha256 } from '../domain/index.js';
 import { canonicalJson } from '../signing/index.js';
 import { commitGitVersion, assertGitVersion } from '../git-storage/index.js';
 import { buildPublishedPackage } from '../packager/index.js';
-import { scanSkillPackage } from '../scanner/index.js';
+import { runPublishValidation } from '../publish-validation/runner.js';
 import { runPreparePublication } from './prepare.js';
 import { publicationTaskSettings } from './config.js';
 
@@ -53,8 +53,11 @@ export async function processPublicationCommit(config,dependencies={}) {
     const submission={id:identity.uploadId,submitterId:identity.ownerId,normalizedManifest:manifest};
     let checkpoint=intent.checkpoint;
     if (!checkpoint) {
-      const report=scanSkillPackage({files:gitFiles.map(f=>({path:f.path,buffer:f.contentBase64!==undefined?
-        Buffer.from(f.contentBase64,'base64'):Buffer.from(f.content)})),manifest,config});
+      const scan=await runPublishValidation({files:gitFiles,manifest},config.limits,{
+        workerUrl:new URL('./scan-worker.js',import.meta.url),timeoutMs:settings.execution.workerTimeoutMs,
+        memoryMb:settings.execution.workerMemoryMb,signal:controller.signal});
+      if (scan.status!==200) throw new Error('Advisory scanner unavailable');
+      const report=scan.report;
       const scanRun={id:intent.scan_id,skillId:identity.skillId,version:identity.version,uploadId:identity.uploadId,
         ...report,scannerVersion:'0.1.0',startedAt:identity.releaseAt,finishedAt:identity.releaseAt};
       const packageVersion=await buildPublishedPackage({config,submission,files,scanRun,

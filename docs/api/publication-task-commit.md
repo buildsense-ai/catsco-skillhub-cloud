@@ -75,6 +75,11 @@ not released until the spawned process closes. Legacy callers retain their
 existing no-signal behavior. The deadline is not a guarantee that filesystem or
 database operations are synchronously cancelled.
 
+Manifest derivation, final preparation and the advisory text scanner all run in
+isolated workers with the configured validation time/memory/abort budgets. The
+scanner annotates risks under existing policy; it is not execution of uploaded
+code or a comprehensive security audit.
+
 Immutable Git tags accept only the exact same tree. Git contains the prepared
 files plus canonical root manifest. The signed artifact contains exactly the
 validated manifest/files. A private checkpoint records the selected package and
