@@ -10,6 +10,10 @@ The new path is separately **default-off**. It does
 not connect CatsCo chats, authorize access to a Bot's workspace, install a Skill,
 run uploaded code, repair descriptions, or generate a Chinese guide.
 
+The next-stage [CatsCo entrypoint delegation contract](publication-entrypoint-delegation.md)
+is a review proposal for binding human/Bot/chat authority to these tasks. Its
+delegated operations and commit permits are not implemented by this API.
+
 ## HTTP contract
 
 With both `SKILLHUB_PUBLICATION_TASKS_ENABLED=true` and
