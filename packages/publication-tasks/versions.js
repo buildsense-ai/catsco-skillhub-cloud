@@ -7,7 +7,7 @@ function parts(version) {
   if (typeof version !== 'string' || version.length > 160 || !versionPattern.test(version)) throw conflict();
   return version.split(/[+-]/)[0].split('.').map(BigInt);
 }
-function compare(a, b) {
+export function comparePublicVersions(a, b) {
   const left = parts(a), right = parts(b);
   for (let i = 0; i < 3; i++) {
     if (left[i] !== right[i]) return left[i] > right[i] ? 1 : -1;
@@ -21,9 +21,9 @@ export function nextAvailablePublicVersion(requested, occupied) {
   for (const version of occupied) {
     // Corrupt historical data must not make an allocation silently unsafe.
     parts(version);
-    if (latest === null || compare(version, latest) > 0) latest = version;
+    if (latest === null || comparePublicVersions(version, latest) > 0) latest = version;
   }
-  if (latest === null || compare(requested, latest) > 0) return requested;
+  if (latest === null || comparePublicVersions(requested, latest) > 0) return requested;
   const [major, minor, patch] = parts(latest);
   const next = `${major}.${minor}.${patch + 1n}`;
   parts(next);

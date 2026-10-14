@@ -1,10 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { generateId, JobStatus, nowIso, sha256, ValidationError, compareSemver } from "../domain/index.js";
+import { generateId, JobStatus, nowIso, sha256, ValidationError } from "../domain/index.js";
 import { createPresentationStore, ensurePresentationSchema } from "../presentations/store.js";
 import { createPresentationAssetStore } from "../presentations/asset-store.js";
 import { createPublicationTaskStore } from "../publication-tasks/store.js";
-import { createPublicVersionStore, adoptPublicVersion } from "../publication-tasks/versions.js";
+import { createPublicVersionStore, adoptPublicVersion, comparePublicVersions } from "../publication-tasks/versions.js";
 
 let poolByUrl = new Map();
 
@@ -812,7 +812,7 @@ export function createStore(config) {
           return mapPackageVersion(previous);
         }
         const current = (await client.query('SELECT latest_version FROM skills WHERE id=$1', [packageVersion.skillId])).rows[0];
-        const latestVersion = current?.latest_version && compareSemver(current.latest_version, packageVersion.version) > 0
+        const latestVersion = current?.latest_version && comparePublicVersions(current.latest_version, packageVersion.version) > 0
           ? current.latest_version : packageVersion.version;
         await client.query(
           `INSERT INTO skills (id, name, display_name, owner_user_id, latest_version, status)

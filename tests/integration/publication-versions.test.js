@@ -7,7 +7,7 @@ import http from 'node:http';
 import { after, afterEach, before, test } from 'node:test';
 import { createStore, closePools } from '../../packages/database/store.js';
 import { loadConfig } from '../../packages/config/index.js';
-import { nextAvailablePublicVersion } from '../../packages/publication-tasks/versions.js';
+import { nextAvailablePublicVersion, comparePublicVersions } from '../../packages/publication-tasks/versions.js';
 import { createApiServer } from '../../apps/api/server.js';
 import { hashSessionToken } from '../../packages/auth/index.js';
 import { processJobs } from '../../packages/queue/index.js';
@@ -18,6 +18,7 @@ test('public version allocation includes reservations and uses exact integer ari
   assert.equal(nextAvailablePublicVersion('1.0.0', ['1.0.9','2.0.0','1.0.10']), '2.0.1');
   assert.equal(nextAvailablePublicVersion('3.0.0', ['2.0.0']), '3.0.0');
   assert.equal(nextAvailablePublicVersion('1.0.0', ['1.0.9007199254740992']), '1.0.9007199254740993');
+  assert.equal(comparePublicVersions('1.0.9007199254740993','1.0.9007199254740992'), 1);
   assert.equal(nextAvailablePublicVersion('1.0.0', ['1.0.01']), '1.0.2');
   assert.equal(nextAvailablePublicVersion('1.0.0', ['1.0.0-beta']), '1.0.1');
   assert.throws(() => nextAvailablePublicVersion('1.0.0', [null]), { status: 409 });
@@ -101,6 +102,25 @@ test('PostgreSQL owner of an existing skill cannot be replaced by a reservation'
   await assert.rejects(store.reservePublicVersion({ ...f, ownerId:'other' }), { status:409 });
   await store.reservePublicVersion(f);
   assert.equal((await store.query('SELECT visibility_scope FROM skills WHERE id=$1', [f.skillId])).rows[0].visibility_scope, 'private');
+});
+
+test('PostgreSQL package commit rechecks slots, preserves visibility and is checksum-idempotent', pg, async () => {
+  const f = await fixture();
+  await store.query("INSERT INTO skills (id,name,display_name,owner_user_id,visibility_scope) VALUES ($1,'fixture','Fixture',$2,'private')", [f.skillId,f.ownerId]);
+  await store.reservePublicVersion(f);
+  const submission = { id:f.uploadId, submitterId:f.ownerId };
+  const pkg = { id:`pkg_${randomUUID()}`, skillId:f.skillId, skillName:'fixture', displayName:'Fixture',
+    version:f.version, status:'published', packagePath:'/fixture', packageFile:'fixture', packageUrl:'https://example.invalid/fixture',
+    packageSize:1, checksumSha256:'fixture-checksum', payloadSha256:'fixture-payload', contentHash:'fixture-content',
+    signature:{}, manifest:{id:f.skillId,version:f.version}, submissionId:f.uploadId, scanRunId:null, publishedAt:new Date().toISOString() };
+  await assert.rejects(store.createPackageVersion(pkg, { ...submission, id:'other-upload' }), { status:409 });
+  await store.createPackageVersion(pkg, submission);
+  assert.equal((await store.createPackageVersion(pkg, submission)).id, pkg.id);
+  await assert.rejects(store.createPackageVersion({ ...pkg, checksumSha256:'different' }, submission), { status:409 });
+  assert.equal((await store.query('SELECT visibility_scope FROM skills WHERE id=$1',[f.skillId])).rows[0].visibility_scope,'private');
+  await store.yankPackageVersion(pkg.id);
+  assert.equal((await store.createPackageVersion(pkg, submission)).status,'yanked');
+  assert.equal((await store.query('SELECT count(*)::int AS n FROM skill_versions WHERE skill_id=$1',[f.skillId])).rows[0].n,1);
 });
 
 test('PostgreSQL concurrent HTTP shares embed reserved versions and worker replay does not revive yanked releases', pg, async () => {
