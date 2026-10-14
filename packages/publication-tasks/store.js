@@ -99,6 +99,7 @@ export function createPublicationTaskStore({ query, tx }) {
     },
     async cancelPublicationTask(ownerId, id) {
       const result = await tx(async client => {
+        await client.query('SELECT id FROM publication_tasks WHERE id=$1 AND owner_user_id=$2 FOR UPDATE',[id,ownerId]);
         const current = (await client.query(`SELECT ${columns} FROM publication_tasks WHERE id=$1 AND owner_user_id=$2 FOR UPDATE`,[id,ownerId])).rows[0];
         if (current && (current.commit_started || current.state==='published')) throw taskError(409,'commit_started','Publication has entered commit and cannot be cancelled.');
         return client.query(`UPDATE publication_tasks SET state='cancelled',candidate=NULL,candidate_bytes=0,

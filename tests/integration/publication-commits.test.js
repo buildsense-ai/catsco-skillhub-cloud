@@ -128,7 +128,7 @@ test('PostgreSQL publish gate leaves old route compatibility and new endpoint di
 
 test('PostgreSQL concurrent acceptance reserves one identity; further versions require confirmation',pg,async()=>{
   const f=await ready(await fixture());
-  const results=await Promise.all([enqueue(f),enqueue(f),enqueue(f)]);
+  const results=await Promise.all(Array.from({length:8},()=>enqueue(f)));
   assert.equal(results.filter(r=>!r.replayed).length,1);
   assert.equal((await store.query('SELECT * FROM publication_version_reservations WHERE owner_user_id=$1',[f.ownerId])).rowCount,1);
   const other=await ready(f,'new');

@@ -22,6 +22,7 @@ async function authority(client, ownerId, expected) {
 
 async function ownedLease(client, task) {
   await authority(client,task.owner_user_id,task.intent);
+  await client.query('SELECT id FROM publication_tasks WHERE id=$1 AND owner_user_id=$2 FOR UPDATE',[task.id,task.owner_user_id]);
   const row = (await client.query(`${privateSelect} WHERE t.id=$1 AND t.owner_user_id=$2
     AND t.lease_token=$3 AND t.lease_until>clock_timestamp()
     AND t.state IN ('publishing','committing') FOR UPDATE OF t`,[task.id,task.owner_user_id,task.lease_token])).rows[0];
@@ -56,6 +57,9 @@ export function createPublicationCommitStore({ query, tx, config }) {
     async enqueuePublicationCommit({ ownerId,id,candidateHash,confirmVersionPublish,manifest,profile }) {
       return transaction(async client => {
         const currentProfile = await authority(client,ownerId,profile ? {profile_id:profile.id,namespace:profile.namespace} : null);
+        // Lock separately, then take a NEW READ COMMITTED snapshot. A joined
+        // SELECT waiting on t can otherwise return new t but stale/null c.
+        await client.query('SELECT id FROM publication_tasks WHERE id=$1 AND owner_user_id=$2 FOR UPDATE',[id,ownerId]);
         const row = (await client.query(`${privateSelect} WHERE t.id=$1 AND t.owner_user_id=$2 FOR UPDATE OF t`,[id,ownerId])).rows[0];
         if (!row) throw taskError(404,'not_found','Publication task was not found.');
         if (row.candidate_hash !== candidateHash) throw taskError(409,'candidate_changed','Publication candidate changed.');
@@ -101,11 +105,12 @@ export function createPublicationCommitStore({ query, tx, config }) {
           (SELECT t.id FROM publication_tasks t JOIN publication_commits c ON c.task_id=t.id
            WHERE t.state IN ('publishing','committing') AND t.lease_until<=now() AND c.attempts>=$1
            LIMIT 100 FOR UPDATE OF t SKIP LOCKED)`,[MAX_ATTEMPTS]);
-        const row = (await client.query(`${privateSelect} WHERE c.attempts<$1 AND t.candidate IS NOT NULL
+        const selected = (await client.query(`${privateSelect} WHERE c.attempts<$1 AND t.candidate IS NOT NULL
           AND (t.expires_at>now() OR c.receipt IS NOT NULL)
           AND ((t.state='publish_queued' AND t.run_after<=now()) OR (t.state IN ('publishing','committing') AND t.lease_until<=now()))
           ORDER BY t.created_at FOR UPDATE OF t SKIP LOCKED LIMIT 1`,[MAX_ATTEMPTS])).rows[0];
-        if (!row) return null;
+        if (!selected) return null;
+        const row=(await client.query(`${privateSelect} WHERE t.id=$1`,[selected.id])).rows[0];
         await client.query('UPDATE publication_commits SET attempts=attempts+1 WHERE task_id=$1',[row.id]);
         const claimed = (await client.query(`UPDATE publication_tasks SET state=CASE WHEN $4 THEN 'committing' ELSE 'publishing' END,
           lease_token=$2,lease_until=now()+($3::bigint*interval '1 millisecond'),updated_at=now()
@@ -152,6 +157,7 @@ export function createPublicationCommitStore({ query, tx, config }) {
     async failPublicationCommit(task,{errorCode='skillhub.publication_task_publish_unavailable',result=null,retry=false}={}) {
       return transaction(async client => {
         // Do not require active authority to close a now-revoked attempt.
+        await client.query('SELECT id FROM publication_tasks WHERE id=$1 FOR UPDATE',[task.id]);
         const row = (await client.query(`${privateSelect} WHERE t.id=$1 AND t.lease_token=$2
           AND t.lease_until>clock_timestamp() AND t.state IN ('publishing','committing') FOR UPDATE OF t`,[task.id,task.lease_token])).rows[0];
         if (!row) return false;
