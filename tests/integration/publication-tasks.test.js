@@ -26,6 +26,7 @@ function request(port, route = endpoint, options = {}) {
       res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: JSON.parse(Buffer.concat(chunks).toString()) }));
     });
     req.on('error', reject);
+    for (const chunk of options.chunks ?? []) req.write(chunk);
     req.end(options.body);
   });
 }
@@ -119,6 +120,25 @@ test('replay returns the prior task without validation/storage and database erro
   }, { listPublicationTasks: async () => { throw new Error('secret-password'); } });
 });
 
+test('shared transport errors use task codes and static messages without forwarding private errors', async () => {
+  for (const [status, code, expected] of [
+    [413, 'request_too_large', 'too_large'],
+    [400, 'invalid_request', 'body_invalid'],
+    [503, 'unavailable', 'unavailable'],
+    [400, 'unknown', 'unavailable'],
+    [400, 'request_too_large', 'unavailable']
+  ]) {
+    await withServer({}, async port => {
+      const response = await request(port);
+      assert.equal(response.status, status);
+      assert.equal(response.body.error.code, `skillhub.publication_task_${expected}`);
+      assert.equal(JSON.stringify(response.body).includes('private transport detail'), false);
+    }, { listPublicationTasks: async () => {
+      throw Object.assign(new Error('private transport detail'), { status, code: `skillhub.publish_validation_${code}` });
+    } });
+  }
+});
+
 test('raw read limits and per-account quotas apply to task routes', async () => {
   await withServer({ publishValidationMaxRequestBytes: 128 }, async port => {
     assert.equal((await request(port, endpoint, { method: 'POST', body: raw })).status, 413);
@@ -126,6 +146,21 @@ test('raw read limits and per-account quotas apply to task routes', async () => 
   await withServer({ publishValidationRequestsPerMinute: 1 }, async port => {
     assert.equal((await request(port)).status, 200);
     assert.equal((await request(port)).status, 429);
+  });
+});
+
+test('declared and actual chunked overflow return the same task error without storing a task', async () => {
+  await withServer({ publishValidationMaxRequestBytes: 1024 }, async (port, rows) => {
+    const declared = await request(port, endpoint, { method: 'POST', headers: { ...headers, 'Content-Length': '5000' }, body: 'x'.repeat(5000) });
+    const chunked = await request(port, endpoint, { method: 'POST', headers: { ...headers, 'Transfer-Encoding': 'chunked' }, chunks: ['x'.repeat(2000), 'y'.repeat(2000)] });
+    for (const response of [declared, chunked]) {
+      assert.equal(response.status, 413);
+      assert.equal(response.body.error.code, 'skillhub.publication_task_too_large');
+      assert.equal(response.headers['cache-control'], 'no-store');
+    }
+    assert.deepEqual(chunked.body, declared.body);
+    assert.equal(rows.size, 0);
+    assert.equal((await request(port, endpoint, { method: 'POST', body: raw })).status, 202);
   });
 });
 
@@ -186,7 +221,9 @@ test('timed out authentication and database operations retain admission until th
       : { listPublicationTasks: async () => { if (block) await gate; return []; } };
     await withServer({ publishValidationMaxConcurrent:1,publishValidationReadTimeoutMs:30,publishValidationWorkerTimeoutMs:30 }, async port => {
       try {
-        assert.equal((await request(port)).status,503);
+        const timedOut = await request(port);
+        assert.equal(timedOut.status,503);
+        assert.equal(timedOut.body.error.code, 'skillhub.publication_task_unavailable');
         const second = await request(port);
         assert.equal(second.status,503); assert.match(second.body.error.code,/busy/);
       } finally { block=false; release(); }

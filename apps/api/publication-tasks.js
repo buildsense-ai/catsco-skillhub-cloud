@@ -72,6 +72,15 @@ export function createPublicationTasksHandler(config, store) {
       const result = await withAbort(work, controller.signal);
       reply(result.status, result.body);
     } catch (error) {
+      // Shared HTTP helpers speak P1's namespace. Map only known transport
+      // failures and use static messages, never forward an arbitrary exception.
+      if (error.status === 413 && error.code === 'skillhub.publish_validation_request_too_large') {
+        error = taskError(413, 'too_large', 'Request exceeds the byte limit.');
+      } else if (error.status === 400 && error.code === 'skillhub.publish_validation_invalid_request') {
+        error = taskError(400, 'body_invalid', 'Request could not be read.');
+      } else if (error.status === 503 && error.code === 'skillhub.publish_validation_unavailable') {
+        error = taskError(503, 'unavailable', 'Publication task request could not complete.');
+      }
       const status = [400,401,403,404,409,413,429,503].includes(error.status) ? error.status : 503;
       const safe = typeof error.code === 'string' && error.code.startsWith('skillhub.publication_task_');
       reply(status, { error: { code: safe ? error.code : status === 401 || status === 403 ? 'auth_error' : 'skillhub.publication_task_unavailable',

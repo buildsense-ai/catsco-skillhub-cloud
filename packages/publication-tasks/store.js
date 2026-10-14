@@ -38,6 +38,10 @@ export function createPublicationTaskStore({ query, tx }) {
     await client.query(`DELETE FROM publication_tasks WHERE id IN
       (SELECT id FROM publication_tasks WHERE purge_after<=now() LIMIT 500 FOR UPDATE SKIP LOCKED)`);
   }
+  async function getPublicationTask(ownerId, id) {
+    const result = await query(`SELECT ${columns} FROM publication_tasks WHERE id=$1 AND owner_user_id=$2 AND purge_after>now()`, [id, ownerId]);
+    return result.rowCount ? publicTask(result.rows[0]) : null;
+  }
   return {
     async findPublicationTaskForRequest(ownerId, requestKey, requestHash) {
       const result = await query(`SELECT ${columns} FROM publication_tasks WHERE owner_user_id=$1 AND request_key=$2 AND purge_after>now()`, [ownerId, requestKey]);
@@ -77,10 +81,7 @@ export function createPublicationTaskStore({ query, tx }) {
         return { task: publicTask(inserted.rows[0]), created: true };
       });
     },
-    async getPublicationTask(ownerId, id) {
-      const result = await query(`SELECT ${columns} FROM publication_tasks WHERE id=$1 AND owner_user_id=$2 AND purge_after>now()`, [id, ownerId]);
-      return result.rowCount ? publicTask(result.rows[0]) : null;
-    },
+    getPublicationTask,
     async listPublicationTasks(ownerId) {
       const result = await query(`SELECT ${columns} FROM publication_tasks WHERE owner_user_id=$1 AND purge_after>now()
         ORDER BY created_at DESC,id DESC LIMIT 100`, [ownerId]);
@@ -95,7 +96,7 @@ export function createPublicationTaskStore({ query, tx }) {
         WHERE id=$1 AND owner_user_id=$2 AND purge_after>now() AND expires_at>now() AND state<>'cancelled'
         RETURNING ${columns}`, [id, ownerId]));
       if (result.rowCount) return publicTask(result.rows[0]);
-      return this.getPublicationTask(ownerId, id);
+      return getPublicationTask(ownerId, id);
     },
     async maintainPublicationTasks() { return tx(maintain); },
     async claimPublicationTask(settings) {

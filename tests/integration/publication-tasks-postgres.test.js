@@ -93,8 +93,56 @@ test('PostgreSQL cancellation erases candidate and prevents a running worker fro
   assert.equal(await store.finishPublicationTask(claim, { result }), false);
   const row = (await store.query('SELECT candidate,candidate_bytes FROM publication_tasks WHERE id=$1', [claim.id])).rows[0];
   assert.equal(row.candidate, null); assert.equal(Number(row.candidate_bytes), 0);
-  assert.equal((await store.cancelPublicationTask(a, claim.id)).state, 'cancelled');
+  const { cancelPublicationTask } = store;
+  assert.equal((await cancelPublicationTask(a, claim.id)).state, 'cancelled');
   assert.equal(await store.claimPublicationTask(settings), null);
+});
+
+test('PostgreSQL HTTP cancellation is owner-only, idempotent and fences a running worker', pg, async () => {
+  const a = await owner(), b = await owner();
+  const tokens = [randomUUID(), randomUUID()];
+  for (const [i, userId] of [a, b].entries()) {
+    await store.createSession({ userId, tokenHash: hashSessionToken(tokens[i], config.session.secret), expiresAt: new Date(Date.now()+60000).toISOString() });
+  }
+  const created = await create(a);
+  const claim = await store.claimPublicationTask(settings);
+  assert.equal(claim.id, created.task.id);
+  const server = createApiServer(config, { store });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const call = token => new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port: server.address().port,
+      path: `/api/skills/publication-tasks/${claim.id}/cancel`, method: 'POST',
+      headers: { Cookie: `${config.session.cookieName}=${token}` } }, res => {
+      const chunks = [];
+      res.on('data', chunk => chunks.push(chunk));
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: JSON.parse(Buffer.concat(chunks)) }));
+    });
+    req.on('error', reject); req.end();
+  });
+  try {
+    const denied = await call(tokens[1]);
+    assert.equal(denied.status, 404);
+    assert.equal(denied.body.error.code, 'skillhub.publication_task_not_found');
+    assert.equal((await store.getPublicationTask(a, claim.id)).state, 'validating');
+    const cancelled = await call(tokens[0]);
+    assert.equal(cancelled.status, 200);
+    assert.equal(cancelled.headers['cache-control'], 'no-store');
+    assert.equal(cancelled.body.task.state, 'cancelled');
+    assert.equal(cancelled.body.task.candidateAvailable, false);
+    const repeated = await call(tokens[0]);
+    assert.equal(repeated.status, 200);
+    assert.deepEqual(repeated.body, cancelled.body);
+    assert.equal((await call(tokens[1])).status, 404);
+    const row = (await store.query('SELECT candidate,candidate_bytes,lease_token,lease_until FROM publication_tasks WHERE id=$1', [claim.id])).rows[0];
+    assert.equal(row.candidate, null);
+    assert.equal(Number(row.candidate_bytes), 0);
+    assert.equal(row.lease_token, null);
+    assert.equal(row.lease_until, null);
+    assert.equal(await store.finishPublicationTask(claim, { result }), false);
+    assert.equal(await store.claimPublicationTask(settings), null);
+  } finally {
+    server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
+  }
 });
 
 test('PostgreSQL inactive owner is checked at execution and completion', pg, async () => {
