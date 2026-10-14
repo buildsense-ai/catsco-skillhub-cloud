@@ -32,8 +32,18 @@ required. The namespace is derived with the existing publisher slug convention.
 
 Before reserving a version, the isolated draft worker runs the same read-only
 preparation routine using a throwaway server-side preview identity. Deterministic
-structural failures (such as nested `skill.json` that packaging would remove)
-return a bounded error without an intent or reservation. Preview material and
+structural checks include nested lowercase `skill.json` that packaging would
+remove, any case-insensitive `.git` path segment, case-folded duplicate paths,
+and file/directory conflicts. Preparation and Git storage share the path checker;
+preparation checks the final normalized paths **plus the generated root
+`skill.json`**. Thus root `SKILL.JSON`/`Skill.Json` cannot collide only after
+acceptance. Failures return bounded 422 codes (`publication_prepare_path_reserved`,
+`publication_prepare_path_duplicate`, `publication_prepare_path_collision`, or
+`publication_prepare_file_would_be_removed`, all prefixed with `skillhub.`)
+without an intent or reservation; candidates are not silently renamed or stripped.
+Ordinary root `skill.json` remains supported. Nested `SKILL.JSON` is retained if
+it neither conflicts nor gets removed by packaging. These are input-path checks,
+not a guarantee against all future Git or filesystem failures. Preview material and
 receipt are discarded, never returned or used to authorize publication. Final
 preparation still runs with the exact reserved version and release identity;
 changed rules, identity-dependent size limits, authority and infrastructure can

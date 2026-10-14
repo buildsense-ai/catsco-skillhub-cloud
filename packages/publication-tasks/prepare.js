@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { parseDocument } from 'yaml';
 import { publicManifest } from '../domain/index.js';
 import { normalizePackageFiles } from '../packager/files.js';
+import { validateGitSourcePaths } from '../git-storage/source-paths.js';
 import { decodeSource } from '../publish-validation/intake.js';
 import { effectiveLimits, parseStrictJson, readEntryFrontmatter, RULE_VERSION,
   validatePublishRequest } from '../publish-validation/index.js';
@@ -100,6 +101,21 @@ export function preparePublication(input, inputLimits = {}) {
   const entryBuffer = Buffer.from(`---${before.format === 'json' ? 'json' : ''}\n${header}\n---\n${before.body}`);
   const derived = files.map(file => file.path === entry ? { path: entry, buffer: entryBuffer } : file);
   const normalized = normalizePackageFiles(derived);
+  // Git stores the normalized payload PLUS a generated root manifest. Check
+  // exactly that path set, so case variants cannot collide only after 202.
+  try { validateGitSourcePaths([...normalized.map(file => file.path), 'skill.json'], limits); }
+  catch (error) {
+    if (error.code === 'git.source_path_reserved') {
+      return failure('path_reserved', 'Package paths cannot contain a .git segment (case-insensitive); remove Git metadata and retry.');
+    }
+    if (error.code === 'git.source_path_duplicate') {
+      return failure('path_duplicate', 'Package paths must be unique ignoring case, including the generated root skill.json.');
+    }
+    if (error.code === 'git.source_path_collision') {
+      return failure('path_collision', 'A final package path cannot be both a file and a directory, including the generated root skill.json.');
+    }
+    return failure('path_invalid', 'The final package contains a path that Git storage cannot accept.');
+  }
   // Validate exactly the manifest + bytes the signer will consume, after ALL
   // packager filtering/newline transformations, not the pre-transformation input.
   const finalRaw = JSON.stringify({ manifest, source: { type: 'files', files: normalized.map(file =>

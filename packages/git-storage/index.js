@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { validatePackagePath } from "../domain/index.js";
+import { validateGitSourcePaths } from './source-paths.js';
 
 const ZERO_OID = "0000000000000000000000000000000000000000";
 const repoQueues = new Map();
@@ -187,18 +187,9 @@ async function writeTree(config, repositoryPath, files) {
 
 function normalizeFiles(files, config) {
   if (!Array.isArray(files) || files.length === 0) throw new Error("Git version requires source files");
-  const seen = new Set();
-  return files.map((file) => {
-    const filePath = validatePackagePath(file.path, {
-      maxPathLength: Math.max(config.limits.maxPathLength, 1024),
-      maxPathDepth: Math.max(config.limits.maxPathDepth, 64)
-    });
-    if (filePath.split("/").some((part) => part.toLowerCase() === ".git")) {
-      throw new Error(`Git-reserved source path is not allowed: ${filePath}`);
-    }
-    const folded = filePath.toLocaleLowerCase("en-US");
-    if (seen.has(folded)) throw new Error(`Duplicate Git source path: ${filePath}`);
-    seen.add(folded);
+  const paths = validateGitSourcePaths(files.map(file => file.path), config.limits);
+  return files.map((file, index) => {
+    const filePath = paths[index];
     return {
       path: filePath,
       buffer: Buffer.isBuffer(file.buffer)

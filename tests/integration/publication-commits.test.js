@@ -16,6 +16,7 @@ import {runPreparePublication} from '../../packages/publication-tasks/prepare.js
 import {issueSigningKeyCertificate} from '../../packages/signing/index.js';
 import {commitGitVersion} from '../../packages/git-storage/index.js';
 import {runPublishValidation} from '../../packages/publish-validation/runner.js';
+import {publicationSource,publicationPathCases} from '../helpers/publication-paths.js';
 
 const databaseUrl=process.env.SKILLHUB_TEST_DATABASE_URL, pg={skip:!databaseUrl};
 const hash=value=>createHash('sha256').update(value).digest('hex');
@@ -51,10 +52,11 @@ async function fixture() {
   f.manifest={id:f.skillId,name:'sample',displayName:'Sample',description:'Useful',version:'1.0.0',entrypoints:{skillFile:'SKILL.md'}};
   return f;
 }
-async function ready(f,suffix='',extraFiles=[]) {
-  const candidate=Buffer.from(JSON.stringify({source:{type:'files',files:[{path:'SKILL.md',
-    content:`---\nname: sample\ndescription: Useful\n---\nPrivate instructions ${suffix}\n`},...extraFiles]}}));
+async function ready(f,suffix='',extraFiles=[],format='files',manifest) {
+  const candidate=Buffer.from(JSON.stringify({manifest,source:publicationSource([{path:'SKILL.md',
+    content:`---\nname: sample\ndescription: Useful\n---\nPrivate instructions ${suffix}\n`},...extraFiles],format)}));
   const result=validatePublishRequest(candidate.toString());
+  assert.equal(result.status,200,JSON.stringify(result.body));
   const saved=await store.createPublicationTask({ownerId:f.ownerId,requestKey:`key-${randomUUID()}`,requestHash:hash(candidate),
     candidateHash:result.body.validation.candidateHash,candidate,result,settings});
   await store.query("UPDATE publication_tasks SET state='ready',validation_result=$2 WHERE id=$1",[saved.task.id,JSON.stringify(result)]);
@@ -140,6 +142,33 @@ test('PostgreSQL HTTP preflight rejection creates no intent or reservation and l
     await processPublicationCommit(config,{store});
     assert.equal((await store.getPublicationTask(f.ownerId,fixed.id)).state,'published');
   });
+});
+
+for (const format of ['files','zip']) test(`PostgreSQL ${format} Git path preflight rejects before reservation while valid controls publish`,pg,async()=>{
+  for (const {paths,code} of publicationPathCases) {
+    const f=await ready(await fixture(),'',paths.map(p=>({path:p,content:'{}'})),format,{runtime:{platforms:['linux']}});
+    await withApi(f,async req=>{
+      const response=await req(`/api/skills/publication-tasks/${f.id}/publish`,{candidateHash:f.candidateHash,confirmVersionPublish:false});
+      assert.equal(response.status,code?422:202,JSON.stringify({paths,response}));
+      if (code) {
+        assert.equal(response.body.error.code,`skillhub.publication_prepare_${code}`);
+        assert.equal(JSON.stringify(response.body).includes('Private instructions'),false);
+        const row=await store.getPublicationRequest(f.ownerId,f.id);
+        assert.equal(row.state,'ready');assert.equal(row.intent,null);
+        assert.equal((await store.query('SELECT * FROM publication_version_reservations WHERE owner_user_id=$1',[f.ownerId])).rowCount,0);
+        assert.equal((await countVersions(f)).rowCount,0);
+        const fixed=await ready(f);
+        assert.equal((await req(`/api/skills/publication-tasks/${fixed.id}/publish`,{candidateHash:fixed.candidateHash,confirmVersionPublish:false})).status,202);
+        assert.equal((await store.getPublicationRequest(f.ownerId,fixed.id)).intent.identity.version,'1.0.0');
+        await processPublicationCommit(config,{store});
+        assert.equal((await store.getPublicationTask(f.ownerId,fixed.id)).state,'published');
+      } else {
+        await processPublicationCommit(config,{store});
+        assert.equal((await store.getPublicationTask(f.ownerId,f.id)).state,'published');
+      }
+      assert.equal((await countVersions(f)).rowCount,1);
+    });
+  }
 });
 
 for (const state of ['publish_queued','publishing','publish_failed']) test(`PostgreSQL accepted ${state} survives TTL and retention before receipt and resumes the reserved version`,pg,async()=>{

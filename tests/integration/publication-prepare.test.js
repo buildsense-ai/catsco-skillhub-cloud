@@ -11,6 +11,9 @@ import { buildPublishedPackage, computeSkillContentHash } from '../../packages/p
 import { normalizePackageFiles } from '../../packages/packager/files.js';
 import { loadConfig } from '../../packages/config/index.js';
 import { issueSigningKeyCertificate } from '../../packages/signing/index.js';
+import { runPublishValidation } from '../../packages/publish-validation/runner.js';
+import { commitGitVersion } from '../../packages/git-storage/index.js';
+import { publicationSource, publicationPathCases } from '../helpers/publication-paths.js';
 
 const text = '---\nname: sample\ndescription: Useful\n---\n# Private instructions\n';
 const identity = { ownerId: 'owner-1', uploadId: 'upl-1', skillId: 'alice/sample', version: '1.0.3', releaseAt: '2026-10-14T00:00:00.000Z' };
@@ -144,6 +147,49 @@ test('unsafe paths and files silently dropped by legacy packaging cannot pass st
   const result = preparePublication(nested);
   assert.equal(result.body.error.code,'skillhub.publication_prepare_file_would_be_removed');
   assert.equal(result.prepared,undefined);
+});
+
+for (const format of ['files','zip']) test(`${format} preflight and final preparation enforce the actual Git path set`,async()=>{
+  for (const {paths,code} of publicationPathCases) {
+    const files=[{path:'SKILL.md',content:text},...paths.map(p=>({path:p,content:'{}'}))];
+    // Linux-only candidates can pass the generic platform case checks. Git's
+    // stricter cross-platform path policy must still apply before reservation.
+    const rawJson=JSON.stringify({manifest:{runtime:{platforms:['linux']}},source:publicationSource(files,format)});
+    const check=validatePublishRequest(rawJson);assert.equal(check.status,200,JSON.stringify({paths,check}));
+    const context={rawJson,requestHash:sha(rawJson),candidateHash:check.body.validation.candidateHash,manifest,identity};
+    const final=await runPreparePublication(context);
+    const draft=await runPublishValidation({candidate:Buffer.from(rawJson),requestHash:context.requestHash,
+      candidateHash:context.candidateHash,namespace:'alice'}, {},{
+      workerUrl:new URL('../../packages/publication-tasks/draft-worker.js',import.meta.url)});
+    for (const result of [draft,final]) {
+      assert.equal(result.status,code?422:200,JSON.stringify({paths,result}));
+      if (code) {
+        assert.equal(result.body.error.code,`skillhub.publication_prepare_${code}`);
+        assert.equal(result.prepared,undefined);
+        assert.equal(JSON.stringify(result).includes('Private instructions'),false);
+      }
+    }
+    assert.equal(draft.prepared,undefined);
+    if (!code) for (const p of paths.filter(p=>p!=='skill.json')) {
+      assert.equal(Buffer.from(final.prepared.files.find(f=>f.path===p).contentBase64,'base64').toString(),'{}');
+    }
+  }
+});
+
+test('real Git writer shares reserved, folded duplicate and file-directory path guards',async()=>{
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'skillhub-path-guard-'));
+  try {
+    const config=loadConfig({root,nodeEnv:'test'});
+    let version=0;
+    for (const {paths,code} of publicationPathCases) {
+      if (code==='file_would_be_removed') continue; // Packager-specific, not a Git rule.
+      const files=normalizePackageFiles([{path:'SKILL.md',content:text},...paths.map(p=>({path:p,content:'{}'}))]);
+      const work=commitGitVersion({config,scope:'public',skillId:'alice/paths',version:`1.0.${version++}`,
+        files:[...files,{path:'skill.json',content:'{}'}],createdAt:identity.releaseAt});
+      if (code) await assert.rejects(work,{code:`git.source_${code}`});
+      else assert.ok((await work).commitSha);
+    }
+  } finally {await fs.rm(root,{recursive:true,force:true});}
 });
 
 test('final expanded material is validated with the same limits, including metadata growth', () => {
