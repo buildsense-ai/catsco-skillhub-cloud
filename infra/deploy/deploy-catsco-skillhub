@@ -47,18 +47,33 @@ previous_release=""
 switched=0
 nginx_switched=0
 
+require_service_manager() {
+  local version
+  # Query PID 1, not the systemctl binary version. "degraded" due to an
+  # unrelated unit is acceptable; an unresponsive manager is not.
+  if ! version="$(timeout --kill-after=2s 5s systemctl show --property=Version --value)" \
+    || [[ ! "$version" =~ ^[0-9] ]]; then
+    echo "Service manager is unresponsive; refusing deployment. Inspect systemd journal before retrying." >&2
+    return 1
+  fi
+}
+
 wait_for_health() {
-  local attempt
-  for attempt in $(seq 1 30); do
-    if systemctl is-active --quiet "${API_SERVICE}" \
-      && systemctl is-active --quiet "${WORKER_SERVICE}" \
-      && curl --fail --silent --show-error http://127.0.0.1:9000/healthz >/dev/null \
-      && curl --fail --silent --show-error http://127.0.0.1:9000/readyz >/dev/null; then
-      return 0
-    fi
-    sleep 2
-  done
-  return 1
+  require_service_manager || return 1
+  # Bound the entire loop as well as each probe. Thirty attempts alone does
+  # not bound time when systemctl or an HTTP request hangs.
+  timeout --kill-after=2s 90s bash -c '
+    for ((attempt=0; attempt<30; attempt++)); do
+      if timeout --kill-after=2s 5s systemctl is-active --quiet "$1" \
+        && timeout --kill-after=2s 5s systemctl is-active --quiet "$2" \
+        && curl --connect-timeout 2 --max-time 5 --fail --silent --show-error http://127.0.0.1:9000/healthz >/dev/null \
+        && curl --connect-timeout 2 --max-time 5 --fail --silent --show-error http://127.0.0.1:9000/readyz >/dev/null; then
+        exit 0
+      fi
+      sleep 2
+    done
+    exit 1
+  ' -- "${API_SERVICE}" "${WORKER_SERVICE}"
 }
 
 rollback_on_error() {
@@ -69,10 +84,10 @@ rollback_on_error() {
     echo "Deployment failed; restoring the previous Nginx configuration." >&2
     if [[ -f "${NGINX_BACKUP_PATH}" ]]; then
       install -o root -g root -m 0644 "${NGINX_BACKUP_PATH}" "${NGINX_CONFIG_PATH}"
-      nginx -t && systemctl reload nginx || true
+      nginx -t && timeout --kill-after=5s 30s systemctl reload nginx || true
     else
       rm -f -- "${NGINX_CONFIG_PATH}"
-      nginx -t && systemctl reload nginx || true
+      nginx -t && timeout --kill-after=5s 30s systemctl reload nginx || true
     fi
   fi
 
@@ -83,9 +98,10 @@ rollback_on_error() {
     echo "Deployment failed; restoring ${previous_release}." >&2
     ln -s "${previous_release}" "${ROLLBACK_LINK}"
     mv -Tf "${ROLLBACK_LINK}" "${APP_LINK}"
-    systemctl restart "${API_SERVICE}" "${WORKER_SERVICE}" || true
-    if ! wait_for_health; then
-      echo "Rollback completed, but the restored release is not healthy." >&2
+    if ! require_service_manager \
+      || ! timeout --kill-after=5s 90s systemctl restart "${API_SERVICE}" "${WORKER_SERVICE}" \
+      || ! wait_for_health; then
+      echo "Rollback link restored, but runtime recovery is UNVERIFIED; operator intervention required. A timed-out restart may still be queued in systemd." >&2
     fi
   fi
 
@@ -119,6 +135,9 @@ fi
 command -v nginx >/dev/null 2>&1 || { echo "Nginx is unavailable." >&2; exit 4; }
 [[ -f "${NGINX_CONFIG_PATH}" ]] || { echo "Nginx site configuration is missing at ${NGINX_CONFIG_PATH}." >&2; exit 4; }
 [[ ! -e "${RELEASE_PATH}" ]] || { echo "Release ${RELEASE_PATH} already exists." >&2; exit 4; }
+
+# Fail before dependency installation, migration or switching the app link.
+require_service_manager
 
 (
   cd "${STAGING_ROOT}"
@@ -165,10 +184,12 @@ chmod 640 "${INCOMING_PATH}/.deploy-commit"
 mv "${INCOMING_PATH}" "${RELEASE_PATH}"
 
 ln -s "${RELEASE_PATH}" "${NEXT_LINK}"
+# The manager may have failed while dependencies/migrations were running.
+require_service_manager
 mv -Tf "${NEXT_LINK}" "${APP_LINK}"
 switched=1
 
-systemctl restart "${API_SERVICE}" "${WORKER_SERVICE}"
+timeout --kill-after=5s 90s systemctl restart "${API_SERVICE}" "${WORKER_SERVICE}"
 wait_for_health
 
 if [[ ! -f "${RELEASE_PATH}/infra/nginx/skillhub.conf" ]]; then
@@ -179,7 +200,7 @@ cp -p -- "${NGINX_CONFIG_PATH}" "${NGINX_BACKUP_PATH}"
 nginx_switched=1
 install -o root -g root -m 0644 "${RELEASE_PATH}/infra/nginx/skillhub.conf" "${NGINX_CONFIG_PATH}"
 nginx -t
-systemctl reload nginx
+timeout --kill-after=5s 30s systemctl reload nginx
 
 switched=0
 nginx_switched=0

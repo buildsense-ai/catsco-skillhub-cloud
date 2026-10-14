@@ -73,6 +73,22 @@ SKILLHUB_PROD_KNOWN_HOSTS
 
 ## 回滚边界
 
+部署程序在安装依赖/迁移之前，以及切换 app 链接之前，使用限时的
+`systemctl show --property=Version --value` 查询运行中的 PID 1。不响应或空响应会阻止继续部署；
+不会仅因其他无关 unit 导致系统处于 `degraded` 就拒绝发布。
+重启服务最多等待 90 秒（随后最多 5 秒强制结束等待进程），reload 最多 30 秒；
+健康检查循环整体最多 90 秒（随后最多 2 秒清理），内部 systemctl/HTTP 探针也各有限时。
+结束 systemctl 客户端**不代表取消了服务管理器中已经入队的作业**。
+回滚时若无法验证运行状态，日志明确报告 `runtime recovery is UNVERIFIED`，
+不能将“链接已恢复”当成“服务已恢复”。此时先检查 PID 1、服务实际进程及版本，再决定是否重试。
+
+2026-10-13/14 生产主机曾在 fwupd 生命周期期间出现 PID 1 ABRT/SEGV 和
+`Freezing execution`；旧进程仍可响应 HTTP，但无法正常重启服务。部署脚本只能快速失败，
+不能修复操作系统。该云主机的处置是保存日志/配置、持久 mask `fwupd.service`、
+`fwupd-refresh.service`、`fwupd-refresh.timer`，定向更新 systemd/glibc 并重启验证。
+这些是管理员的主机维护操作，不应让普通发布脚本自动升级操作系统或重启服务器。
+不要不经评估将固件更新禁用策略套用到需要固件维护的物理主机。
+
 发布程序在切换前保存当前 release 路径。新版本重启或健康检查失败时，会自动把 `app` 链接
 切回旧 release 并再次启动服务。
 
