@@ -252,20 +252,29 @@ function yamlMetadata(text, limits) {
   return value;
 }
 
+// Callers must use the same bounded parser for semantic comparisons as for
+// validation. No alternate permissive YAML/JSON parsing in publication code.
+export function readEntryFrontmatter(file, inputLimits = {}) {
+  const limits = effectiveLimits(inputLimits);
+  const text = textFile(file).replace(/^\uFEFF/, '');
+  const match = text.match(/^---[ \t]*(?:(yaml|json)[ \t]*)?\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+  if (!match) throw new InputError('frontmatter.missing', '入口须包含受支持的 YAML 或 JSON frontmatter。');
+  const data = match[1] === 'json' ? parseStrictJson(match[2], limits) : yamlMetadata(match[2], limits);
+  if (!object(data)) throw new InputError('frontmatter.invalid', '入口 frontmatter 必须是字段对象。');
+  return { data, format: match[1] ?? 'yaml', header: match[2], body: text.slice(match[0].length) };
+}
+
 function frontmatter(file, entryIndex, limits, issues) {
   const location = safeLocation(file, entryIndex);
   let data;
   try {
-    const text = textFile(file).replace(/^\uFEFF/, "");
-    const match = text.match(/^---[ \t]*(?:(yaml|json)[ \t]*)?\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
-    if (!match) {
-      issues.push(issue("frontmatter.missing", "入口须包含受支持的 YAML 或 JSON frontmatter。", {location}));
-      return;
-    }
-    data = match[1] === "json" ? parseStrictJson(match[2], limits) : yamlMetadata(match[2], limits);
-    if (!object(data)) throw new InputError("frontmatter.invalid", "入口 frontmatter 必须是字段对象。");
+    data = readEntryFrontmatter(file, limits).data;
   } catch (error) {
     if (error instanceof InputError && error.status === 413) throw error;
+    if (error instanceof InputError && error.code === 'frontmatter.missing') {
+      issues.push(issue(error.code, error.message, {location}));
+      return;
+    }
     issues.push(issue(error instanceof InputError ? error.code : "frontmatter.invalid", "入口 frontmatter 无法安全解析，请检查语法、编码和预算。", {location}));
     return;
   }

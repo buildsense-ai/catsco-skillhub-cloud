@@ -1,5 +1,7 @@
-import path from "node:path";
 import { generateId, publicManifest, sha256 } from "../domain/index.js";
+import { computeSkillContentHash, normalizePackageFiles } from './files.js';
+import { assertPreparedPublication } from '../publication-tasks/prepare.js';
+export { computeSkillContentHash } from './files.js';
 import { artifactUrl, writeArtifactAtomic } from "../object-storage/index.js";
 import { canonicalJson, ensureSigningKey, signPayload } from "../signing/index.js";
 
@@ -10,14 +12,21 @@ export async function buildPublishedPackage({
   scanRun,
   reviewer,
   sourceVersion,
-  releaseAt
+  releaseAt,
+  preparedPublication
 }) {
   if (!sourceVersion?.commitSha || !sourceVersion?.treeSha || !sourceVersion?.tag) {
     throw new Error("Git source version is required before publishing");
   }
   const publishedAt = canonicalReleaseTime(releaseAt);
   const manifest = publicManifest(submission.normalizedManifest);
-  const normalizedFiles = normalizePackageFiles(files, manifest);
+  const normalizedFiles = normalizePackageFiles(files);
+  if (preparedPublication !== undefined) {
+    assertPreparedPublication(preparedPublication, { manifest, files: normalizedFiles,
+      identity: { ownerId: submission.submitterId, uploadId: submission.id,
+        skillId: manifest.id, version: manifest.version, releaseAt: publishedAt } },
+    { ...config.limits, ...config.publishValidation?.limits });
+  }
   const contentHash = computeSkillContentHash(files);
   const sbom = {
     schemaVersion: "1.0.0",
@@ -98,50 +107,4 @@ function canonicalReleaseTime(value) {
   const parsed = new Date(value || Date.now());
   if (!Number.isFinite(parsed.getTime())) throw new Error("Release timestamp is invalid");
   return parsed.toISOString();
-}
-
-export function computeSkillContentHash(files) {
-  const entries = sourceFileEntries(files).map((file) => {
-    const buffer = skillHashBuffer(file.path, file.buffer);
-    return { path: file.path, size: buffer.length, sha256: sha256(buffer) };
-  });
-  return sha256(JSON.stringify(entries));
-}
-
-function skillHashBuffer(filePath, buffer) {
-  if (filePath !== "SKILL.md") return buffer;
-  return Buffer.from(buffer.toString("utf8").replace(/\r\n/g, "\n"), "utf8");
-}
-
-function normalizePackageFiles(files, manifest) {
-  const byPath = new Map();
-  for (const file of sourceFileEntries(files)) {
-    const buffer = skillHashBuffer(file.path, file.buffer);
-    byPath.set(file.path, {
-      path: file.path,
-      size: buffer.length,
-      sha256: sha256(buffer),
-      contentBase64: buffer.toString("base64")
-    });
-  }
-  return [...byPath.values()].sort(compareFilePaths);
-}
-
-function sourceFileEntries(files) {
-  return files
-    .map((file) => ({ path: file.path, buffer: fileBuffer(file) }))
-    .filter((file) => path.basename(file.path) !== "skill.json")
-    .sort(compareFilePaths);
-}
-
-function compareFilePaths(left, right) {
-  const a = typeof left === "string" ? left : left.path;
-  const b = typeof right === "string" ? right : right.path;
-  return a < b ? -1 : a > b ? 1 : 0;
-}
-
-function fileBuffer(file) {
-  if (file.buffer) return file.buffer;
-  if (file.contentBase64) return Buffer.from(file.contentBase64, "base64");
-  return Buffer.from(String(file.content ?? ""), "utf8");
 }
