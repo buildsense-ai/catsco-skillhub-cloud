@@ -149,7 +149,8 @@ for (const state of ['publish_queued','publishing','publish_failed']) test(`Post
     const task=await store.claimPublicationCommit(settings);
     if (state==='publish_failed') await store.failPublicationCommit(task,{retry:false});
   }
-  await store.query("UPDATE publication_tasks SET expires_at=now()-interval '2 days',purge_after=now()-interval '1 day',lease_until=now()-interval '1 second' WHERE id=$1",[f.id]);
+  await store.query(`UPDATE publication_tasks SET expires_at=now()-interval '2 days',purge_after=now()-interval '1 day',
+    lease_until=CASE WHEN lease_token IS NOT NULL THEN now()-interval '1 second' ELSE NULL END WHERE id=$1`,[f.id]);
   await store.maintainPublicationTasks();
   assert.equal((await store.getPublicationTask(f.ownerId,f.id)).state,state);
   assert.equal((await store.listPublicationTasks(f.ownerId))[0].state,state);
