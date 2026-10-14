@@ -905,7 +905,7 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
         const latestHistorical = historicalVersions.length
           ? historicalVersions.reduce((best, item) => compareSemver(item.version, best.version) > 0 ? item : best, historicalVersions[0])
           : null;
-        const skillHub = latestPublished && body.confirmVersionPublish !== true
+        let skillHub = latestPublished && body.confirmVersionPublish !== true
           ? skillHubMetadataForPackageVersion(manifest, latestPublished)
           : skillHubMetadataForManifest(
               manifest,
@@ -914,7 +914,7 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
             );
         manifest = withSkillHubMetadata({ ...manifest, version: skillHub.version }, skillHub);
         normalizedFiles = upsertManifestFile(injectSkillHubMetadataFiles(files, manifest, skillHub), manifest);
-        const contentHash = computeSkillContentHash(normalizedFiles);
+        let contentHash = computeSkillContentHash(normalizedFiles);
         const existing =
           await store.findPackageBySkillContentHash(manifest.id, contentHash) ||
           await findExistingByCanonicalPackageContentHash(publishedVersions, contentHash);
@@ -939,6 +939,12 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
           return;
         }
         const uploadId = generateId("upl");
+        const reservation = await store.reservePublicVersion({ uploadId, skillId: manifest.id,
+          ownerId: actor.userId || actor.id, version: manifest.version });
+        skillHub = skillHubMetadataForManifest(manifest, reservation.version, skillHub.uploadedAt);
+        manifest = withSkillHubMetadata({ ...manifest, version: reservation.version }, skillHub);
+        normalizedFiles = upsertManifestFile(injectSkillHubMetadataFiles(files, manifest, skillHub), manifest);
+        contentHash = computeSkillContentHash(normalizedFiles);
         const inventory = await saveSubmissionFiles(config, uploadId, normalizedFiles, config.limits);
         await store.enqueueJob("publish_skill_version", {
           uploadId,

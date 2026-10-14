@@ -42,6 +42,16 @@ async function handlePublishSkillVersion(job, { config, store }) {
   if (!uploadId || !manifest?.id) throw new Error("Invalid publish_skill_version payload");
   const releaseAt = job.payload.releaseAt || job.createdAt || nowIso();
 
+  await store.adoptPublicVersion({ uploadId, skillId: manifest.id,
+    ownerId: publisher?.userId || publisher?.id, version: manifest.version });
+  // A retry after DB commit must not rebuild/resign an already committed
+  // release or revive a subsequently yanked version.
+  const committed = await store.findPackageBySkillVersion(manifest.id, manifest.version);
+  if (committed) {
+    if (committed.submissionId !== uploadId) throw new Error('Publication version belongs to another upload');
+    return;
+  }
+
   const files = await readSubmissionFiles(config, uploadId);
   const report = scanSkillPackage({ files, manifest, config });
   const scanRun = {
