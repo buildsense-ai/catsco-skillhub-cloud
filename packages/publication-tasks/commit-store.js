@@ -21,6 +21,8 @@ async function authority(client, ownerId, expected) {
 }
 
 async function ownedLease(client, task) {
+  await client.query("SET LOCAL lock_timeout='5s'");
+  await client.query("SET LOCAL statement_timeout='10s'");
   await authority(client,task.owner_user_id,task.intent);
   await client.query('SELECT id FROM publication_tasks WHERE id=$1 AND owner_user_id=$2 FOR UPDATE',[task.id,task.owner_user_id]);
   const row = (await client.query(`${privateSelect} WHERE t.id=$1 AND t.owner_user_id=$2
