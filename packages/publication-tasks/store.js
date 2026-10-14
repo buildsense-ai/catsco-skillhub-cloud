@@ -7,12 +7,14 @@ export function taskError(status, code, message) {
 
 // Never include candidate bytes, request keys, owner IDs or lease tokens in API output.
 export function publicTask(row, now = Date.now()) {
-  const expired = new Date(row.expires_at).getTime() <= now && row.state !== 'cancelled';
+  const commitStarted = Boolean(row.commit_started || row.intent?.receipt);
+  const expired = new Date(row.expires_at).getTime() <= now && !commitStarted && !['cancelled','published'].includes(row.state);
   return {
     id: row.id, state: expired ? 'expired' : row.state,
     candidateHash: row.candidate_hash, candidateAvailable: !expired && row.candidate_bytes > 0,
     validation: row.validation_result ?? row.intake_result,
     errorCode: expired ? null : row.error_code,
+    ...(row.publication_result ? {publication:row.publication_result} : {}),
     createdAt: new Date(row.created_at).toISOString(), updatedAt: new Date(row.updated_at).toISOString(),
     expiresAt: new Date(row.expires_at).toISOString(), purgeAfter: new Date(row.purge_after).toISOString(),
     capabilities: { publish: false, repair: false }
@@ -28,23 +30,27 @@ export function createPublicationTaskStore({ query, tx }) {
   });
   // Metadata queries intentionally do not materialize BYTEA candidates.
   const columns = `id, owner_user_id, request_key, request_hash, candidate_hash, candidate_bytes,
-    state, intake_result, validation_result, error_code, created_at, updated_at, expires_at, purge_after`;
+    state, intake_result, validation_result, error_code, publication_result, created_at, updated_at, expires_at, purge_after,
+    EXISTS(SELECT 1 FROM publication_commits c WHERE c.task_id=publication_tasks.id AND c.receipt IS NOT NULL) AS commit_started`;
+  const retained = `(purge_after>now() OR (state<>'published' AND EXISTS
+    (SELECT 1 FROM publication_commits c WHERE c.task_id=publication_tasks.id AND c.receipt IS NOT NULL)))`;
   async function maintain(client) {
     await client.query(`UPDATE publication_tasks SET candidate=NULL, candidate_bytes=0,
       state=CASE WHEN state='cancelled' THEN state ELSE 'expired' END,
       lease_token=NULL, lease_until=NULL, updated_at=now()
       WHERE id IN (SELECT id FROM publication_tasks WHERE expires_at<=now()
-        AND (candidate IS NOT NULL OR state NOT IN ('expired','cancelled')) LIMIT 500 FOR UPDATE SKIP LOCKED)`);
+        AND NOT EXISTS(SELECT 1 FROM publication_commits c WHERE c.task_id=publication_tasks.id AND c.receipt IS NOT NULL)
+        AND (candidate IS NOT NULL OR state NOT IN ('expired','cancelled','published')) LIMIT 500 FOR UPDATE SKIP LOCKED)`);
     await client.query(`DELETE FROM publication_tasks WHERE id IN
-      (SELECT id FROM publication_tasks WHERE purge_after<=now() LIMIT 500 FOR UPDATE SKIP LOCKED)`);
+      (SELECT id FROM publication_tasks WHERE purge_after<=now() AND NOT ${retained} LIMIT 500 FOR UPDATE SKIP LOCKED)`);
   }
   async function getPublicationTask(ownerId, id) {
-    const result = await query(`SELECT ${columns} FROM publication_tasks WHERE id=$1 AND owner_user_id=$2 AND purge_after>now()`, [id, ownerId]);
+    const result = await query(`SELECT ${columns} FROM publication_tasks WHERE id=$1 AND owner_user_id=$2 AND ${retained}`, [id, ownerId]);
     return result.rowCount ? publicTask(result.rows[0]) : null;
   }
   return {
     async findPublicationTaskForRequest(ownerId, requestKey, requestHash) {
-      const result = await query(`SELECT ${columns} FROM publication_tasks WHERE owner_user_id=$1 AND request_key=$2 AND purge_after>now()`, [ownerId, requestKey]);
+      const result = await query(`SELECT ${columns} FROM publication_tasks WHERE owner_user_id=$1 AND request_key=$2 AND ${retained}`, [ownerId, requestKey]);
       if (!result.rowCount) return null;
       if (result.rows[0].request_hash !== requestHash) throw taskError(409, 'request_conflict', 'Request key was already used for different content.');
       return publicTask(result.rows[0]);
@@ -64,8 +70,8 @@ export function createPublicationTaskStore({ query, tx }) {
         }
         const usage = (await client.query(`SELECT count(*)::int AS total_count,
           count(*) FILTER (WHERE owner_user_id=$1)::int AS owner_count,
-          COALESCE(sum(candidate_bytes),0)::bigint AS total_bytes,
-          COALESCE(sum(candidate_bytes) FILTER (WHERE owner_user_id=$1),0)::bigint AS owner_bytes
+          COALESCE(sum(candidate_bytes+commit_bytes),0)::bigint AS total_bytes,
+          COALESCE(sum(candidate_bytes+commit_bytes) FILTER (WHERE owner_user_id=$1),0)::bigint AS owner_bytes
           FROM publication_tasks`, [ownerId])).rows[0];
         const size = candidate?.length ?? 0;
         if (usage.total_count >= settings.maxTasks || usage.owner_count >= settings.maxTasksPerOwner ||
@@ -83,7 +89,7 @@ export function createPublicationTaskStore({ query, tx }) {
     },
     getPublicationTask,
     async listPublicationTasks(ownerId) {
-      const result = await query(`SELECT ${columns} FROM publication_tasks WHERE owner_user_id=$1 AND purge_after>now()
+      const result = await query(`SELECT ${columns} FROM publication_tasks WHERE owner_user_id=$1 AND ${retained}
         ORDER BY created_at DESC,id DESC LIMIT 100`, [ownerId]);
       return result.rows.map(row => {
         const { validation, ...summary } = publicTask(row);
@@ -91,10 +97,14 @@ export function createPublicationTaskStore({ query, tx }) {
       });
     },
     async cancelPublicationTask(ownerId, id) {
-      const result = await tx(client => client.query(`UPDATE publication_tasks SET state='cancelled',candidate=NULL,candidate_bytes=0,
+      const result = await tx(async client => {
+        const current = (await client.query(`SELECT ${columns} FROM publication_tasks WHERE id=$1 AND owner_user_id=$2 FOR UPDATE`,[id,ownerId])).rows[0];
+        if (current && (current.commit_started || current.state==='published')) throw taskError(409,'commit_started','Publication has entered commit and cannot be cancelled.');
+        return client.query(`UPDATE publication_tasks SET state='cancelled',candidate=NULL,candidate_bytes=0,
         lease_token=NULL,lease_until=NULL,error_code=NULL,updated_at=now()
         WHERE id=$1 AND owner_user_id=$2 AND purge_after>now() AND expires_at>now() AND state<>'cancelled'
-        RETURNING ${columns}`, [id, ownerId]));
+        RETURNING ${columns}`, [id, ownerId]);
+      });
       if (result.rowCount) return publicTask(result.rows[0]);
       return getPublicationTask(ownerId, id);
     },

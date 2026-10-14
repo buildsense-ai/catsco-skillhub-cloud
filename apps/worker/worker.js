@@ -4,6 +4,7 @@ import { ensureRuntimeDirectories } from "../../packages/database/store.js";
 import { processJobs, processNextJob } from "../../packages/queue/index.js";
 import { createStore } from "../../packages/database/store.js";
 import { processPublicationTask } from "../../packages/publication-tasks/worker.js";
+import { processPublicationCommit } from '../../packages/publication-tasks/commit-worker.js';
 import { publicationTaskSettings } from "../../packages/publication-tasks/config.js";
 
 export async function startWorker(config = loadConfig(), { once = false } = {}) {
@@ -19,7 +20,9 @@ export async function startWorker(config = loadConfig(), { once = false } = {}) 
         await taskStore.maintainPublicationTasks();
         lastTaskMaintenance = Date.now();
       }
-      return await processPublicationTask(config, { store: taskStore });
+      const validated = await processPublicationTask(config, { store: taskStore });
+      const published = await processPublicationCommit(config, { store: taskStore });
+      return published ?? validated;
     } catch {
       // Optional task storage failure must not stop the legacy publishing worker.
       console.warn('Publication task processing is unavailable.');
