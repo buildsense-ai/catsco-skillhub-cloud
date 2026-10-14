@@ -21,6 +21,7 @@ export async function commitGitVersion({
   createdAt,
   signal
 }) {
+  signal?.throwIfAborted();
   const repository = gitRepository(config, scope, skillId);
   const tag = gitVersionTag(version);
   return gitSignals.run(signal, () => withRepositoryQueue(repository.path, () => withRepositoryFileLock(
@@ -147,12 +148,17 @@ async function ensureBareRepository(repositoryPath) {
     if (error?.code !== "ENOENT") throw error;
   }
   await fs.mkdir(path.dirname(repositoryPath), { recursive: true, mode: 0o700 });
-  const initialized = await runGit(null, ["init", "--bare", "--initial-branch=main", repositoryPath], {
-    allowExitCodes: [0, 128]
-  });
-  if (initialized.code !== 0) {
-    const bare = await runGit(repositoryPath, ["rev-parse", "--is-bare-repository"]);
-    if (bare.stdout.trim() !== "true") throw new Error(`Unable to initialize Git repository: ${repositoryPath}`);
+  // Initializing directly at the permanent path can leave an invalid directory
+  // if Git is killed halfway through init. Publish the initialized directory
+  // atomically under our repository lock; do not try to repair arbitrary
+  // existing/corrupt repositories by overwriting their metadata.
+  const staging=await fs.mkdtemp(path.join(path.dirname(repositoryPath),'.git-init-'));
+  try {
+    await runGit(null,['init','--bare','--initial-branch=main',staging]);
+    gitSignals.getStore()?.throwIfAborted();
+    await fs.rename(staging,repositoryPath);
+  } finally {
+    await fs.rm(staging,{recursive:true,force:true});
   }
 }
 
