@@ -93,6 +93,10 @@ test('publication Git abort closes its writer and a later attempt can acquire th
     const args={config:localConfig,scope:'public',skillId:'abort/sample',version:'1.0.0',
       files:[{path:'SKILL.md',content:'sample'}],createdAt:'2026-10-14T00:00:00.000Z'};
     await assert.rejects(commitGitVersion({...args,signal:controller.signal}),{name:'AbortError'});
+    const running=new AbortController();
+    const timer=setTimeout(()=>running.abort(),1);
+    try {await assert.rejects(commitGitVersion({...args,signal:running.signal}),{name:'AbortError'});}
+    finally {clearTimeout(timer);}
     assert.ok((await commitGitVersion(args)).commitSha);
   } finally {await fs.rm(localRoot,{recursive:true,force:true});}
 });
