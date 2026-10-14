@@ -39,7 +39,7 @@ export async function processPublicationCommit(config,dependencies={}) {
     }
     fence();
     const {manifest,files,receipt}=prepared.prepared;
-    await store.beginPublicationCommit(task,receipt);
+    await store.beginPublicationCommit(task,receipt,{status:prepared.status,body:prepared.body});
     await store.adoptPublicVersion({uploadId:identity.uploadId,ownerId:identity.ownerId,skillId:identity.skillId,version:identity.version});
     // Repeated/stale workers can write only identical immutable material. Lease
     // fencing protects checkpoints/catalogue state, not in-flight file IO.

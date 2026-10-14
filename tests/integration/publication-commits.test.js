@@ -274,7 +274,9 @@ test('PostgreSQL failed commit remains retryable after candidate TTL and cannot 
   await store.query("UPDATE publication_tasks SET expires_at=now()-interval '1 day' WHERE id=$1",[f.id]);
   await store.query("UPDATE publisher_profiles SET status='active' WHERE user_id=$1",[f.ownerId]);
   assert.equal((await enqueue(f)).task.state,'publish_queued');
+  await store.query("UPDATE publication_tasks SET validation_result=$2 WHERE id=$1",[f.id,JSON.stringify({status:503,body:{error:{code:'previous_failure'}}})]);
   await processPublicationCommit(config,{store});
+  assert.equal((await store.getPublicationTask(f.ownerId,f.id)).validation.status,200);
   const version=(await countVersions(f)).rows[0];
   assert.ok(version);
   await store.query("UPDATE skill_versions SET status='yanked',yanked_at=now() WHERE id=$1",[version.id]);

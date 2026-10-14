@@ -126,7 +126,7 @@ export function createPublicationCommitStore({ query, tx, config }) {
       [task.id,task.lease_token,settings.leaseMs]);
       return result.rowCount===1;
     },
-    async beginPublicationCommit(task,receipt) {
+    async beginPublicationCommit(task,receipt,validationResult=null) {
       return transaction(async client => {
         const row = await ownedLease(client,task);
         if ((!row.intent.receipt && !row.candidate_live) ||
@@ -137,7 +137,10 @@ export function createPublicationCommitStore({ query, tx, config }) {
         }
         await client.query('UPDATE publication_commits SET receipt=$2 WHERE task_id=$1',[task.id,JSON.stringify(receipt)]);
         await charge(client,task.id,task.owner_user_id);
-        const updated=await client.query("UPDATE publication_tasks SET state='committing',updated_at=now() WHERE id=$1 AND lease_token=$2 AND lease_until>clock_timestamp()",[task.id,task.lease_token]);
+        const updated=await client.query(`UPDATE publication_tasks SET state='committing',error_code=NULL,
+          validation_result=COALESCE($3,validation_result),updated_at=now()
+          WHERE id=$1 AND lease_token=$2 AND lease_until>clock_timestamp()`,
+        [task.id,task.lease_token,validationResult?JSON.stringify(validationResult):null]);
         if (!updated.rowCount) throw lost();
       });
     },
