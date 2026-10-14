@@ -17,17 +17,22 @@ export async function processPublicationCommit(config,dependencies={}) {
   const store=dependencies.store ?? createStore(config);
   const task=await store.claimPublicationCommit(settings);
   if (!task) return null;
+  const controller=new AbortController();
+  const deadline=setTimeout(()=>controller.abort(),settings.commitTimeoutMs);
   let alive=true,pending=null;
   const heartbeat=setInterval(()=>{
     if (pending) return;
-    pending=store.renewPublicationCommit(task,settings).then(ok=>{if (!ok) alive=false;},()=>{alive=false;}).finally(()=>{pending=null;});
+    pending=store.renewPublicationCommit(task,settings).then(ok=>{if (!ok) {alive=false;controller.abort();}},()=>{alive=false;controller.abort();}).finally(()=>{pending=null;});
   },Math.max(100,Math.floor(settings.leaseMs/3)));
-  const fence=()=>{if (!alive) throw Object.assign(new Error('Lease lost'),{code:'skillhub.publication_task_lease_lost'});};
+  const fence=()=>{
+    if (!alive) throw Object.assign(new Error('Lease lost'),{code:'skillhub.publication_task_lease_lost'});
+    if (controller.signal.aborted) throw new Error('Publication deadline exceeded');
+  };
   try {
     const intent=task.intent, identity=intent.identity;
     const prepared=await runPreparePublication({rawJson:task.candidate,candidateHash:task.candidate_hash,
       requestHash:task.request_hash,manifest:intent.manifest,identity},settings.limits,{
-      timeoutMs:settings.execution.workerTimeoutMs,memoryMb:settings.execution.workerMemoryMb});
+      timeoutMs:settings.execution.workerTimeoutMs,memoryMb:settings.execution.workerMemoryMb,signal:controller.signal});
     if (prepared.status!==200) {
       await store.failPublicationCommit(task,{errorCode:'skillhub.publication_task_final_validation_failed',result:prepared,retry:prepared.status>=500});
       return {taskId:task.id};
@@ -41,8 +46,8 @@ export async function processPublicationCommit(config,dependencies={}) {
     const gitFiles=[...files,{path:'skill.json',content:canonicalJson(manifest)+'\n'}];
     const sourceVersion=await commitGitVersion({config,scope:'public',skillId:identity.skillId,
       version:identity.version,files:gitFiles,createdAt:identity.releaseAt,
-      metadata:{uploadId:identity.uploadId,materialHash:receipt.materialHash}});
-    await assertGitVersion({config,scope:'public',skillId:identity.skillId,...sourceVersion});
+      metadata:{uploadId:identity.uploadId,materialHash:receipt.materialHash},signal:controller.signal});
+    await assertGitVersion({config,scope:'public',skillId:identity.skillId,...sourceVersion,signal:controller.signal});
     await dependencies.afterGit?.(task,sourceVersion);
     fence();
     const submission={id:identity.uploadId,submitterId:identity.ownerId,normalizedManifest:manifest};
@@ -77,6 +82,7 @@ export async function processPublicationCommit(config,dependencies={}) {
     await store.failPublicationCommit(task,{errorCode:codes.includes(error.code)?error.code:'skillhub.publication_task_publish_unavailable',
       retry:!codes.includes(error.code)});
   } finally {
+    clearTimeout(deadline);
     clearInterval(heartbeat);
     if (pending) await pending;
   }

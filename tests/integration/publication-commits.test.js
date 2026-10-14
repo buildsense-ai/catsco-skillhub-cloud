@@ -14,6 +14,7 @@ import {processPublicationCommit} from '../../packages/publication-tasks/commit-
 import {publicTask} from '../../packages/publication-tasks/store.js';
 import {runPreparePublication} from '../../packages/publication-tasks/prepare.js';
 import {issueSigningKeyCertificate} from '../../packages/signing/index.js';
+import {commitGitVersion} from '../../packages/git-storage/index.js';
 
 const databaseUrl=process.env.SKILLHUB_TEST_DATABASE_URL, pg={skip:!databaseUrl};
 const hash=value=>createHash('sha256').update(value).digest('hex');
@@ -82,6 +83,18 @@ test('publication is separately default-off and does not reinterpret completed t
   assert.equal(publicTask(row).state,'published');
   assert.equal(publicTask({...row,state:'committing',commit_started:true}).state,'committing');
   assert.equal(publicTask({...row,state:'ready',publication_result:null}).state,'expired');
+});
+
+test('publication Git abort closes its writer and a later attempt can acquire the repository lock',async()=>{
+  const localRoot=await fs.mkdtemp(path.join(os.tmpdir(),'skillhub-abort-'));
+  try {
+    const localConfig=loadConfig({root:localRoot,nodeEnv:'test'});
+    const controller=new AbortController();controller.abort();
+    const args={config:localConfig,scope:'public',skillId:'abort/sample',version:'1.0.0',
+      files:[{path:'SKILL.md',content:'sample'}],createdAt:'2026-10-14T00:00:00.000Z'};
+    await assert.rejects(commitGitVersion({...args,signal:controller.signal}),{name:'AbortError'});
+    assert.ok((await commitGitVersion(args)).commitSha);
+  } finally {await fs.rm(localRoot,{recursive:true,force:true});}
 });
 
 test('PostgreSQL HTTP publish authenticates, derives namespace, is idempotent, and returns actual durable publication',pg,async()=>{
@@ -218,4 +231,49 @@ test('PostgreSQL private intent metadata participates in the candidate storage q
   await assert.rejects(limited.enqueuePublicationCommit({...f,confirmVersionPublish:false}),{code:'skillhub.publication_task_storage_limit'});
   assert.equal((await store.getPublicationTask(f.ownerId,f.id)).state,'ready');
   assert.equal((await store.query('SELECT * FROM publication_version_reservations WHERE owner_user_id=$1',[f.ownerId])).rowCount,0);
+});
+
+test('PostgreSQL a different account cannot publish another task, including accepted intents',pg,async()=>{
+  const f=await ready(await fixture()),other=await fixture();
+  for (const accepted of [false,true]) {
+    if (accepted) await enqueue(f);
+    await withApi(other,async req=>{
+      const response=await req(`/api/skills/publication-tasks/${f.id}/publish`,{candidateHash:f.candidateHash,confirmVersionPublish:false});
+      assert.equal(response.status,404);assert.equal(JSON.stringify(response.body).includes(f.candidateHash),false);
+    });
+  }
+});
+
+test('PostgreSQL deactivated publisher and changed bytes fail before Git, without leaking the private candidate',pg,async()=>{
+  const f=await ready(await fixture());await enqueue(f);
+  await store.query("UPDATE publisher_profiles SET status='inactive' WHERE user_id=$1",[f.ownerId]);
+  await processPublicationCommit(config,{store});
+  assert.equal((await store.getPublicationTask(f.ownerId,f.id)).errorCode,'skillhub.publication_task_publisher_changed');
+  assert.equal((await store.getPublicationRequest(f.ownerId,f.id)).intent.receipt,null);
+  await store.query("UPDATE publisher_profiles SET status='active' WHERE user_id=$1",[f.ownerId]);await enqueue(f);
+  // Preserve storage consistency but corrupt the exact accepted request.
+  await store.query("UPDATE publication_tasks SET candidate=candidate||decode('20','hex'),candidate_bytes=candidate_bytes+1 WHERE id=$1",[f.id]);
+  await processPublicationCommit(config,{store});
+  const result=await store.getPublicationTask(f.ownerId,f.id);
+  assert.equal(result.state,'publish_failed');assert.equal(result.validation.status,409);
+  assert.equal(JSON.stringify(result).includes('Private instructions'),false);
+  assert.equal((await store.getPublicationRequest(f.ownerId,f.id)).intent.receipt,null);
+  assert.equal((await countVersions(f)).rowCount,0);
+});
+
+test('PostgreSQL failed commit remains retryable after candidate TTL and cannot revive a yanked version',pg,async()=>{
+  const f=await ready(await fixture());await enqueue(f);
+  await processPublicationCommit(config,{store,beforeComplete:async()=>{
+    await store.query("UPDATE publisher_profiles SET status='inactive' WHERE user_id=$1",[f.ownerId]);
+  }});
+  await store.query("UPDATE publication_tasks SET expires_at=now()-interval '1 day' WHERE id=$1",[f.id]);
+  await store.query("UPDATE publisher_profiles SET status='active' WHERE user_id=$1",[f.ownerId]);
+  assert.equal((await enqueue(f)).task.state,'publish_queued');
+  await processPublicationCommit(config,{store});
+  const version=(await countVersions(f)).rows[0];
+  assert.ok(version);
+  await store.query("UPDATE skill_versions SET status='yanked',yanked_at=now() WHERE id=$1",[version.id]);
+  assert.equal((await enqueue(f)).task.state,'published');
+  assert.equal(await processPublicationCommit(config,{store}),null);
+  assert.equal((await countVersions(f)).rows[0].status,'yanked');
 });

@@ -20,6 +20,11 @@ export function createPublicationTasksHandler(config, store) {
       if (res.destroyed || res.writableEnded) return;
       if (!req.complete) res.setHeader('Connection', 'close');
       res.setHeader('Cache-Control', 'no-store');
+      if (config.publicationPublishing?.enabled) {
+        for (const task of [body?.task,...(body?.tasks ?? [])].filter(Boolean)) {
+          task.capabilities={...task.capabilities,publish:['ready','publish_failed'].includes(task.state)};
+        }
+      }
       sendJson(res, status, body);
     };
     if (!config.publicationTasks?.enabled) { reply(404, { error: { code: 'not_found', message: 'Publication tasks are disabled.' } }); return true; }

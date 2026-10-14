@@ -66,7 +66,7 @@ export function createPublicationCommitStore({ query, tx, config }) {
             await client.query("UPDATE publication_commits SET attempts=0 WHERE task_id=$1",[id]);
             const resumed = await client.query(`UPDATE publication_tasks SET state='publish_queued',error_code=NULL,
               run_after=now(),lease_token=NULL,lease_until=NULL,updated_at=now() WHERE id=$1 RETURNING *`,[id]);
-            return {task:publicTask(resumed.rows[0]),replayed:true};
+            return {task:publicTask({...resumed.rows[0],intent:row.intent}),replayed:true};
           }
           return {task:publicTask(row),replayed:true};
         }
@@ -130,7 +130,8 @@ export function createPublicationCommitStore({ query, tx, config }) {
         }
         await client.query('UPDATE publication_commits SET receipt=$2 WHERE task_id=$1',[task.id,JSON.stringify(receipt)]);
         await charge(client,task.id,task.owner_user_id);
-        await client.query("UPDATE publication_tasks SET state='committing',updated_at=now() WHERE id=$1",[task.id]);
+        const updated=await client.query("UPDATE publication_tasks SET state='committing',updated_at=now() WHERE id=$1 AND lease_token=$2 AND lease_until>clock_timestamp()",[task.id,task.lease_token]);
+        if (!updated.rowCount) throw lost();
       });
     },
     async checkpointPublicationCommit(task,checkpoint) {
@@ -143,6 +144,8 @@ export function createPublicationCommitStore({ query, tx, config }) {
           p.skillId!==i.skillId || p.version!==i.version || p.publishedAt!==i.releaseAt) throw lost();
         await client.query('UPDATE publication_commits SET checkpoint=$2 WHERE task_id=$1',[task.id,JSON.stringify(checkpoint)]);
         await charge(client,task.id,task.owner_user_id);
+        const live=await client.query('SELECT id FROM publication_tasks WHERE id=$1 AND lease_token=$2 AND lease_until>clock_timestamp()',[task.id,task.lease_token]);
+        if (!live.rowCount) throw lost();
         return checkpoint;
       });
     },

@@ -41,6 +41,7 @@ export function loadConfig(overrides = {}) {
     },
     publicationTasks: {
       enabled: overrides.publicationTasksEnabled ?? readBool("SKILLHUB_PUBLICATION_TASKS_ENABLED", false),
+      commitTimeoutMs: overrides.publicationCommitTimeoutMs ?? Number(process.env.SKILLHUB_PUBLICATION_COMMIT_TIMEOUT_MS ?? 300000),
       maxTasks: overrides.publicationTasksMaxTasks ?? Number(process.env.SKILLHUB_PUBLICATION_TASKS_MAX_TASKS ?? 10000),
       maxTasksPerOwner: overrides.publicationTasksMaxTasksPerOwner ?? Number(process.env.SKILLHUB_PUBLICATION_TASKS_MAX_TASKS_PER_OWNER ?? 100),
       maxStoredBytes: overrides.publicationTasksMaxStoredBytes ?? Number(process.env.SKILLHUB_PUBLICATION_TASKS_MAX_STORED_BYTES ?? 2 * 1024 ** 3),

@@ -14,7 +14,8 @@ export function publicTask(row, now = Date.now()) {
     candidateHash: row.candidate_hash, candidateAvailable: !expired && row.candidate_bytes > 0,
     validation: row.validation_result ?? row.intake_result,
     errorCode: expired ? null : row.error_code,
-    ...(row.publication_result ? {publication:row.publication_result} : {}),
+    ...(row.publication_result ? {publication:Object.fromEntries(
+      ['skillId','version','packageId','checksumSha256','publishedAt'].map(key=>[key,row.publication_result[key]]))} : {}),
     createdAt: new Date(row.created_at).toISOString(), updatedAt: new Date(row.updated_at).toISOString(),
     expiresAt: new Date(row.expires_at).toISOString(), purgeAfter: new Date(row.purge_after).toISOString(),
     capabilities: { publish: false, repair: false }

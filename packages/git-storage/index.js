@@ -2,10 +2,12 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { validatePackagePath } from "../domain/index.js";
 
 const ZERO_OID = "0000000000000000000000000000000000000000";
 const repoQueues = new Map();
+const gitSignals = new AsyncLocalStorage();
 const REPOSITORY_LOCK_TIMEOUT_MS = 30_000;
 const REPOSITORY_LOCK_STALE_MS = 10 * 60_000;
 
@@ -16,11 +18,12 @@ export async function commitGitVersion({
   version,
   files,
   metadata = {},
-  createdAt
+  createdAt,
+  signal
 }) {
   const repository = gitRepository(config, scope, skillId);
   const tag = gitVersionTag(version);
-  return withRepositoryQueue(repository.path, () => withRepositoryFileLock(
+  return gitSignals.run(signal, () => withRepositoryQueue(repository.path, () => withRepositoryFileLock(
     `${repository.path}.lock`,
     async () => {
       await ensureBareRepository(repository.path);
@@ -86,7 +89,7 @@ export async function commitGitVersion({
         tag
       };
     }
-  ));
+  )));
 }
 
 export async function assertGitVersion({
@@ -95,8 +98,10 @@ export async function assertGitVersion({
   skillId,
   tag,
   commitSha,
-  treeSha
+  treeSha,
+  signal
 }) {
+  return gitSignals.run(signal, async () => {
   const repository = gitRepository(config, scope, skillId);
   const actualCommit = await resolve(repository.path, `refs/tags/${tag}^{commit}`);
   if (actualCommit !== commitSha) {
@@ -107,6 +112,7 @@ export async function assertGitVersion({
     throw new Error(`Git version tree mismatch: ${skillId}@${tag}`);
   }
   return { ...repository, commitSha: actualCommit, treeSha: actualTree, tag };
+  });
 }
 
 export function gitRepository(config, scope, skillId) {
@@ -277,15 +283,21 @@ function runGit(repositoryPath, args, options = {}) {
     const child = spawn("git", commandArgs, {
       shell: false,
       windowsHide: true,
+      signal: gitSignals.getStore(),
       env: { ...process.env, ...(options.env || {}) },
       stdio: ["pipe", "pipe", "pipe"]
     });
     const stdout = [];
     const stderr = [];
+    let processError;
     child.stdout.on("data", (chunk) => stdout.push(chunk));
     child.stderr.on("data", (chunk) => stderr.push(chunk));
-    child.on("error", reject);
+    // Keep the repository lock until the process really closes, including when
+    // AbortSignal terminates Git. An early rejection could release a live writer.
+    child.on("error", error => { processError = error; });
+    child.stdin.on('error', error => { processError ??= error; });
     child.on("close", (code) => {
+      if (processError) { reject(processError); return; }
       const result = {
         code,
         stdout: Buffer.concat(stdout).toString("utf8"),
