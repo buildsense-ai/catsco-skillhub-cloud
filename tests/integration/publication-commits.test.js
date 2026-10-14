@@ -103,6 +103,7 @@ test('PostgreSQL HTTP publish authenticates, derives namespace, is idempotent, a
     const route=`/api/skills/publication-tasks/${f.id}/publish`,body={candidateHash:f.candidateHash,confirmVersionPublish:false};
     assert.equal((await req(route,body,false)).status,401);
     assert.equal((await req(route,{...body,ownerId:'other'})).status,400);
+    assert.equal((await req(route,{...body,padding:'x'.repeat(5000)})).status,413);
     assert.equal((await req(route,{...body,candidateHash:'a'.repeat(64)})).status,409);
     const accepted=await req(route,body); assert.equal(accepted.status,202);assert.equal(accepted.body.task.state,'publish_queued');
     const replay=await req(route,body);assert.equal(replay.body.replayed,true);

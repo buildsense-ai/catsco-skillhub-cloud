@@ -44,8 +44,11 @@ export function createPublicationTasksHandler(config, store) {
       const publishMatch = pathname.match(/^\/api\/skills\/publication-tasks\/(pubtask_[0-9a-f-]{36})\/publish$/);
       if (publishMatch && req.method==='POST' && config.publicationPublishing?.enabled) {
         if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] ?? '')) throw taskError(400,'body_invalid','Content-Type must be application/json.');
+        const length=req.headers['content-length'];
+        if (length!=null && (!/^\d+$/.test(length) || Number(length)>4096)) throw taskError(413,'too_large','Publication request exceeds the byte limit.');
+        const publishRaw=await readRaw(req,4096,controller.signal);
         let input;
-        try { input=parseStrictJson(new TextDecoder('utf-8',{fatal:true}).decode(await readRaw(req,4096,controller.signal))); }
+        try { input=parseStrictJson(new TextDecoder('utf-8',{fatal:true}).decode(publishRaw)); }
         catch { throw taskError(400,'body_invalid','Invalid publication request.'); }
         if (!input || typeof input!=='object' || Array.isArray(input) ||
           Object.keys(input).some(k=>!['candidateHash','confirmVersionPublish'].includes(k)) ||
