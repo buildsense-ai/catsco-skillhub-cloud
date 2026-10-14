@@ -3,6 +3,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
+import { spawnSync } from "node:child_process";
+import os from "node:os";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -103,4 +105,78 @@ test("database migrations recover from transient connection termination", async 
   assert.match(script, /SKILLHUB_MIGRATION_RETRIES/);
   assert.match(script, /isRetryableConnectionError/);
   assert.match(script, /await closePools\(\)\.catch/);
+});
+
+test("deployment bounds manager calls and probes before migration and release switching", async () => {
+  const script = await fs.readFile(path.join(root, "infra/deploy/deploy-catsco-skillhub"), "utf8");
+  const firstGuard = script.indexOf('\nrequire_service_manager\n');
+  assert.ok(firstGuard > 0);
+  for (const step of ['npm ci --omit=dev', 'node scripts/migrate.js', 'mv -Tf "${NEXT_LINK}" "${APP_LINK}"']) {
+    assert.ok(firstGuard < script.indexOf(step), `manager check must precede ${step}`);
+  }
+  assert.match(script, /require_service_manager\nmv -Tf/);
+  for (const line of script.split('\n').filter(line => /systemctl (restart|reload|is-active|show)/.test(line))) {
+    assert.match(line, /timeout --kill-after=/, `unbounded manager call: ${line}`);
+  }
+  assert.match(script, /timeout --kill-after=2s 90s bash -c/);
+  assert.match(script, /curl --connect-timeout 2 --max-time 5/);
+  assert.match(script, /runtime recovery is UNVERIFIED/);
+});
+
+test("deployment manager/health guards run against responsive, frozen and failing probes", async t => {
+  const script = await fs.readFile(path.join(root, "infra/deploy/deploy-catsco-skillhub"), "utf8");
+  const functions = script.slice(script.indexOf('require_service_manager() {'), script.indexOf('rollback_on_error() {'));
+  const bash = process.platform === 'win32' ? 'C:/Program Files/Git/bin/bash.exe' : 'bash';
+  const fixtureBin = await fs.mkdtemp(path.join(os.tmpdir(), 'skillhub-deploy-'));
+  t.after(() => fs.rm(fixtureBin, { recursive: true, force: true }));
+  // timeout execs a program, not a shell function. This fixture executable
+  // delegates to the exported function in its new bash process.
+  await fs.writeFile(path.join(fixtureBin, 'systemctl'), '#!/usr/bin/env bash\nsystemctl "$@"\n', { mode: 0o755 });
+  const run = (fixture, command, timeout = 15000) => spawnSync(bash, ['-c', `
+    set -euo pipefail
+    export PATH="${process.platform === 'win32' ? '$(cygpath -u "$FIXTURE_BIN")' : '$FIXTURE_BIN'}:$PATH"
+    API_SERVICE=fixture-api
+    WORKER_SERVICE=fixture-worker
+    ${functions}
+    ${fixture}
+    export -f systemctl
+    ${command}
+  `], { encoding: 'utf8', timeout, env: { ...process.env, FIXTURE_BIN: fixtureBin } });
+  // Degraded hosts may still have a responsive PID 1; no is-system-running gate.
+  const healthy = `systemctl() { if [[ "$1" == show ]]; then echo 255.4; else return 0; fi; }
+    curl() { return 0; }; export -f curl`;
+  let result = run(healthy, 'require_service_manager; wait_for_health');
+  assert.equal(result.status, 0, result.stderr);
+  result = run('systemctl() { return 1; }', 'require_service_manager');
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /Service manager is unresponsive/);
+  result = run('systemctl() { return 0; }', 'require_service_manager');
+  assert.equal(result.status, 1, 'empty manager response must fail closed');
+  result = run('systemctl() { sleep 20; }', 'require_service_manager');
+  assert.equal(result.error, undefined, 'guard must finish before the test timeout');
+  assert.equal(result.status, 1, result.stderr);
+  result = run(`${healthy}
+    curl() { return 22; }; sleep() { :; }; export -f curl sleep`, 'wait_for_health');
+  assert.equal(result.status, 1, 'failed HTTP probes must not pass health checks');
+});
+
+test("rollback restores the link but reports unverified recovery when PID 1 is frozen", async () => {
+  const script = await fs.readFile(path.join(root, "infra/deploy/deploy-catsco-skillhub"), "utf8");
+  const rollback = script.slice(script.indexOf('rollback_on_error() {'), script.indexOf('trap rollback_on_error ERR'));
+  const bash = process.platform === 'win32' ? 'C:/Program Files/Git/bin/bash.exe' : 'bash';
+  const result = spawnSync(bash, ['-c', `
+    ${rollback}
+    nginx_switched=0; switched=1; previous_release=fixture-old
+    INCOMING_PATH=fixture-incoming; NEXT_LINK=fixture-next; ROLLBACK_LINK=fixture-rollback; APP_LINK=fixture-app
+    rm() { :; }; ln() { :; }; mv() { echo link-restored; }
+    require_service_manager() { return 1; }
+    timeout() { echo unexpected-restart; return 1; }
+    wait_for_health() { echo unexpected-polling; return 1; }
+    (exit 7)
+    rollback_on_error
+  `], { encoding: 'utf8', timeout: 5000 });
+  assert.equal(result.status, 7, 'preserve the original deployment failure');
+  assert.match(result.stdout, /link-restored/);
+  assert.doesNotMatch(result.stdout, /unexpected-/);
+  assert.match(result.stderr, /runtime recovery is UNVERIFIED/);
 });

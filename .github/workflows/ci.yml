@@ -113,6 +113,9 @@ jobs:
             -i "$HOME/.ssh/skillhub_deploy" \
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
+            -o ConnectTimeout=15 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=3 \
             "$artifact" "${artifact}.sha256" \
             "${DEPLOY_USER}@${DEPLOY_HOST}:/opt/catsco/skillhub/shared/staging/"
 
@@ -124,6 +127,9 @@ jobs:
             -i "$HOME/.ssh/skillhub_deploy" \
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
+            -o ConnectTimeout=15 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=3 \
             "${DEPLOY_USER}@${DEPLOY_HOST}" \
             "sudo /usr/local/sbin/deploy-catsco-skillhub '${GITHUB_SHA}'"
 
@@ -131,9 +137,11 @@ jobs:
         run: |
           set -euo pipefail
           curl --fail --silent --show-error \
+            --connect-timeout 5 --max-time 10 --retry-max-time 90 \
             --retry 10 --retry-all-errors --retry-delay 3 \
             "${PUBLIC_BASE_URL%/}/healthz"
           curl --fail --silent --show-error \
+            --connect-timeout 5 --max-time 10 --retry-max-time 90 \
             --retry 10 --retry-all-errors --retry-delay 3 \
             "${PUBLIC_BASE_URL%/}/readyz"
 
