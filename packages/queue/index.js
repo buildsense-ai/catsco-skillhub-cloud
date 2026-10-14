@@ -51,6 +51,7 @@ async function handlePublishSkillVersion(job, { config, store }) {
     if (committed.submissionId !== uploadId) throw new Error('Publication version belongs to another upload');
     return;
   }
+  if (config.publicationPublishing?.enabled) throw new Error('Legacy publication is paused: validated publication tasks are required.');
 
   const files = await readSubmissionFiles(config, uploadId);
   const report = scanSkillPackage({ files, manifest, config });

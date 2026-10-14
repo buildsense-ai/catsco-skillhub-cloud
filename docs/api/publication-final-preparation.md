@@ -73,6 +73,11 @@ It must never be accepted from an upload body as permission to publish.
 
 ## Remaining P2-B2 work
 
+The follow-up [durable commit path](publication-task-commit.md) now supplies the
+opt-in intent, worker recovery and atomic completion described below. Preparation
+itself remains side-effect-free; production activation and cross-repository
+identity/entry-point integration are still separate.
+
 The next writer must persist the intent/receipt privately and atomically bind
 them to the task's candidate revision, request hash and current authority. It
 must commit Git from the prepared material, verify the Git tree, persist stable

@@ -80,6 +80,7 @@ async function reserve(client, input, exact) {
 
 // Used inside the package transaction as well as before Git writes.
 export function adoptPublicVersion(client, input) { return reserve(client, input, true); }
+export function reservePublicVersion(client, input) { return reserve(client, input, false); }
 
 export function createPublicVersionStore({ tx }) {
   return {

@@ -4,6 +4,7 @@ import { generateId, JobStatus, nowIso, sha256, ValidationError } from "../domai
 import { createPresentationStore, ensurePresentationSchema } from "../presentations/store.js";
 import { createPresentationAssetStore } from "../presentations/asset-store.js";
 import { createPublicationTaskStore } from "../publication-tasks/store.js";
+import { createPublicationCommitStore, lockPublicationCompletion, finishPublicationCompletion } from '../publication-tasks/commit-store.js';
 import { createPublicVersionStore, adoptPublicVersion, comparePublicVersions } from "../publication-tasks/versions.js";
 
 let poolByUrl = new Map();
@@ -134,6 +135,7 @@ export function createStore(config) {
     ...createPresentationStore({ query, tx }),
     ...createPresentationAssetStore({ query, tx }),
     ...createPublicationTaskStore({ query, tx }),
+    ...createPublicationCommitStore({ query, tx, config }),
     ...createPublicVersionStore({ tx }),
     async listCatalogueVersions({ viewerUserId = null, viewerCatsCoUid = null, includeAll = false } = {}) {
       await ensureSimplifiedSchema();
@@ -798,9 +800,14 @@ export function createStore(config) {
       return result.rows[0] ? mapPackageVersion(result.rows[0]) : null;
     },
 
-    async createPackageVersion(packageVersion, submission) {
+    async createPackageVersion(packageVersion, submission, { publicationTask } = {}) {
       await ensureSimplifiedSchema();
       return tx(async (client) => {
+        const completion = publicationTask ? await lockPublicationCompletion(client,publicationTask,packageVersion,submission) : null;
+        const taskUpload = await client.query("SELECT task_id FROM publication_commits WHERE identity->>'uploadId'=$1",[submission.id]);
+        if (taskUpload.rowCount && taskUpload.rows[0].task_id !== completion?.id) {
+          throw new ValidationError('Task publication requires atomic completion.', 'skillhub.publication_version_conflict', 409);
+        }
         await adoptPublicVersion(client, { uploadId: submission.id, skillId: packageVersion.skillId,
           ownerId: submission.submitterId, version: packageVersion.version });
         const previous = (await client.query('SELECT * FROM skill_versions WHERE skill_id=$1 AND version=$2',
@@ -809,6 +816,7 @@ export function createStore(config) {
           if (previous.upload_id !== submission.id || previous.checksum_sha256 !== packageVersion.checksumSha256) {
             throw new ValidationError('Publication version already has different content.', 'skillhub.publication_version_conflict', 409);
           }
+          if (completion) await finishPublicationCompletion(client,completion,packageVersion,config.publicationTasks.retentionMs);
           return mapPackageVersion(previous);
         }
         const current = (await client.query('SELECT latest_version FROM skills WHERE id=$1', [packageVersion.skillId])).rows[0];
@@ -863,6 +871,8 @@ export function createStore(config) {
             packageVersion.artifactSha256 ?? null
           ]
         );
+        if (completion) await finishPublicationCompletion(client,completion,packageVersion,config.publicationTasks.retentionMs);
+        return packageVersion;
       });
     },
 

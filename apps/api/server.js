@@ -891,6 +891,10 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
 
       if (pathname === "/api/skills/share" && req.method === "POST") {
         const actor = await requireAuthenticatedActor(config, store, req);
+        if (config.publicationPublishing?.enabled && !config.publicationTasks?.enabled) throw new ValidationError(
+          'Publication publishing requires publication tasks to be enabled.', 'skillhub.publication_task_configuration_invalid', 503);
+        if (config.publicationPublishing?.enabled) throw new ValidationError(
+          'Use the validated publication task workflow; upgrade this publisher client.', 'skillhub.publication_task_required', 409);
         const body = await readJson(req, config.limits.uploadMaxBytes * 2);
         const files = filesFromSubmissionBody(body, config.limits);
         let manifest = namespaceQuickShareManifest(buildManifestDraft({ form: body.manifest ?? body.form ?? {}, files }), actor);

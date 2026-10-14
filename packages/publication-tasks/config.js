@@ -2,6 +2,9 @@ import { effectiveLimits } from '../publish-validation/index.js';
 
 export function publicationTaskSettings(config) {
   const settings = config.publicationTasks;
+  if (config.publicationPublishing?.enabled && !settings?.enabled) {
+    throw new Error('Publication publishing requires publication tasks');
+  }
   if (!settings?.enabled) return null;
   for (const [key, value] of Object.entries(settings)) {
     if (key !== 'enabled' && (!Number.isSafeInteger(value) || value <= 0)) throw new Error('Invalid task budget');

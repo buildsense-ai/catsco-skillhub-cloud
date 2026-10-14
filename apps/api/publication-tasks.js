@@ -4,6 +4,7 @@ import { publicationTaskSettings } from '../../packages/publication-tasks/config
 import { taskError } from '../../packages/publication-tasks/store.js';
 import { runPublishValidation } from '../../packages/publish-validation/runner.js';
 import { readRaw, withAbort } from './publish-validation.js';
+import { parseStrictJson } from '../../packages/publish-validation/index.js';
 
 export function createPublicationTasksHandler(config, store) {
   let settings, limiter;
@@ -19,8 +20,16 @@ export function createPublicationTasksHandler(config, store) {
       if (res.destroyed || res.writableEnded) return;
       if (!req.complete) res.setHeader('Connection', 'close');
       res.setHeader('Cache-Control', 'no-store');
+      if (config.publicationPublishing?.enabled) {
+        for (const task of [body?.task,...(body?.tasks ?? [])].filter(Boolean)) {
+          task.capabilities={...task.capabilities,publish:['ready','publish_failed'].includes(task.state)};
+        }
+      }
       sendJson(res, status, body);
     };
+    if (config.publicationPublishing?.enabled && !config.publicationTasks?.enabled) {
+      reply(503, {error:{code:'skillhub.publication_task_configuration_invalid',message:'Publication publishing requires publication tasks to be enabled.'}}); return true;
+    }
     if (!config.publicationTasks?.enabled) { reply(404, { error: { code: 'not_found', message: 'Publication tasks are disabled.' } }); return true; }
     if (!settings) { reply(503, { error: { code: 'skillhub.publication_task_unavailable', message: 'Publication tasks are unavailable.' } }); return true; }
     if (active >= settings.execution.maxConcurrent) { reply(503, { error: { code: 'skillhub.publication_task_busy', message: 'Publication tasks are busy.' } }); return true; }
@@ -35,6 +44,40 @@ export function createPublicationTasksHandler(config, store) {
       if (!actor?.userId) throw taskError(403, 'account_required', 'An authenticated account is required.');
       if (controller.signal.aborted) throw taskError(503, 'unavailable', 'Publication task request timed out.');
       if (!limiter.check(actor.userId)) throw taskError(429, 'rate_limited', 'Publication task requests are too frequent.');
+      const publishMatch = pathname.match(/^\/api\/skills\/publication-tasks\/(pubtask_[0-9a-f-]{36})\/publish$/);
+      if (publishMatch && req.method==='POST' && config.publicationPublishing?.enabled) {
+        if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] ?? '')) throw taskError(400,'body_invalid','Content-Type must be application/json.');
+        const length=req.headers['content-length'];
+        if (length!=null && (!/^\d+$/.test(length) || Number(length)>4096)) throw taskError(413,'too_large','Publication request exceeds the byte limit.');
+        const publishRaw=await readRaw(req,4096,controller.signal);
+        let input;
+        try { input=parseStrictJson(new TextDecoder('utf-8',{fatal:true}).decode(publishRaw)); }
+        catch { throw taskError(400,'body_invalid','Invalid publication request.'); }
+        if (!input || typeof input!=='object' || Array.isArray(input) ||
+          Object.keys(input).some(k=>!['candidateHash','confirmVersionPublish'].includes(k)) ||
+          !/^[a-f0-9]{64}$/.test(input.candidateHash ?? '') || typeof input.confirmVersionPublish!=='boolean') {
+          throw taskError(400,'body_invalid','Provide candidateHash and an explicit confirmVersionPublish boolean.');
+        }
+        const row=await store.getPublicationRequest(actor.userId,publishMatch[1]);
+        if (!row) throw taskError(404,'not_found','Publication task was not found.');
+        if (row.candidate_hash!==input.candidateHash) throw taskError(409,'candidate_changed','Publication candidate changed.');
+        let manifest;
+        if (!row.intent) {
+          if (row.state!=='ready' || !row.candidate || !row.candidate_live) throw taskError(409,'not_ready','Only a live, validated candidate can be published.');
+          if (!actor.developerProfile?.id || !actor.developerProfile.namespace) throw taskError(403,'publisher_changed','Publisher identity is unavailable.');
+          const derived=await runPublishValidation({candidate:row.candidate,requestHash:row.request_hash,
+            candidateHash:row.candidate_hash,namespace:actor.developerProfile.namespace},settings.limits,{
+            timeoutMs:settings.execution.workerTimeoutMs,memoryMb:settings.execution.workerMemoryMb,signal:controller.signal,
+            workerUrl:new URL('../../packages/publication-tasks/draft-worker.js',import.meta.url)});
+          if (derived.status!==200) return derived;
+          manifest=derived.manifest;
+        }
+        if (controller.signal.aborted) throw taskError(503,'unavailable','Publication request timed out.');
+        const accepted=await store.enqueuePublicationCommit({ownerId:actor.userId,id:row.id,
+          candidateHash:input.candidateHash,confirmVersionPublish:input.confirmVersionPublish,
+          manifest,profile:actor.developerProfile});
+        return {status:['publish_queued','publishing','committing'].includes(accepted.task.state)?202:200,body:accepted};
+      }
       const match = pathname.match(/^\/api\/skills\/publication-tasks\/(pubtask_[0-9a-f-]{36})(\/cancel)?$/);
       if (pathname === root && req.method === 'GET') return { status: 200, body: { tasks: await store.listPublicationTasks(actor.userId) } };
       if (match && ((req.method === 'GET' && !match[2]) || (req.method === 'POST' && match[2]))) {

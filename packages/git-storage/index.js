@@ -2,10 +2,12 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { validatePackagePath } from "../domain/index.js";
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { validateGitSourcePaths } from './source-paths.js';
 
 const ZERO_OID = "0000000000000000000000000000000000000000";
 const repoQueues = new Map();
+const gitSignals = new AsyncLocalStorage();
 const REPOSITORY_LOCK_TIMEOUT_MS = 30_000;
 const REPOSITORY_LOCK_STALE_MS = 10 * 60_000;
 
@@ -16,11 +18,13 @@ export async function commitGitVersion({
   version,
   files,
   metadata = {},
-  createdAt
+  createdAt,
+  signal
 }) {
+  signal?.throwIfAborted();
   const repository = gitRepository(config, scope, skillId);
   const tag = gitVersionTag(version);
-  return withRepositoryQueue(repository.path, () => withRepositoryFileLock(
+  return gitSignals.run(signal, () => withRepositoryQueue(repository.path, () => withRepositoryFileLock(
     `${repository.path}.lock`,
     async () => {
       await ensureBareRepository(repository.path);
@@ -86,7 +90,7 @@ export async function commitGitVersion({
         tag
       };
     }
-  ));
+  )));
 }
 
 export async function assertGitVersion({
@@ -95,8 +99,10 @@ export async function assertGitVersion({
   skillId,
   tag,
   commitSha,
-  treeSha
+  treeSha,
+  signal
 }) {
+  return gitSignals.run(signal, async () => {
   const repository = gitRepository(config, scope, skillId);
   const actualCommit = await resolve(repository.path, `refs/tags/${tag}^{commit}`);
   if (actualCommit !== commitSha) {
@@ -107,6 +113,7 @@ export async function assertGitVersion({
     throw new Error(`Git version tree mismatch: ${skillId}@${tag}`);
   }
   return { ...repository, commitSha: actualCommit, treeSha: actualTree, tag };
+  });
 }
 
 export function gitRepository(config, scope, skillId) {
@@ -141,12 +148,17 @@ async function ensureBareRepository(repositoryPath) {
     if (error?.code !== "ENOENT") throw error;
   }
   await fs.mkdir(path.dirname(repositoryPath), { recursive: true, mode: 0o700 });
-  const initialized = await runGit(null, ["init", "--bare", "--initial-branch=main", repositoryPath], {
-    allowExitCodes: [0, 128]
-  });
-  if (initialized.code !== 0) {
-    const bare = await runGit(repositoryPath, ["rev-parse", "--is-bare-repository"]);
-    if (bare.stdout.trim() !== "true") throw new Error(`Unable to initialize Git repository: ${repositoryPath}`);
+  // Initializing directly at the permanent path can leave an invalid directory
+  // if Git is killed halfway through init. Publish the initialized directory
+  // atomically under our repository lock; do not try to repair arbitrary
+  // existing/corrupt repositories by overwriting their metadata.
+  const staging=await fs.mkdtemp(path.join(path.dirname(repositoryPath),'.git-init-'));
+  try {
+    await runGit(null,['init','--bare','--initial-branch=main',staging]);
+    gitSignals.getStore()?.throwIfAborted();
+    await fs.rename(staging,repositoryPath);
+  } finally {
+    await fs.rm(staging,{recursive:true,force:true});
   }
 }
 
@@ -175,18 +187,9 @@ async function writeTree(config, repositoryPath, files) {
 
 function normalizeFiles(files, config) {
   if (!Array.isArray(files) || files.length === 0) throw new Error("Git version requires source files");
-  const seen = new Set();
-  return files.map((file) => {
-    const filePath = validatePackagePath(file.path, {
-      maxPathLength: Math.max(config.limits.maxPathLength, 1024),
-      maxPathDepth: Math.max(config.limits.maxPathDepth, 64)
-    });
-    if (filePath.split("/").some((part) => part.toLowerCase() === ".git")) {
-      throw new Error(`Git-reserved source path is not allowed: ${filePath}`);
-    }
-    const folded = filePath.toLocaleLowerCase("en-US");
-    if (seen.has(folded)) throw new Error(`Duplicate Git source path: ${filePath}`);
-    seen.add(folded);
+  const paths = validateGitSourcePaths(files.map(file => file.path), config.limits);
+  return files.map((file, index) => {
+    const filePath = paths[index];
     return {
       path: filePath,
       buffer: Buffer.isBuffer(file.buffer)
@@ -277,15 +280,21 @@ function runGit(repositoryPath, args, options = {}) {
     const child = spawn("git", commandArgs, {
       shell: false,
       windowsHide: true,
+      signal: gitSignals.getStore(),
       env: { ...process.env, ...(options.env || {}) },
       stdio: ["pipe", "pipe", "pipe"]
     });
     const stdout = [];
     const stderr = [];
+    let processError;
     child.stdout.on("data", (chunk) => stdout.push(chunk));
     child.stderr.on("data", (chunk) => stderr.push(chunk));
-    child.on("error", reject);
+    // Keep the repository lock until the process really closes, including when
+    // AbortSignal terminates Git. An early rejection could release a live writer.
+    child.on("error", error => { processError = error; });
+    child.stdin.on('error', error => { processError ??= error; });
     child.on("close", (code) => {
+      if (processError) { reject(processError); return; }
       const result = {
         code,
         stdout: Buffer.concat(stdout).toString("utf8"),
