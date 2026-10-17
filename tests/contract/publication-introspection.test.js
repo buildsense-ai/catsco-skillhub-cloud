@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, rm, stat } from 'node:fs/promises';
 import https from 'node:https';
 import { tmpdir } from 'node:os';
@@ -10,8 +10,11 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { createPublicationIntrospectionClient } from '../../packages/publication-delegation/introspection.js';
 import { validatePublishRequest } from '../../packages/publish-validation/index.js';
+import { createDelegatedPublicationIntake } from '../../packages/publication-delegation/intake.js';
+import { createStore, closePools } from '../../packages/database/store.js';
+import { loadConfig } from '../../packages/config/index.js';
 
-test('Cloud client and pinned CatsCo peer handler exchange actual HTTPS with strict authority binding', { timeout: 180000 }, async t => {
+async function fixture(t) {
   assert.ok(process.env.CATSCO_CONTRACT_ROOT, 'CATSCO_CONTRACT_ROOT is required; missing counterpart is not a skip');
   const root = path.resolve(process.env.CATSCO_CONTRACT_ROOT);
   assert.ok((await stat(path.join(root, 'go.mod'))).isFile());
@@ -57,6 +60,20 @@ test('Cloud client and pinned CatsCo peer handler exchange actual HTTPS with str
   const client = createPublicationIntrospectionClient(config, transport);
   const input = { token: 'pubupload_' + '2'.repeat(64), entryRequestId: 'pubentry_' + '3'.repeat(32), authorityEpoch: 1,
     rawBody: raw, sourceSnapshotHash: sourceHash, idempotencyKey: 'pubcandidate_' + '5'.repeat(32) };
+  const rotate = () => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { lines.off('line', onLine); reject(new Error('Peer rotation timeout')); }, 5000);
+    const onLine = line => {
+      clearTimeout(timer);
+      try { assert.equal(JSON.parse(line).epoch, 2); resolve(); } catch (error) { reject(error); }
+    };
+    lines.once('line', onLine);
+    child.stdin.write('rotate\n');
+  });
+  return {config, transport, client, input, raw, sourceHash, rotate};
+}
+
+test('Cloud client and pinned CatsCo peer handler exchange actual HTTPS with strict authority binding', { timeout: 180000 }, async t => {
+  const {config,transport,client,input,raw,sourceHash} = await fixture(t);
   const checkError = (kind) => error => error.code === `skillhub.publication_authority_${kind}`;
   const grant = await client.checkUploadGrant(input);
   assert.equal(grant.actorCatsCoUid, '9223372036854775806');
@@ -73,4 +90,41 @@ test('Cloud client and pinned CatsCo peer handler exchange actual HTTPS with str
   await assert.rejects(client.checkUploadGrant({ ...input, idempotencyKey: 'pubcandidate_' + 'f'.repeat(32) }), checkError('unavailable'));
   await assert.rejects(createPublicationIntrospectionClient({ ...config, peerSecret: 'e'.repeat(64) }, transport).checkUploadGrant(input), checkError('unavailable'));
   await assert.rejects(createPublicationIntrospectionClient(config).checkUploadGrant(input), checkError('unavailable'));
+});
+
+test('renewed CatsCo grant recovers the original PostgreSQL intake receipt through actual HTTPS', {timeout:180000}, async t => {
+  assert.ok(process.env.SKILLHUB_TEST_DATABASE_URL, 'PostgreSQL DSN is required for renewal contract; missing database is not a skip');
+  const peer = await fixture(t);
+  const config = loadConfig({databaseUrl:process.env.SKILLHUB_TEST_DATABASE_URL,nodeEnv:'test',publicationTasksEnabled:true});
+  const store = createStore(config), suffix=randomUUID();
+  let publisher;
+  t.after(async () => {
+    try {
+      if (publisher) {
+        await store.query('DELETE FROM publication_delegations WHERE task_id IN (SELECT id FROM publication_tasks WHERE owner_user_id=$1)',[publisher.user.id]);
+        await store.query('DELETE FROM users WHERE id=$1',[publisher.user.id]);
+      }
+    } finally { await closePools(); }
+  });
+  publisher = await store.claimCatsCoPublisherIdentity({catsCoUid:'9223372036854775806',catsCoIssuer:peer.config.issuer,
+    namespace:`renewal-${suffix}`,displayName:'Renewal contract',contact:'',internalEmail:`${suffix}@example.invalid`,passwordHash:'fixture'});
+  const accept = () => createDelegatedPublicationIntake({enabled:true,config,store,issuer:peer.config.issuer,
+    audience:peer.config.audience,introspectionClient:peer.client});
+  const first = await accept()(peer.input);
+  assert.equal(first.created,true);
+  const before=(await store.query('SELECT * FROM publication_delegations WHERE task_id=$1',[first.association.taskId])).rows[0];
+  // Simulate response loss, process reconstruction and token renewal after
+  // acceptance. The old token is denied by the real CatsCo HTTP handler.
+  await peer.rotate();
+  await assert.rejects(accept()(peer.input),{code:'skillhub.publication_authority_inactive'});
+  const renewed={...peer.input,token:'pubupload_'+'7'.repeat(64),authorityEpoch:2};
+  const recovered=await accept()(renewed);
+  assert.equal(recovered.created,false);
+  assert.deepEqual(recovered.association,first.association);
+  assert.deepEqual((await store.query('SELECT * FROM publication_delegations WHERE task_id=$1',[first.association.taskId])).rows[0],before);
+  assert.equal((await store.query('SELECT count(*)::int AS n FROM publication_tasks WHERE owner_user_id=$1',[publisher.user.id])).rows[0].n,1);
+  assert.equal((await store.query('SELECT count(*)::int AS n FROM publication_delegation_outbox WHERE task_id=$1',[first.association.taskId])).rows[0].n,1);
+  assert.equal(await store.getPublicationRequest(publisher.user.id,first.association.taskId),null);
+  await assert.rejects(accept()({...renewed,rawBody:Buffer.concat([renewed.rawBody,Buffer.from(' ')])}),{code:'skillhub.publication_authority_inactive'});
+  t.diagnostic('Real Cloud validation/intake/PostgreSQL/client and CatsCo HTTPS handler; CatsCo grant ledger is a rotation-aware test double, not live Bot authority.');
 });

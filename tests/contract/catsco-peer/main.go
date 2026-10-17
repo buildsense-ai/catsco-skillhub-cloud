@@ -4,10 +4,10 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"encoding/pem"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -23,12 +23,18 @@ import (
 type fixtureStore struct {
 	store.Store
 	issuer string
+	epoch  atomic.Int64
 }
 
 func (s *fixtureStore) IntrospectSkillHubPublicationUploadGrant(ctx context.Context, token store.SkillHubPublicationUploadToken, q store.SkillHubPublicationUploadQuery) (*store.SkillHubPublicationUploadObservation, error) {
 	n, err := strconv.ParseInt(os.Getenv("PEER_TEST_BYTES"), 10, 64)
-	if err != nil || q.Validate() != nil || token.Reveal() != "pubupload_"+strings.Repeat("2", 64) ||
-		q.EntryID != "pubentry_"+strings.Repeat("3", 32) || q.Epoch != 1 ||
+	epoch := int(s.epoch.Load())
+	secret := "2"
+	if epoch > 1 {
+		secret = "7"
+	}
+	if err != nil || q.Validate() != nil || token.Reveal() != "pubupload_"+strings.Repeat(secret, 64) ||
+		q.EntryID != "pubentry_"+strings.Repeat("3", 32) || q.Epoch != epoch ||
 		q.RequestHash != os.Getenv("PEER_TEST_HASH") || q.SourceSnapshotHash != os.Getenv("PEER_TEST_SOURCE_HASH") || q.RequestBytes != n {
 		return nil, store.ErrSkillHubPublicationDenied
 	}
@@ -42,7 +48,7 @@ func (s *fixtureStore) IntrospectSkillHubPublicationUploadGrant(ctx context.Cont
 				InstallationID: "private-install", RouteGeneration: 1, WorkspaceGeneration: "workspace-1", LocalSkillID: "private-source"}},
 	}
 	return &store.SkillHubPublicationUploadObservation{ObservedAt: now, Grant: &store.SkillHubPublicationUploadGrant{
-		ID: "pubgrant_" + strings.Repeat("6", 32), Input: in, Epoch: 1,
+		ID: "pubgrant_" + strings.Repeat("6", 32), Input: in, Epoch: epoch,
 		IdempotencyKey: "pubcandidate_" + strings.Repeat("5", 32), IssuedAt: now.Add(-time.Second), ExpiresAt: now.Add(119 * time.Second),
 	}}, nil
 }
@@ -56,8 +62,18 @@ func main() {
 	os.Setenv("CATSCO_SKILLHUB_PUBLICATION_CLOUD_AUDIENCE", "https://hub.example")
 	os.Setenv("CATSCO_SKILLHUB_PUBLICATION_CLOUD_PEER_SECRET", strings.Repeat("1", 64))
 	os.Setenv("CATSCO_SKILLHUB_PUBLICATION_TRUSTED_PROXY_CIDRS", "")
-	handler.Store(server.NewSkillHubPublicationPeerHandlerFromEnv(&fixtureStore{issuer: tls.URL}))
+	fixture := &fixtureStore{issuer: tls.URL}
+	fixture.epoch.Store(1)
+	handler.Store(server.NewSkillHubPublicationPeerHandlerFromEnv(fixture))
 	cert := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: tls.Certificate().Raw})
 	json.NewEncoder(os.Stdout).Encode(map[string]string{"origin": tls.URL, "ca": string(cert)})
-	io.Copy(io.Discard, os.Stdin)
+	// Test control is stdin only, never an HTTP route. Mirrors the ledger's
+	// stable grant ID/key and incrementing epoch; this store remains a double.
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		if scanner.Text() == "rotate" {
+			fixture.epoch.Store(2)
+			json.NewEncoder(os.Stdout).Encode(map[string]int{"epoch": 2})
+		}
+	}
 }

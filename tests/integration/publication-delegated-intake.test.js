@@ -30,7 +30,7 @@ function observation(r,actor='85',overrides={}) {
   return {issuer,audience,action:'candidate.upload',actorCatsCoUid:actor,botUid:'999',
     entryRequestId:r.entryRequestId,candidateRevision:1,authorityEpoch:r.authorityEpoch,
     requestHash:hash(r.rawBody),requestBytes:r.rawBody.length,sourceSnapshotHash:r.sourceSnapshotHash,
-    idempotencyKey:r.idempotencyKey,delegationId:`pubgrant_${id()}`,
+    idempotencyKey:r.idempotencyKey,delegationId:r.entryRequestId.replace('pubentry_','pubgrant_'),
     observedAt:new Date().toISOString(),expiresAt:new Date(Date.now()+90000).toISOString(),...overrides};
 }
 const adapter=(store,peer,extra={})=>createDelegatedPublicationIntake({enabled:true,config,store,
@@ -43,6 +43,7 @@ test('delegated intake defaults off; callers cannot supply authority or bypass b
   await assert.rejects(accept({...input(),ownerId:'forged'}),{code:'skillhub.publication_authority_invalid'});
   await assert.rejects(accept({...input(),sourceSnapshotHash:'f'.repeat(64)}),{code:'skillhub.publication_task_candidate_changed'});
   await assert.rejects(accept({...input(),authorityEpoch:0}),{code:'skillhub.publication_authority_invalid'});
+  await assert.rejects(accept({...input(),authorityEpoch:9}),{code:'skillhub.publication_authority_invalid'});
   const malformed=await accept({...input(),rawBody:Buffer.from('{')});
   assert.equal(malformed.accepted,false);
   assert.equal(calls,0);
@@ -111,17 +112,27 @@ test('PostgreSQL delegated acceptance is atomic and concurrent/lost-response ret
   const publicText=JSON.stringify(replies);
   for (const secret of [r.token,r.idempotencyKey,'Private fixture',f.ownerId]) assert.ok(!publicText.includes(secret));
   // Renewing the short-lived grant does not allocate a new intent or event.
-  assert.equal((await restarted({...r,token:`pubupload_${id()+id()}`})).created,false);
+  const renewed=await restarted({...r,token:`pubupload_${id()+id()}`,authorityEpoch:2});
+  assert.equal(renewed.created,false);
+  assert.deepEqual(renewed.association,replies[0].association);
+  assert.equal(renewed.association.authorityEpoch,1,'original acceptance epoch is evidence, not current authorization');
+  const retries=await Promise.all(Array.from({length:6},()=>restarted({...r,token:`pubupload_${id()+id()}`,authorityEpoch:8})));
+  for (const replay of retries) {
+    assert.equal(replay.created,false);
+    assert.deepEqual(replay.association,replies[0].association);
+  }
+  assert.deepEqual(await counts(f.ownerId),{tasks:1,associations:1,events:1});
 });
 
-test('PostgreSQL delegated acceptance rejects changed exact bytes Bot epoch key or mapped owner',pg,async()=>{
-  const f=await fixture(), other=await fixture(), r=input();
+test('PostgreSQL delegated acceptance rejects changed bytes Bot grant identity older epoch key or owner',pg,async()=>{
+  const f=await fixture(), other=await fixture(), r={...input(),authorityEpoch:2};
   await f.accept(r);
   for (const changed of [{...r,rawBody:Buffer.concat([r.rawBody,Buffer.from(' ')])},
-    {...r,authorityEpoch:2},{...r,idempotencyKey:`pubcandidate_${id()}`}]) {
+    {...r,authorityEpoch:1},{...r,idempotencyKey:`pubcandidate_${id()}`}]) {
     await assert.rejects(f.accept(changed),{status:409});
   }
   await assert.rejects(adapter(store,async req=>observation(req,f.actor,{botUid:'998'}))(r),{status:409});
+  await assert.rejects(adapter(store,async req=>observation(req,f.actor,{delegationId:`pubgrant_${id()}`}))({...r,authorityEpoch:3}),{status:409});
   await assert.rejects(other.accept(r),{status:409});
   assert.deepEqual(await counts(f.ownerId),{tasks:1,associations:1,events:1});
   assert.deepEqual(await counts(other.ownerId),{tasks:0,associations:0,events:0});
@@ -200,6 +211,9 @@ test('PostgreSQL held candidate expiry clears bytes but preserves replay evidenc
   const replay=await f.accept(r);
   assert.equal(replay.created,false); assert.equal(replay.association.candidateAvailable,false);
   assert.equal(replay.association.taskId,a.taskId);
+  const renewed=await f.accept({...r,authorityEpoch:2,token:`pubupload_${id()+id()}`});
+  assert.equal(renewed.association.candidateAvailable,false);
+  assert.deepEqual(renewed.association,replay.association);
   assert.deepEqual(await counts(f.ownerId),{tasks:1,associations:1,events:1});
   await assert.rejects(store.query('DELETE FROM publication_tasks WHERE id=$1',[a.taskId]),{code:'23503'});
   await assert.rejects(store.query('DELETE FROM users WHERE id=$1',[f.ownerId]),{code:'23503'});

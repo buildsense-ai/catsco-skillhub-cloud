@@ -30,7 +30,7 @@ export function createDelegatedPublicationIntake({ enabled = false, config, stor
         !Buffer.isBuffer(input.rawBody) || !input.rawBody.length || input.rawBody.length>Math.min(75*1024*1024,settings.limits.maxRequestBytes) ||
         !matches(input.token,/^pubupload_[a-f0-9]{64}$/) || !matches(input.entryRequestId,/^pubentry_[a-f0-9]{32}$/) ||
         !matches(input.idempotencyKey,/^pubcandidate_[a-f0-9]{32}$/) || !matches(input.sourceSnapshotHash,/^[a-f0-9]{64}$/) ||
-        !Number.isSafeInteger(input.authorityEpoch) || input.authorityEpoch<1) throw new PublicationAuthorityError('invalid');
+        !Number.isSafeInteger(input.authorityEpoch) || input.authorityEpoch<1 || input.authorityEpoch>8) throw new PublicationAuthorityError('invalid');
     active++;
     try {
       // Snapshot before the first await. Caller mutation cannot change the
@@ -88,8 +88,12 @@ export function createDelegatedPublicationIntake({ enabled = false, config, stor
           eventId:row.event_id, state:'delegated_pending',
           candidateAvailable:row.candidate_bytes>0 && new Date(row.expires_at).getTime()>Date.now() });
         if (prior) {
+          // CatsCo renewal increments the token epoch but preserves grant ID,
+          // entry, candidate and key. A live renewal may recover this original
+          // receipt; it must not rewrite the accepted epoch or authorize commit.
           if (prior.audience!==audience || prior.actor_uid!==grant.actorCatsCoUid || prior.bot_uid!==grant.botUid ||
-              Number(prior.authority_epoch)!==grant.authorityEpoch || prior.profile_id!==profile.id || prior.namespace!==profile.namespace ||
+              prior.delegation_id!==grant.delegationId || grant.authorityEpoch<Number(prior.authority_epoch) ||
+              prior.profile_id!==profile.id || prior.namespace!==profile.namespace ||
               prior.owner_user_id!==profile.user_id || prior.request_key!==request.idempotencyKey ||
               prior.request_hash!==requestHash || prior.candidate_hash!==report.candidateHash) throw conflict();
           await live();
