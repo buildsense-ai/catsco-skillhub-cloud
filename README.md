@@ -42,6 +42,12 @@ Agent 安装前必须校验 checksum 和 signature
 - `packages/signing`：Ed25519 签名和公钥发布。
 - `/api/trust/public-keys`：返回 root 签发过证书的 package signing key，供 Agent 验证信任链。
 
+## API 入口与历史副本
+
+API 的维护和运行入口是 [`apps/api/server.js`](apps/api/server.js)。`npm run start:api`、systemd 服务及部署入口校验均使用这个文件；API 功能和安全修复应修改此处及其引用模块。
+
+仓库根目录的 [`server.js`](server.js) 是遗留副本，不是受支持的启动入口，也不与正式入口同步维护。它保留了不适用于根目录的相对导入路径，不能直接用于启动服务。请勿通过修补导入路径或复制该文件恢复旧入口，以免绕过正式入口已有的身份校验；后续清理应单独处理。
+
 ## 关键 API
 
 图文介绍与受控图片附件接口（生产默认关闭）：[Skill presentation foundation](docs/api/skill-presentations.md)。图片独立于 Skill 包存储，仅在介绍正式发布后按引用公开；不涉及模型调用或扣费。
