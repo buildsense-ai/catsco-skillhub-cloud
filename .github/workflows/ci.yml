@@ -52,9 +52,42 @@ jobs:
       - name: Run integration tests
         run: npm run test:ci
 
+  publication-peer-contract:
+    name: Cloud and CatsCo publication peer HTTPS contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: skillhub
+      - uses: actions/checkout@v4
+        with:
+          repository: buildsense-ai/cats-company
+          # PR656 merge: fixed authenticated introspection protocol.
+          ref: e1414f31f76fe8ac824adb7989e30dd8fb893b0b
+          path: cats-company
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: skillhub/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: cats-company/go.mod
+          cache-dependency-path: cats-company/go.sum
+      - name: Install locked dependencies
+        working-directory: skillhub
+        run: npm ci --ignore-scripts
+      - name: Run real peer handler and client contract
+        working-directory: skillhub
+        env:
+          CATSCO_CONTRACT_ROOT: ../cats-company
+          CATSCO_CONTRACT_REVISION: e1414f31f76fe8ac824adb7989e30dd8fb893b0b
+        run: npm run test:publication-peer-contract
+
   deploy-production:
     name: Deploy production
-    needs: test
+    needs: [test, publication-peer-contract]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15

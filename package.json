@@ -20,7 +20,8 @@
     "secrets:generate": "node scripts/generate-secrets.js",
     "smoke": "node scripts/smoke-test.js",
     "test": "node --test tests/integration/*.test.js",
-    "test:ci": "node --test --test-concurrency=1 tests/integration/*.test.js"
+    "test:ci": "node --test --test-concurrency=1 tests/integration/*.test.js",
+    "test:publication-peer-contract": "node --test tests/contract/publication-introspection.test.js"
   },
   "dependencies": {
     "jsonc-parser": "3.3.1",

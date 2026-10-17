@@ -7,6 +7,12 @@ enablement. All new routes, records, grants and events below require subsequent
 implementation and tests. No model calls, billing, automatic repair or UI redesign
 are introduced by this document.
 
+Implementation note: CatsCo PR656 provides the service-only introspection
+endpoint. Cloud's matching [internal client](publication-introspection-client.md)
+and pinned HTTPS contract test are now implemented separately. No Cloud upload
+route or worker calls that client yet; the association and commit/cancel protocol
+below remains a prerequisite for activating delegated publishing.
+
 ## Existing capabilities and gaps
 
 The audit baselines are
