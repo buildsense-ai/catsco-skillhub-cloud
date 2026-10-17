@@ -56,6 +56,23 @@ jobs:
     name: Cloud and CatsCo publication peer HTTPS contract
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: skillhub
+          POSTGRES_PASSWORD: skillhub
+          POSTGRES_DB: skillhub_contract
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U skillhub -d skillhub_contract"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      SKILLHUB_DATABASE_URL: postgresql://skillhub:skillhub@127.0.0.1:5432/skillhub_contract
+      SKILLHUB_TEST_DATABASE_URL: postgresql://skillhub:skillhub@127.0.0.1:5432/skillhub_contract
     steps:
       - uses: actions/checkout@v4
         with:
@@ -79,11 +96,14 @@ jobs:
         working-directory: skillhub
         run: npm ci --ignore-scripts
       - name: Run real peer handler and client contract
+        # The renewal contract must execute against real Cloud PostgreSQL.
         working-directory: skillhub
         env:
           CATSCO_CONTRACT_ROOT: ../cats-company
           CATSCO_CONTRACT_REVISION: e1414f31f76fe8ac824adb7989e30dd8fb893b0b
-        run: npm run test:publication-peer-contract
+        run: |
+          npm run db:migrate
+          npm run test:publication-peer-contract
 
   deploy-production:
     name: Deploy production

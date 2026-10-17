@@ -43,9 +43,16 @@ The outbox stores only a stable event ID and task reference, never tokens,
 candidate files or raw upstream responses. There is no delivery worker yet.
 
 Retries revalidate the bytes and live grant. Exact retries return the same task
-and event; changed publisher, Bot, epoch, namespace, key or bytes conflict.
-Renewing a grant for the same intent may change the delegation ID/token without
-creating another task; the first delegation ID remains the acceptance evidence.
+and event; changed publisher, Bot, delegation ID, namespace, key or bytes conflict.
+CatsCo renewal preserves the delegation ID and key, rotates the token and
+increments its epoch (at most eight issuances). A freshly introspected renewal
+at an epoch greater than or equal to the original acceptance epoch can recover
+the original receipt. Older epochs are rejected; a new delegation ID cannot
+reuse an accepted association even with a higher epoch. No token validity is
+inferred from the numeric comparison: online introspection remains mandatory.
+The stored acceptance epoch and receipt are immutable historical evidence,
+not the latest token epoch or a commit permit. Renewal never updates them,
+changes held state, restores expired bytes or creates another event.
 An outbox insertion failure rolls back both task and association. Lost responses
 are reconciled by retrying the same entry and bytes, not allocating a new key.
 
@@ -88,6 +95,9 @@ There is no repair, Chinese-guide generation, billing or UI change here.
 Tests cover immutable snapshots, strict input and peer bindings, real PostgreSQL
 replays/concurrency/rollback, identity and expiry checks, quotas, held retention,
 session HTTP denial, worker exclusion and ordinary task coexistence. Peer
-observations in these new database tests are injected; the separate pinned
-HTTPS contract checks the real client and CatsCo handler. Neither substitutes
+observations in these new database tests are injected. The separate pinned
+HTTPS contract also exercises real Cloud intake/PostgreSQL and the CatsCo
+handler with a rotation-aware CatsCo store double, including old-token denial
+and renewed-token recovery. That contract requires a PostgreSQL DSN and applies
+Cloud migrations in CI; missing dependencies fail rather than skip. Neither substitutes
 for a deployed three-component publication flow.
