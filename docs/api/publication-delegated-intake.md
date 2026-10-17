@@ -1,0 +1,93 @@
+# Delegated publication intake foundation
+
+Cloud can atomically retain an immutable candidate, its CatsCo association and
+one reference-only callback outbox record. This internal foundation is disabled
+by default and has no production API or worker caller. `delegated_pending`
+means held for a future protocol, not validated for publication or published.
+
+## Admission and identity
+
+`createDelegatedPublicationIntake` requires explicit internal enablement,
+publication task settings, configured canonical HTTPS issuer/audience and the
+pinned introspection client. There is no environment switch or HTTP route.
+Input is the six-field introspection request, including the opaque grant and
+exact candidate bytes; Cloud owner IDs, profile IDs and arbitrary fields are
+rejected. A configured concurrency cap covers the entire operation, including
+database settlement after client cancellation. A future exposed endpoint must
+also provide authenticated admission, read deadlines and account rate limits.
+
+Before the first await, admission snapshots the input. The bounded validation
+worker parses those bytes and computes the canonical candidate digest. Only a
+complete report with that digest can be retained; the initial revision must
+match the captured source digest. Readable format-rejected Skills are retained
+with their bounded rejection report. Unsafe or undecodable input returns its
+validation result without a task. Introspection follows validation and must
+match bytes, digest, entry, revision, key, epoch, issuer, audience and identities.
+The grant is checked again for expiry inside the SQL transaction. No validation,
+network, model or filesystem work occurs under database locks.
+
+The database finds a non-NULL issuer/UID mapping, locks and rechecks the active
+Cloud user and publisher profile, then captures the publisher ID and namespace.
+Legacy UID-only profiles are rejected; there is no backfill or name-based adoption.
+This is intake authorization observed at grant use, not durable permission to
+publish. CatsCo revocation after observation must still win before the future
+commit-permit boundary. This PR does not implement that boundary.
+
+## Atomic association and replay
+
+Migration 016 adds `authority_kind` to publication tasks, an immutable
+`publication_delegations` association and `publication_delegation_outbox`.
+The association is unique by `(issuer, entry_request_id, candidate_revision)`
+and constrained to a CatsCo task. All three inserts share one transaction.
+The outbox stores only a stable event ID and task reference, never tokens,
+candidate files or raw upstream responses. There is no delivery worker yet.
+
+Retries revalidate the bytes and live grant. Exact retries return the same task
+and event; changed publisher, Bot, epoch, namespace, key or bytes conflict.
+Renewing a grant for the same intent may change the delegation ID/token without
+creating another task; the first delegation ID remains the acceptance evidence.
+An outbox insertion failure rolls back both task and association. Lost responses
+are reconciled by retrying the same entry and bytes, not allocating a new key.
+
+Admission uses the existing global intake lock and shared per-owner/global task
+and byte budgets. Ordinary account tasks and delegated candidates consume the
+same quotas; an account request cannot reuse a delegated task's key as a replay.
+
+## Execution isolation and retention
+
+Ordinary session routes cannot list, read, cancel or publish a delegated task.
+Both validation and publication workers select only account tasks. A database
+constraint holds delegated tasks in `delegated_pending`, without leases or
+commit bytes; an immutable authority guard prevents relabelling a task to bypass
+those filters. A future delegated read/cancel API must use CatsCo authority and
+must not remove these ordinary-session restrictions.
+
+Maintenance clears expired candidate bytes in bounded batches without changing
+the held state. Associations and outbox records survive the ordinary purge
+deadline, and retry never restores expired source bytes. Their retained task
+count continues to consume quota, bounding metadata growth. This is a temporary
+held-state policy, not the completed production lifecycle. The foreign key
+restricts task/account deletion while associations exist; production activation
+requires an explicit cancellation/tombstone/cleanup policy first. Do not bypass
+this protection by deleting associations during ordinary request handling.
+
+## Deployment and remaining gates
+
+Apply migration 016 before deploying the new binary. No configuration or
+production enablement changes are included. If held records exist, do not roll
+back to older task maintenance: it does not recognize them and can attempt
+forbidden expiry transitions. Keep the compatible worker and schema; disabling
+admission alone is not permission to drop replay evidence or database guards.
+
+Still required: evidence-backed legacy identity binding, authenticated callback
+delivery and reconciliation on CatsCo, owner-private read/cancel protocol,
+commit-permit ordering, final retention/deletion rules, runtime capture/grant
+issuance/upload, isolated cross-repository acceptance, then production review.
+There is no repair, Chinese-guide generation, billing or UI change here.
+
+Tests cover immutable snapshots, strict input and peer bindings, real PostgreSQL
+replays/concurrency/rollback, identity and expiry checks, quotas, held retention,
+session HTTP denial, worker exclusion and ordinary task coexistence. Peer
+observations in these new database tests are injected; the separate pinned
+HTTPS contract checks the real client and CatsCo handler. Neither substitutes
+for a deployed three-component publication flow.

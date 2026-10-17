@@ -30,16 +30,21 @@ export function createPublicationTaskStore({ query, tx }) {
     return fn(client);
   });
   // Metadata queries intentionally do not materialize BYTEA candidates.
-  const columns = `id, owner_user_id, request_key, request_hash, candidate_hash, candidate_bytes,
+  const columns = `id, authority_kind, owner_user_id, request_key, request_hash, candidate_hash, candidate_bytes,
     state, intake_result, validation_result, error_code, publication_result, created_at, updated_at, expires_at, purge_after,
     EXISTS(SELECT 1 FROM publication_commits c WHERE c.task_id=publication_tasks.id) AS publication_accepted,
     EXISTS(SELECT 1 FROM publication_commits c WHERE c.task_id=publication_tasks.id AND c.receipt IS NOT NULL) AS commit_started`;
   const retained = `(purge_after>now() OR (state NOT IN ('published','cancelled') AND EXISTS
     (SELECT 1 FROM publication_commits c WHERE c.task_id=publication_tasks.id)))`;
   async function maintain(client) {
+    // Held delegated tasks retain their association/replay evidence. Expire
+    // source bytes only; do not enter the ordinary task state machine or GC.
+    await client.query(`UPDATE publication_tasks SET candidate=NULL,candidate_bytes=0,updated_at=now()
+      WHERE id IN (SELECT id FROM publication_tasks WHERE authority_kind='catsco'
+        AND expires_at<=now() AND candidate IS NOT NULL LIMIT 500 FOR UPDATE SKIP LOCKED)`);
     // Lock first, then recheck with a fresh READ COMMITTED snapshot. An intent
     // may have been inserted while the initial scan was finding task rows.
-    const expired = await client.query(`SELECT id FROM publication_tasks WHERE expires_at<=now()
+    const expired = await client.query(`SELECT id FROM publication_tasks WHERE authority_kind='account' AND expires_at<=now()
       AND state NOT IN ('publish_queued','publishing','committing','publish_failed','published')
       AND (candidate IS NOT NULL OR state NOT IN ('expired','cancelled','published'))
       LIMIT 500 FOR UPDATE SKIP LOCKED`);
@@ -50,17 +55,17 @@ export function createPublicationTaskStore({ query, tx }) {
         AND state NOT IN ('publish_queued','publishing','committing','publish_failed','published')
         AND NOT EXISTS(SELECT 1 FROM publication_commits c WHERE c.task_id=publication_tasks.id)`,[expired.rows.map(row=>row.id)]);
     const purgeable = await client.query(`SELECT id FROM publication_tasks
-      WHERE purge_after<=now() AND NOT ${retained} LIMIT 500 FOR UPDATE SKIP LOCKED`);
+      WHERE authority_kind='account' AND purge_after<=now() AND NOT ${retained} LIMIT 500 FOR UPDATE SKIP LOCKED`);
     await client.query(`DELETE FROM publication_tasks WHERE id=ANY($1::text[]) AND NOT ${retained}`,
       [purgeable.rows.map(row=>row.id)]);
   }
   async function getPublicationTask(ownerId, id) {
-    const result = await query(`SELECT ${columns} FROM publication_tasks WHERE id=$1 AND owner_user_id=$2 AND ${retained}`, [id, ownerId]);
+    const result = await query(`SELECT ${columns} FROM publication_tasks WHERE authority_kind='account' AND id=$1 AND owner_user_id=$2 AND ${retained}`, [id, ownerId]);
     return result.rowCount ? publicTask(result.rows[0]) : null;
   }
   return {
     async findPublicationTaskForRequest(ownerId, requestKey, requestHash) {
-      const result = await query(`SELECT ${columns} FROM publication_tasks WHERE owner_user_id=$1 AND request_key=$2 AND ${retained}`, [ownerId, requestKey]);
+      const result = await query(`SELECT ${columns} FROM publication_tasks WHERE authority_kind='account' AND owner_user_id=$1 AND request_key=$2 AND ${retained}`, [ownerId, requestKey]);
       if (!result.rowCount) return null;
       if (result.rows[0].request_hash !== requestHash) throw taskError(409, 'request_conflict', 'Request key was already used for different content.');
       return publicTask(result.rows[0]);
@@ -75,6 +80,7 @@ export function createPublicationTaskStore({ query, tx }) {
         await maintain(client);
         const previous = await client.query(`SELECT ${columns} FROM publication_tasks WHERE owner_user_id=$1 AND request_key=$2`, [ownerId, requestKey]);
         if (previous.rowCount) {
+          if (previous.rows[0].authority_kind !== 'account') throw taskError(409, 'request_conflict', 'Request key is unavailable.');
           if (previous.rows[0].request_hash !== requestHash) throw taskError(409, 'request_conflict', 'Request key was already used for different content.');
           return { task: publicTask(previous.rows[0]), created: false };
         }
@@ -99,7 +105,7 @@ export function createPublicationTaskStore({ query, tx }) {
     },
     getPublicationTask,
     async listPublicationTasks(ownerId) {
-      const result = await query(`SELECT ${columns} FROM publication_tasks WHERE owner_user_id=$1 AND ${retained}
+      const result = await query(`SELECT ${columns} FROM publication_tasks WHERE authority_kind='account' AND owner_user_id=$1 AND ${retained}
         ORDER BY created_at DESC,id DESC LIMIT 100`, [ownerId]);
       return result.rows.map(row => {
         const { validation, ...summary } = publicTask(row);
@@ -109,11 +115,11 @@ export function createPublicationTaskStore({ query, tx }) {
     async cancelPublicationTask(ownerId, id) {
       const result = await tx(async client => {
         await client.query('SELECT id FROM publication_tasks WHERE id=$1 AND owner_user_id=$2 FOR UPDATE',[id,ownerId]);
-        const current = (await client.query(`SELECT ${columns} FROM publication_tasks WHERE id=$1 AND owner_user_id=$2 FOR UPDATE`,[id,ownerId])).rows[0];
+        const current = (await client.query(`SELECT ${columns} FROM publication_tasks WHERE authority_kind='account' AND id=$1 AND owner_user_id=$2 FOR UPDATE`,[id,ownerId])).rows[0];
         if (current && (current.commit_started || current.state==='published')) throw taskError(409,'commit_started','Publication has entered commit and cannot be cancelled.');
         return client.query(`UPDATE publication_tasks SET state='cancelled',candidate=NULL,candidate_bytes=0,
         lease_token=NULL,lease_until=NULL,error_code=NULL,updated_at=now()
-        WHERE id=$1 AND owner_user_id=$2 AND ${retained}
+        WHERE authority_kind='account' AND id=$1 AND owner_user_id=$2 AND ${retained}
           AND (expires_at>now() OR EXISTS(SELECT 1 FROM publication_commits c WHERE c.task_id=publication_tasks.id)) AND state<>'cancelled'
         RETURNING ${columns}`, [id, ownerId]);
       });
@@ -126,10 +132,10 @@ export function createPublicationTaskStore({ query, tx }) {
         // A timed-out final attempt must become terminal instead of living forever in validating.
         await client.query(`UPDATE publication_tasks SET state='failed', error_code='skillhub.publication_task_attempts_exhausted',
           lease_token=NULL,lease_until=NULL,updated_at=now()
-          WHERE id IN (SELECT id FROM publication_tasks WHERE state='validating' AND lease_until<=now()
+          WHERE id IN (SELECT id FROM publication_tasks WHERE authority_kind='account' AND state='validating' AND lease_until<=now()
             AND attempts >= $1 LIMIT 100 FOR UPDATE SKIP LOCKED)`, [MAX_ATTEMPTS]);
         const selected = await client.query(`SELECT id FROM publication_tasks
-          WHERE expires_at>now() AND attempts<$1 AND candidate IS NOT NULL
+          WHERE authority_kind='account' AND expires_at>now() AND attempts<$1 AND candidate IS NOT NULL
             AND ((state='queued' AND run_after<=now()) OR (state='validating' AND lease_until<=now()))
           ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1`, [MAX_ATTEMPTS]);
         if (!selected.rowCount) return null;
@@ -147,7 +153,7 @@ export function createPublicationTaskStore({ query, tx }) {
         const error = !user.rowCount ? 'skillhub.publication_task_owner_inactive' : errorCode ?? null;
         const updated = await client.query(`UPDATE publication_tasks SET state=$3,validation_result=$4,error_code=$5,
           lease_token=NULL,lease_until=NULL,run_after=now()+interval '5 seconds',updated_at=now()
-          WHERE id=$1 AND lease_token=$2 AND state='validating' AND lease_until>now() AND expires_at>now()`,
+          WHERE authority_kind='account' AND id=$1 AND lease_token=$2 AND state='validating' AND lease_until>now() AND expires_at>now()`,
         [task.id, task.lease_token, state, result ? JSON.stringify(result) : null, error]);
         return updated.rowCount === 1;
       });
