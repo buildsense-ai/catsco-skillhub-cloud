@@ -1765,6 +1765,7 @@ async function synchronizeCatsCoPublisherProfile(store, body, options = {}) {
   }
   const { user, developerProfile } = await store.claimCatsCoPublisherIdentity({
     catsCoUid: uid,
+    catsCoIssuer: catsBaseUrl,
     namespace,
     displayName,
     contact: `catsco:${uid}`,

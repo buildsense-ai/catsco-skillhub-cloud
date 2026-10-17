@@ -4,6 +4,7 @@ import { generateId, JobStatus, nowIso, sha256, ValidationError } from "../domai
 import { createPresentationStore, ensurePresentationSchema } from "../presentations/store.js";
 import { createPresentationAssetStore } from "../presentations/asset-store.js";
 import { createPublicationTaskStore } from "../publication-tasks/store.js";
+import { requireCatsCoIssuer, assertCatsCoIssuerMatches } from '../publication-delegation/identity.js';
 import { createPublicationCommitStore, lockPublicationCompletion, finishPublicationCompletion } from '../publication-tasks/commit-store.js';
 import { createPublicVersionStore, adoptPublicVersion, comparePublicVersions } from "../publication-tasks/versions.js";
 
@@ -94,6 +95,11 @@ export function createStore(config) {
               AND column_name = 'catsco_uid'
           ) AS catsco_identity_column,
           EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = current_schema() AND table_name = 'publisher_profiles'
+              AND column_name = 'catsco_issuer'
+          ) AS catsco_issuer_column,
+          EXISTS (
             SELECT 1
             FROM information_schema.columns
             WHERE table_schema = current_schema()
@@ -115,11 +121,12 @@ export function createStore(config) {
         || !schema.skill_scans
         || !schema.skill_versions
         || !schema.catsco_identity_column
+        || !schema.catsco_issuer_column
         || !schema.git_columns
         || !schema.skill_visibility_grants
         || !schema.skill_visibility_columns
       ) {
-        throw new Error("SkillHub database schema is incomplete; run npm run db:migrate (including migration 010_skill_visibility)");
+        throw new Error("SkillHub database schema is incomplete; run npm run db:migrate (including migration 015_catsco_publisher_issuer)");
       }
       simplifiedSchemaReady = true;
     })().catch((error) => {
@@ -313,12 +320,14 @@ export function createStore(config) {
 
     async claimCatsCoPublisherIdentity({
       catsCoUid,
+      catsCoIssuer,
       namespace,
       displayName,
       contact,
       internalEmail,
       passwordHash
     }) {
+      const issuer = requireCatsCoIssuer(catsCoIssuer);
       await ensureSimplifiedSchema();
       const uid = String(catsCoUid ?? "").trim();
       const normalizedNamespace = String(namespace ?? "").trim();
@@ -343,6 +352,7 @@ export function createStore(config) {
           [uid]
         );
         let profileRow = identityResult.rows[0] || null;
+        assertCatsCoIssuerMatches(profileRow, issuer);
         let userRow = null;
         if (profileRow) {
           const userResult = await client.query(
@@ -388,11 +398,11 @@ export function createStore(config) {
           );
           const profileResult = await client.query(
             `INSERT INTO publisher_profiles (
-               id, user_id, namespace, display_name, contact, website_url, catsco_uid, status
+               id, user_id, namespace, display_name, contact, website_url, catsco_uid, status, catsco_issuer
              )
-             VALUES ($1, $2, $3, $4, $5, '', $6, 'active')
+             VALUES ($1, $2, $3, $4, $5, '', $6, 'active', $7)
              RETURNING *`,
-            [generateId("pub"), userId, normalizedNamespace, displayName, contact, uid]
+            [generateId("pub"), userId, normalizedNamespace, displayName, contact, uid, issuer]
           );
           profileRow = profileResult.rows[0];
         } else {
