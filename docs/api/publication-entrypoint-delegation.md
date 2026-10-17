@@ -11,7 +11,11 @@ Implementation note: CatsCo PR656 provides the service-only introspection
 endpoint. Cloud's matching [internal client](publication-introspection-client.md)
 and pinned HTTPS contract test are now implemented separately. No Cloud upload
 route or worker calls that client yet; the association and commit/cancel protocol
-below remains a prerequisite for activating delegated publishing.
+below remains a prerequisite for activating delegated publishing. The
+[publisher identity provenance](publication-publisher-identity.md) migration
+records issuer origins for newly verified identities without silently adopting
+historical UID-only mappings. Legacy binding and delegated intake remain separate
+rollout prerequisites.
 
 ## Existing capabilities and gaps
 

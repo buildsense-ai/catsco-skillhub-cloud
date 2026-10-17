@@ -3,6 +3,7 @@ import http from "node:http";
 import { afterEach, test } from "node:test";
 import { createApiServer } from "../../apps/api/server.js";
 import { loadConfig } from "../../packages/config/index.js";
+import { assertCatsCoIssuerMatches, requireCatsCoIssuer } from '../../packages/publication-delegation/identity.js';
 
 const cleanup = [];
 
@@ -38,7 +39,8 @@ test("CatsCo exchange pins the authority and ignores forged publisher hints whil
     const result = await post(`${baseUrl}/api/auth/catsco-exchange`, {
       token: "cats-token",
       [authorityField]: untrustedUrl,
-      user: { uid: "999", username: "victim", displayName: "Forged" }
+      user: { uid: "999", username: "victim", displayName: "Forged" },
+      catsCoIssuer: untrustedUrl, issuer: untrustedUrl
     });
     assert.equal(result.response.status, 200);
     assert.deepEqual(result.data.catsCo, { uid: "85", username: "arrowhaken", displayName: "Verified" });
@@ -53,6 +55,7 @@ test("CatsCo exchange pins the authority and ignores forged publisher hints whil
   assert.equal(store.users.size, 1);
   assert.equal(store.profilesByCatsCoUid.has("999"), false);
   assert.equal(store.sessions.size, 2);
+  assert.equal(store.profilesByCatsCoUid.get('85').catsco_issuer, `http://127.0.0.1:${catsCo.address().port}`);
 });
 
 test("exchange and profile sync fail closed on blank or invalid server authority without contacting request URLs", async () => {
@@ -219,6 +222,7 @@ test("CatsCo profile sync updates publisher identity without creating a SkillHub
   assert.equal(second.data.developerProfile.displayName, "arrowhaken");
   assert.equal(store.users.size, 1);
   assert.equal(store.profilesByUser.get("user-1").displayName, "arrowhaken");
+  assert.equal(store.profilesByUser.get('user-1').catsco_issuer, `http://127.0.0.1:${catsCoAddress.port}`);
   assert.deepEqual(store.audits.map((entry) => entry.action), [
     "auth.catsco_profile_sync",
     "auth.catsco_profile_sync"
@@ -367,6 +371,35 @@ test("a legacy preclaimed synthetic email is never adopted as a verified CatsCo 
   assert.notEqual(store.profilesByCatsCoUid.get("85").userId, attacker.id);
 });
 
+test('exchanging a same-number UID from a changed authority cannot create a session or overwrite a bound profile', async () => {
+  const store = createMemoryStore();
+  const issuers = [];
+  for (const displayName of ['Original', 'Other authority']) {
+    const catsCo = http.createServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ uid: 85, username: 'arrowhaken', display_name: displayName }));
+    });
+    await listen(catsCo);
+    cleanup.push(() => close(catsCo));
+    const api = createApiServer(testConfig(`http://127.0.0.1:${catsCo.address().port}`), { store });
+    await listen(api);
+    cleanup.push(() => close(api));
+    issuers.push(`http://127.0.0.1:${api.address().port}`);
+  }
+  assert.equal((await post(`${issuers[0]}/api/auth/catsco-exchange`, { token: 'fixture' })).response.status, 200);
+  const original = { ...store.profilesByCatsCoUid.get('85') };
+  const auditCount = store.audits.length;
+  for (const endpoint of ['catsco-exchange', 'catsco-profile-sync']) {
+    const response = await post(`${issuers[1]}/api/auth/${endpoint}`, { token: 'fixture' });
+    assert.equal(response.response.status, 409);
+    assert.equal(response.data.error.code, 'catsco.publisher_issuer_conflict');
+    assert.equal(response.response.headers.get('set-cookie'), null);
+  }
+  assert.equal(store.sessions.size, 1);
+  assert.equal(store.audits.length, auditCount);
+  assert.deepEqual(store.profilesByCatsCoUid.get('85'), original);
+});
+
 function createMemoryStore() {
   const users = new Map();
   const usersByEmail = new Map();
@@ -418,8 +451,10 @@ function createMemoryStore() {
       return user;
     },
     async claimCatsCoPublisherIdentity(input) {
+      const issuer = requireCatsCoIssuer(input.catsCoIssuer);
       const catsCoUid = String(input.catsCoUid ?? "").trim();
       const existing = profilesByCatsCoUid.get(catsCoUid) || null;
+      assertCatsCoIssuerMatches(existing, issuer);
       const namespaceOwner = profilesByNamespace.get(input.namespace) || null;
       if (namespaceOwner && (!existing || namespaceOwner.userId !== existing.userId)) {
         const error = new Error("CatsCo publisher namespace is already linked to another account.");
@@ -460,7 +495,8 @@ function createMemoryStore() {
         namespace: input.namespace,
         displayName: input.displayName,
         contact: input.contact,
-        catsCoUid
+        catsCoUid,
+        catsco_issuer: existing ? existing.catsco_issuer : issuer
       };
       profilesByUser.set(user.id, profile);
       profilesByNamespace.set(input.namespace, profile);
