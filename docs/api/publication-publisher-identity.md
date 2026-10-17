@@ -41,9 +41,12 @@ pinned introspection result. It must lock and recheck the active user/profile
 and publisher identity in the task transaction, persist the binding with the
 task and callback outbox, and reject missing or conflicting provenance. Looking
 up by UID alone, accepting a session alone or reading this column once outside
-the transaction is not sufficient authority. Human account type, current Bot
+the transaction is not sufficient authority. The internal
+[held intake](publication-delegated-intake.md) now performs these transactional
+checks for new issuer-bound profiles, without exposing an API. Human account type, current Bot
 ownership, revision, byte hashes and final commit permission remain CatsCo
-protocol checks. This PR does not implement that adapter or a resolver API.
+protocol checks. Legacy identity binding and delegated commit authorization
+are not implemented by the held intake.
 
 ## Deployment and rollback
 

@@ -17,6 +17,11 @@ records issuer origins for newly verified identities without silently adopting
 historical UID-only mappings. Legacy binding and delegated intake remain separate
 rollout prerequisites.
 
+The [held delegated intake](publication-delegated-intake.md) now provides an
+internal atomic association/outbox foundation and ordinary-session isolation.
+It has no production caller, callback delivery or delegated commit worker;
+historical identity binding and the cancel/permit protocol remain activation gates.
+
 ## Existing capabilities and gaps
 
 The audit baselines are
