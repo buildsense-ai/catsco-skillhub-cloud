@@ -38,7 +38,7 @@ export class PublicationAuthorityError extends Error {
   }
 }
 
-function validOrigin(value) {
+export function validPublicationPeerOrigin(value) {
   if (typeof value !== 'string' || value.length > 256) return false;
   const match = value.match(/^https:\/\/([a-z0-9.-]+)(?::([0-9]{1,5}))?$/);
   if (!match || match[1].length > 253 || match[1].split('.').some(label =>
@@ -167,7 +167,7 @@ function requestObservation(url, secret, token, body, signal, requestImpl) {
 export function createPublicationIntrospectionClient(config = {}, { requestImpl = https.request } = {}) {
   const enabled = config.enabled === true;
   const { issuer, audience, peerSecret } = config;
-  const ready = validOrigin(issuer) && validOrigin(audience) && new URL(issuer).origin !== new URL(audience).origin && isString(peerSecret, HASH);
+  const ready = validPublicationPeerOrigin(issuer) && validPublicationPeerOrigin(audience) && new URL(issuer).origin !== new URL(audience).origin && isString(peerSecret, HASH);
   let active = 0;
   return Object.freeze({
     async checkUploadGrant(input, { signal } = {}) {

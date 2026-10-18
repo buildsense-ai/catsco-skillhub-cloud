@@ -13,6 +13,8 @@ import { validatePublishRequest } from '../../packages/publish-validation/index.
 import { createDelegatedPublicationIntake } from '../../packages/publication-delegation/intake.js';
 import { createStore, closePools } from '../../packages/database/store.js';
 import { loadConfig } from '../../packages/config/index.js';
+import { createPublicationReceiptClient } from '../../packages/publication-delegation/receipt-client.js';
+import { createPublicationReceiptDispatcher } from '../../packages/publication-delegation/receipt-worker.js';
 
 async function fixture(t) {
   assert.ok(process.env.CATSCO_CONTRACT_ROOT, 'CATSCO_CONTRACT_ROOT is required; missing counterpart is not a skip');
@@ -60,20 +62,21 @@ async function fixture(t) {
   const client = createPublicationIntrospectionClient(config, transport);
   const input = { token: 'pubupload_' + '2'.repeat(64), entryRequestId: 'pubentry_' + '3'.repeat(32), authorityEpoch: 1,
     rawBody: raw, sourceSnapshotHash: sourceHash, idempotencyKey: 'pubcandidate_' + '5'.repeat(32) };
-  const rotate = () => new Promise((resolve, reject) => {
+  const command = text => new Promise((resolve, reject) => {
     const timer = setTimeout(() => { lines.off('line', onLine); reject(new Error('Peer rotation timeout')); }, 5000);
     const onLine = line => {
       clearTimeout(timer);
-      try { assert.equal(JSON.parse(line).epoch, 2); resolve(); } catch (error) { reject(error); }
+      try { resolve(JSON.parse(line)); } catch (error) { reject(error); }
     };
     lines.once('line', onLine);
-    child.stdin.write('rotate\n');
+    child.stdin.write(text+'\n');
   });
-  return {config, transport, client, input, raw, sourceHash, rotate};
+  const rotate=async()=>assert.equal((await command('rotate')).epoch,2);
+  return {config, transport, client, input, raw, sourceHash, rotate, command};
 }
 
 test('Cloud client and pinned CatsCo peer handler exchange actual HTTPS with strict authority binding', { timeout: 180000 }, async t => {
-  const {config,transport,client,input,raw,sourceHash} = await fixture(t);
+  const {config,transport,client,input,raw,sourceHash,command} = await fixture(t);
   const checkError = (kind) => error => error.code === `skillhub.publication_authority_${kind}`;
   const grant = await client.checkUploadGrant(input);
   assert.equal(grant.actorCatsCoUid, '9223372036854775806');
@@ -90,6 +93,14 @@ test('Cloud client and pinned CatsCo peer handler exchange actual HTTPS with str
   await assert.rejects(client.checkUploadGrant({ ...input, idempotencyKey: 'pubcandidate_' + 'f'.repeat(32) }), checkError('unavailable'));
   await assert.rejects(createPublicationIntrospectionClient({ ...config, peerSecret: 'e'.repeat(64) }, transport).checkUploadGrant(input), checkError('unavailable'));
   await assert.rejects(createPublicationIntrospectionClient(config).checkUploadGrant(input), checkError('unavailable'));
+  const receipt={schemaVersion:1,entryRequestId:input.entryRequestId,candidateRevision:1,acceptanceEpoch:1,
+    requestHash:grant.requestHash,sourceSnapshotHash:sourceHash,requestBytes:raw.length,delegationId:grant.delegationId,
+    idempotencyKey:input.idempotencyKey,taskId:'pubtask_'+randomUUID(),eventId:'pubevent_'+randomUUID()};
+  const receipts=createPublicationReceiptClient(config,transport);
+  assert.equal((await receipts.deliver(receipt)).commitAllowed,false);
+  await command('lose-ack');
+  await assert.rejects(receipts.deliver(receipt),{code:'skillhub.publication_receipt_unavailable'});
+  assert.equal((await command('receipt')).calls,2,'fault injection drops an ACK only after actual handler acceptance');
 });
 
 test('renewed CatsCo grant recovers the original PostgreSQL intake receipt through actual HTTPS', {timeout:180000}, async t => {
@@ -127,4 +138,48 @@ test('renewed CatsCo grant recovers the original PostgreSQL intake receipt throu
   assert.equal(await store.getPublicationRequest(publisher.user.id,first.association.taskId),null);
   await assert.rejects(accept()({...renewed,rawBody:Buffer.concat([renewed.rawBody,Buffer.from(' ')])}),{code:'skillhub.publication_authority_inactive'});
   t.diagnostic('Real Cloud validation/intake/PostgreSQL/client and CatsCo HTTPS handler; CatsCo grant ledger is a rotation-aware test double, not live Bot authority.');
+});
+
+test('durable Cloud dispatcher recovers lost HTTPS receipt ACK after restart and local cancellation', {timeout:180000}, async t=>{
+  assert.ok(process.env.SKILLHUB_TEST_DATABASE_URL,'PostgreSQL DSN is required; missing database is not a skip');
+  const peer=await fixture(t);
+  const config=loadConfig({databaseUrl:process.env.SKILLHUB_TEST_DATABASE_URL,nodeEnv:'test',publicationTasksEnabled:true});
+  const store=createStore(config),suffix=randomUUID();let publisher;
+  t.after(async()=>{
+    try{if(publisher){
+      await store.query('DELETE FROM publication_delegations WHERE task_id IN (SELECT id FROM publication_tasks WHERE owner_user_id=$1)',[publisher.user.id]);
+      await store.query('DELETE FROM users WHERE id=$1',[publisher.user.id]);
+    }}finally{await closePools();}
+  });
+  publisher=await store.claimCatsCoPublisherIdentity({catsCoUid:'9223372036854775806',catsCoIssuer:peer.config.issuer,
+    namespace:`receipt-${suffix}`,displayName:'Receipt contract',contact:'',internalEmail:`${suffix}@example.invalid`,passwordHash:'fixture'});
+  const accept=createDelegatedPublicationIntake({enabled:true,config,store,issuer:peer.config.issuer,audience:peer.config.audience,introspectionClient:peer.client});
+  const first=await accept(peer.input),taskId=first.association.taskId;
+  const association=(await store.query('SELECT * FROM publication_delegations WHERE task_id=$1',[taskId])).rows[0];
+  const outbox=async()=>(await store.query('SELECT * FROM publication_delegation_outbox WHERE task_id=$1',[taskId])).rows[0];
+  const make=()=>createPublicationReceiptDispatcher({...peer.config,store},
+    {client:createPublicationReceiptClient(peer.config,peer.transport)});
+  await peer.command('lose-ack');const initial=make();await initial.runOnce();await initial.stop();
+  assert.equal((await outbox()).delivery_state,'pending');assert.equal((await outbox()).delivery_attempts,1);
+  const recorded=await peer.command('receipt');assert.equal(recorded.calls,1);assert.equal(recorded.receipt.TaskID,taskId);
+  await peer.rotate();await peer.command('cancel');
+  // The raw buffer can expire before response recovery. The same original
+  // acceptance bytes/epoch are retained independently of the current grant.
+  await store.query("UPDATE publication_tasks SET expires_at=now()-interval '2 days',purge_after=now()-interval '1 day' WHERE id=$1",[taskId]);
+  await store.maintainPublicationTasks();
+  await store.query("UPDATE publication_delegation_outbox SET next_attempt_at=now()-interval '1 second' WHERE task_id=$1",[taskId]);
+  const restarted=make();await restarted.runOnce();await restarted.stop();
+  const saved=await outbox();assert.equal(saved.delivery_state,'delivered');assert.equal(saved.delivery_attempts,2);assert.equal(saved.local_intent_cancelled,true);
+  const replay=await peer.command('receipt');assert.equal(replay.calls,2);assert.deepEqual(replay.receipt,recorded.receipt);
+  assert.equal(replay.receipt.Query.Epoch,1);assert.equal(replay.receipt.Query.RequestBytes,peer.raw.length);
+  assert.deepEqual((await store.query('SELECT * FROM publication_delegations WHERE task_id=$1',[taskId])).rows[0],association);
+  assert.deepEqual((await store.query('SELECT state,candidate,candidate_bytes FROM publication_tasks WHERE id=$1',[taskId])).rows[0],
+    {state:'delegated_pending',candidate:null,candidate_bytes:'0'});
+  assert.equal(await store.getPublicationRequest(publisher.user.id,taskId),null);
+  const receipt={schemaVersion:1,entryRequestId:peer.input.entryRequestId,candidateRevision:1,acceptanceEpoch:1,
+    requestHash:association.request_hash??createHash('sha256').update(peer.raw).digest('hex'),sourceSnapshotHash:peer.sourceHash,
+    requestBytes:peer.raw.length,delegationId:association.delegation_id,idempotencyKey:peer.input.idempotencyKey,
+    taskId,eventId:'pubevent_'+randomUUID()};
+  await assert.rejects(createPublicationReceiptClient(peer.config,peer.transport).deliver(receipt),{code:'skillhub.publication_receipt_conflict'});
+  t.diagnostic('Real Cloud PostgreSQL lease/retry/cleanup and HTTPS client plus actual CatsCo receipt handler. CatsCo ledger is explicitly a test double; no publication or remote cancellation authority is exercised.');
 });

@@ -120,9 +120,9 @@ export function createDelegatedPublicationIntake({ enabled = false, config, stor
         [taskId,profile.user_id,request.idempotencyKey,requestHash,report.candidateHash,request.rawBody,request.rawBody.length,
           JSON.stringify(result),settings.candidateTtlMs,settings.retentionMs])).rows[0];
         await client.query(`INSERT INTO publication_delegations
-          (task_id,issuer,audience,entry_request_id,candidate_revision,actor_uid,bot_uid,profile_id,namespace,delegation_id,authority_epoch)
-          VALUES($1,$2,$3,$4,1,$5,$6,$7,$8,$9,$10)`,
-        [taskId,issuer,audience,grant.entryRequestId,grant.actorCatsCoUid,grant.botUid,profile.id,profile.namespace,grant.delegationId,grant.authorityEpoch]);
+          (task_id,issuer,audience,entry_request_id,candidate_revision,actor_uid,bot_uid,profile_id,namespace,delegation_id,authority_epoch,request_bytes)
+          VALUES($1,$2,$3,$4,1,$5,$6,$7,$8,$9,$10,$11)`,
+        [taskId,issuer,audience,grant.entryRequestId,grant.actorCatsCoUid,grant.botUid,profile.id,profile.namespace,grant.delegationId,grant.authorityEpoch,request.rawBody.length]);
         await client.query('INSERT INTO publication_delegation_outbox(task_id,event_id) VALUES($1,$2)',[taskId,eventId]);
         await live();
         return {created:true,accepted:true,association:receipt({task_id:taskId,entry_request_id:grant.entryRequestId,
