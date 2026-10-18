@@ -76,7 +76,7 @@ async function fixture(t) {
 }
 
 test('Cloud client and pinned CatsCo peer handler exchange actual HTTPS with strict authority binding', { timeout: 180000 }, async t => {
-  const {config,transport,client,input,raw,sourceHash} = await fixture(t);
+  const {config,transport,client,input,raw,sourceHash,command} = await fixture(t);
   const checkError = (kind) => error => error.code === `skillhub.publication_authority_${kind}`;
   const grant = await client.checkUploadGrant(input);
   assert.equal(grant.actorCatsCoUid, '9223372036854775806');
@@ -93,6 +93,14 @@ test('Cloud client and pinned CatsCo peer handler exchange actual HTTPS with str
   await assert.rejects(client.checkUploadGrant({ ...input, idempotencyKey: 'pubcandidate_' + 'f'.repeat(32) }), checkError('unavailable'));
   await assert.rejects(createPublicationIntrospectionClient({ ...config, peerSecret: 'e'.repeat(64) }, transport).checkUploadGrant(input), checkError('unavailable'));
   await assert.rejects(createPublicationIntrospectionClient(config).checkUploadGrant(input), checkError('unavailable'));
+  const receipt={schemaVersion:1,entryRequestId:input.entryRequestId,candidateRevision:1,acceptanceEpoch:1,
+    requestHash:grant.requestHash,sourceSnapshotHash:sourceHash,requestBytes:raw.length,delegationId:grant.delegationId,
+    idempotencyKey:input.idempotencyKey,taskId:'pubtask_'+randomUUID(),eventId:'pubevent_'+randomUUID()};
+  const receipts=createPublicationReceiptClient(config,transport);
+  assert.equal((await receipts.deliver(receipt)).commitAllowed,false);
+  await command('lose-ack');
+  await assert.rejects(receipts.deliver(receipt),{code:'skillhub.publication_receipt_unavailable'});
+  assert.equal((await command('receipt')).calls,2,'fault injection drops an ACK only after actual handler acceptance');
 });
 
 test('renewed CatsCo grant recovers the original PostgreSQL intake receipt through actual HTTPS', {timeout:180000}, async t => {

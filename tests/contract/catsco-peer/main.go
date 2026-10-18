@@ -31,6 +31,15 @@ type fixtureStore struct {
 	cancelled    bool
 }
 
+// Discard the response without stripping the real connection's read-deadline
+// support. The production handler deliberately fails closed without it.
+type lostACKWriter struct {
+	*httptest.ResponseRecorder
+	underlying http.ResponseWriter
+}
+
+func (w *lostACKWriter) Unwrap() http.ResponseWriter { return w.underlying }
+
 // Explicit receipt ledger double. The real handler still authenticates,
 // strictly decodes and binds configured scope before invoking this method.
 func (s *fixtureStore) RecordSkillHubPublicationCloudReceipt(ctx context.Context, r store.SkillHubPublicationCloudReceipt) (*store.SkillHubPublicationCloudReceiptResult, error) {
@@ -87,7 +96,7 @@ func main() {
 	tls := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/skillhub/publications/internal/cloud-receipts" && loseACK.Swap(false) {
 			// Real handler/store accept the evidence; drop the response afterward.
-			recorded := httptest.NewRecorder()
+			recorded := &lostACKWriter{httptest.NewRecorder(), w}
 			handler.Load().Handle(recorded, r)
 			conn, _, err := w.(http.Hijacker).Hijack()
 			if err == nil {
