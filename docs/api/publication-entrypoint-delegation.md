@@ -19,8 +19,13 @@ rollout prerequisites.
 
 The [held delegated intake](publication-delegated-intake.md) now provides an
 internal atomic association/outbox foundation and ordinary-session isolation.
-It has no production caller, callback delivery or delegated commit worker;
-historical identity binding and the cancel/permit protocol remain activation gates.
+It has no production caller or delegated commit worker; the internal callback
+dispatcher is implemented separately but is not registered in production.
+Historical identity binding and the cancel/permit protocol remain activation gates.
+The [internal Cloud control store](publication-delegated-control.md) implements
+terminal cancellation of held tasks and local state observation only. It has no
+authenticated route or production caller; durable CatsCo cancellation delivery
+and both sides of the commit-permit protocol remain unimplemented.
 
 ## Existing capabilities and gaps
 
