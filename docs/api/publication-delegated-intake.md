@@ -65,11 +65,17 @@ same quotas; an account request cannot reuse a delegated task's key as a replay.
 ## Execution isolation and retention
 
 Ordinary session routes cannot list, read, cancel or publish a delegated task.
-Both validation and publication workers select only account tasks. A database
-constraint holds delegated tasks in `delegated_pending`, without leases or
-commit bytes; an immutable authority guard prevents relabelling a task to bypass
+Both validation and publication workers select only account tasks. Database
+constraints hold delegated tasks in `delegated_pending` or terminal `cancelled`,
+without leases, commit records or commit bytes; an immutable authority guard prevents relabelling a task to bypass
 those filters. A future delegated read/cancel API must use CatsCo authority and
 must not remove these ordinary-session restrictions.
+
+The default-off [internal control store](publication-delegated-control.md) can
+cancel an exact held task and read its local state. Migration 018 makes that
+cancellation terminal. Intake replay reports the actual stored state, never a
+hard-coded pending state, and cannot restore cancelled source bytes. This is not
+yet an authenticated owner-facing cancellation or live status API.
 
 Maintenance clears expired candidate bytes in bounded batches without changing
 the held state. Associations and outbox records survive the ordinary purge

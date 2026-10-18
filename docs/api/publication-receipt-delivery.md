@@ -3,7 +3,9 @@
 The internal dispatcher delivers historical candidate acceptance evidence to
 the CatsCo receiver introduced in PR659. It survives response loss and process
 restart using the existing PostgreSQL outbox. It does not authorize validation,
-repair, publication or remote cancellation. Tasks remain `delegated_pending`.
+repair, publication or remote cancellation. It never changes a task's state.
+Both held and [internally cancelled tasks](publication-delegated-control.md)
+continue delivery of their original acceptance evidence.
 
 ## Invocation and isolation
 
