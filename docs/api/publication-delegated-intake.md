@@ -40,7 +40,9 @@ Migration 016 adds `authority_kind` to publication tasks, an immutable
 The association is unique by `(issuer, entry_request_id, candidate_revision)`
 and constrained to a CatsCo task. All three inserts share one transaction.
 The outbox stores only a stable event ID and task reference, never tokens,
-candidate files or raw upstream responses. There is no delivery worker yet.
+candidate files or raw upstream responses. The internal, default-off receipt
+dispatcher is described in [Receipt delivery](publication-receipt-delivery.md);
+it has no production bootstrap or environment enablement.
 
 Retries revalidate the bytes and live grant. Exact retries return the same task
 and event; changed publisher, Bot, delegation ID, namespace, key or bytes conflict.
@@ -86,8 +88,13 @@ back to older task maintenance: it does not recognize them and can attempt
 forbidden expiry transitions. Keep the compatible worker and schema; disabling
 admission alone is not permission to drop replay evidence or database guards.
 
-Still required: evidence-backed legacy identity binding, authenticated callback
-delivery and reconciliation on CatsCo, owner-private read/cancel protocol,
+Migration 017 additionally retains the original request byte count separately
+from expiring candidate buffers. Apply it before deploying the updated intake.
+Existing intact candidates can supply this evidence; already-cleared legacy
+candidates cannot and their receipt delivery is blocked, not guessed.
+
+Still required: evidence-backed legacy identity binding, production callback
+bootstrap and operational reconciliation, owner-private read/cancel protocol,
 commit-permit ordering, final retention/deletion rules, runtime capture/grant
 issuance/upload, isolated cross-repository acceptance, then production review.
 There is no repair, Chinese-guide generation, billing or UI change here.
