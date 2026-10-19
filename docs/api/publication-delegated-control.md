@@ -1,9 +1,61 @@
 # Held delegated task cancellation
 
 Cloud can now durably cancel an exact held task and observe its local state.
-This is a default-off **internal storage primitive**, not an authenticated API
-or a completed CatsCo cancellation flow. It has no production caller, environment
-switch, HTTP route or worker registration. It does not issue commit permits.
+The storage primitive now has a default-off authenticated service HTTP adapter.
+CatsCo's durable cancellation intent (PR661) is merged; its sender and result
+reconciliation are still required. No production enablement or worker caller is
+included. This is not a completed CatsCo cancellation flow or a commit permit.
+
+## Service HTTP adapter
+
+`POST /api/skills/publication-delegations/control` accepts exactly
+`{schemaVersion:1, action:"read", receipt}` or
+`{schemaVersion:1, action:"cancel", receipt, cancellationId}`. `receipt` is the
+exact eleven-field historical receipt below. `cancellationId` must be CatsCo's
+durably committed `pubcancel_` plus 32 lowercase hex identifier, never a new ID
+generated per retry. It correlates the reply to CatsCo's immutable ledger; it is
+not a credential or a new Cloud task, and is not independently stored by Cloud.
+The exact receipt/task and immutable Cloud cancellation time provide idempotence.
+
+Successful replies contain the observation below plus `action`, original
+`eventId` and `cancellationId` (null for read). A sender must validate all fields
+and match the entry/task/event and cancellation ID before retaining confirmation.
+Only a cancel response with `executionState:"cancelled"`, a valid immutable
+`cancelledAt` and `candidateAvailable:false` confirms remote cancellation.
+Read results are historical observations, not new action authority.
+
+The adapter requires a dedicated 64-lowercase-hex Bearer secret, configured
+issuer/audience, and HTTPS. User sessions, Bot credentials, upload grants and
+cookies are not substitutes. Browser Origin/Cookie headers are rejected; the
+reserved namespace runs before generic CORS/OPTIONS and account auth. Host must
+match the configured Cloud audience. Direct TLS is accepted. A TLS-terminating
+proxy is accepted only when its exact socket IP is explicitly configured and
+its single `X-Forwarded-Proto` value is `https`; the proxy must overwrite this
+header and preserve the audience Host. Forwarded IP headers never establish trust.
+
+Configuration is independent and defaults off:
+
+| Environment variable | Meaning |
+| --- | --- |
+| `SKILLHUB_PUBLICATION_CONTROL_ENABLED` | Explicit enablement, default false |
+| `SKILLHUB_PUBLICATION_CONTROL_ISSUER` | Fixed CatsCo HTTPS origin |
+| `SKILLHUB_PUBLICATION_CONTROL_AUDIENCE` | Fixed Cloud HTTPS origin |
+| `SKILLHUB_PUBLICATION_CONTROL_PEER_SECRET` | Independently provisioned service secret; do not reuse agent/session/mutation secrets |
+| `SKILLHUB_PUBLICATION_CONTROL_TRUSTED_PROXY_ADDRESSES` | Optional comma-separated exact socket IPs; empty accepts direct TLS only |
+
+No deployment script sets these values. Invalid configuration fails only this
+optional route closed. Requests are strict JSON/UTF-8, at most 4 KiB, with no
+unknown fields, duplicate keys, encodings or query-string parameters. Authenticated
+requests share a 120/minute service budget and 16 in-flight slots. HTTP has a
+five-second budget; a timed-out SQL operation retains its slot until settlement.
+Timeout/disconnect means **unknown outcome**, never failed cancellation: replay
+the same receipt and cancellation intent. No network call occurs under SQL locks.
+
+Responses are no-store and safe: 400 invalid input, 401 missing/invalid service
+authentication, 404 unavailable reference (or disabled route), 409 incompatible
+execution evidence, 429 rate limit, 503 unavailable/busy. In particular, 404 and
+409 are not cancellation success, and 409 does not yet prove publication completed.
+Infrastructure failures must not trigger Skill format repair or new task creation.
 
 ## Internal contract and authority boundary
 
@@ -16,9 +68,8 @@ The database matches every field plus configured issuer/audience. Missing and
 mismatched references share one safe `not_found` error; no arbitrary owner ID,
 namespace, token, callback URL or raw error is returned.
 
-The reference is an identifier, not a credential. Before exposing this primitive,
-a future service adapter must authenticate the independently configured CatsCo
-peer. CatsCo must first verify the original active human and current Bot Owner,
+The reference is an identifier, not a credential. The service adapter authenticates
+the independently configured CatsCo peer. CatsCo must first verify the original active human and current Bot Owner,
 serialize cancellation against commit authorization and durably record the
 cancellation intent. The receipt ACK's `localIntentCancelled` boolean, an upload
 grant or an ordinary account session must **never** invoke cancellation directly.
@@ -93,8 +144,8 @@ Local runs without a DSN skip PostgreSQL; CI must execute these cases without
 skips. The existing two-repository HTTPS contract remains an independent
 acceptance/receipt test, not an end-to-end cancellation test.
 
-Next: durable CatsCo cancel intent and service authentication/delivery, Cloud
-execution-status transport, then immutable commit intent/permit and crash/race
+Next: CatsCo durable cancellation delivery and response reconciliation, then
+immutable commit intent/permit and crash/race
 ordering on both sides. CatsCo must not report a remote cancellation solely from
 its local record. Full runtime capture/upload, lifecycle handling, isolated
 acceptance and explicit production approval remain prerequisites. Repair,

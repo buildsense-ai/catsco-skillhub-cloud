@@ -7,6 +7,7 @@ export class PublicationControlError extends Error {
       disabled: 'Delegated publication control is disabled.',
       configuration: 'Delegated publication control configuration is unavailable.',
       invalid: 'Delegated publication reference is invalid.',
+      unauthorized: 'Publication service authentication is required.',
       not_found: 'Delegated publication reference is unavailable.',
       conflict: 'Delegated publication cannot be cancelled in this state.',
       busy: 'Delegated publication control is busy.',
@@ -19,8 +20,8 @@ export class PublicationControlError extends Error {
   }
 }
 
-// INTERNAL STORAGE PRIMITIVE, not an authentication adapter. No API/worker
-// imports it. A future independently authenticated CatsCo peer adapter must
+// INTERNAL STORAGE PRIMITIVE, not an authentication adapter. The separately
+// configured service handler authenticates CatsCo. Its upstream adapter must
 // authorize the human action and durably record cancel intent BEFORE invoking
 // cancel. Receipt IDs, an upload grant, a session, and localIntentCancelled in
 // an ACK are not cancellation authority. Never expose this store directly.
