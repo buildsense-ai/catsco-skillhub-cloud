@@ -21,6 +21,7 @@ import {createPublicationCommitHandler} from '../../apps/api/publication-commit.
 import {publicationPeerTLS} from '../helpers/publication-peer-tls.js';
 import {runtimePublicationCaptures} from '../helpers/runtime-publication-capture.js';
 import {createPublicationUploadHandler,PUBLICATION_UPLOAD_PATH} from '../../apps/api/publication-upload.js';
+import {createDelegatedPublicationIntake} from '../../packages/publication-delegation/intake.js';
 
 test('real CatsCo + Cloud PostgreSQL: frozen plan, human intent, HTTPS permit, cancel ordering and recoverable Git/package publication',
   {timeout:240000},async t=>{
@@ -77,7 +78,13 @@ test('real CatsCo + Cloud PostgreSQL: frozen plan, human intent, HTTPS permit, c
   const config=loadConfig({root:path.join(root,'cloud'),databaseUrl:process.env.SKILLHUB_TEST_DATABASE_URL,nodeEnv:'test',
     publicationTasksEnabled:true,publicationPublishingEnabled:true,publicationDelegatedWorkerEnabled:true,allowAutoKeygen:true});
   store=createStore(config);await issueSigningKeyCertificate(config);
-  uploadHandler=createPublicationUploadHandler({...config,publicationUpload:{...peer,trustedProxyAddresses:[]}},store,{introspectionClient});
+  const diagnosticPeer={async checkUploadGrant(...args){
+    try{return await introspectionClient.checkUploadGrant(...args);}
+    catch(e){t.diagnostic(`upload introspection failed: ${e.code??'untyped'}`);throw e;}
+  }};
+  const actualIntake=createDelegatedPublicationIntake({...peer,config,store,introspectionClient:diagnosticPeer});
+  uploadHandler=createPublicationUploadHandler({...config,publicationUpload:{...peer,trustedProxyAddresses:[]}},store,{introspectionClient:diagnosticPeer,
+    accept:async(...args)=>{try{return await actualIntake(...args);}catch(e){t.diagnostic(`upload intake failed: ${/^[a-zA-Z0-9_.]{1,100}$/.test(e.code??'')?e.code:'untyped'}`);throw e;}}});
   handler=createPublicationCommitHandler({...config,publicationCommitService:{...peer,trustedProxyAddresses:[]}},store,
     {coordinator:createDelegatedPublicationCommitCoordinator({...peer,store,config,permitClient})});
   const cloudCall=async(action,receipt,extra={})=>{
