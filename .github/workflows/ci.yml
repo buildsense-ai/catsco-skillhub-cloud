@@ -134,8 +134,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: buildsense-ai/cats-company
-          # PR662 candidate, intentionally not represented as merged CatsCo main.
-          ref: aa216c80dbbec97a388139d26c16e2471605a876
+          # PR665 merge includes the reviewed PR662 cancellation sender.
+          ref: 8d76e71869a4edca60b4cc1fab323a82cd7e82c3
           path: cats-company
       - uses: actions/setup-go@v5
         with:
@@ -157,9 +157,58 @@ jobs:
           SKILLHUB_CONTROL_CONTRACT_ROOT: ${{ github.workspace }}/skillhub
         run: go test -race ./server -run '^TestSkillHubPublicationCancellationCloudContract$' -count=1 -v -timeout 3m
 
+  commit-permit-recovery-contract:
+    name: CatsCo and Cloud commit permit recovery
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: permit_contract
+          POSTGRES_USER: contract
+          POSTGRES_PASSWORD: contract_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U contract -d permit_contract"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      CATS_PG_TEST_DSN: postgres://contract:contract_test@127.0.0.1:5432/permit_contract?sslmode=disable
+      CATSCO_REQUIRE_COMMIT_CONTRACT: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: skillhub
+      - uses: actions/checkout@v4
+        with:
+          repository: buildsense-ai/cats-company
+          # Candidate under colleague review, NOT represented as merged main.
+          ref: 2249a15f82fc4cc1e946e3ecded715827592ec79
+          path: cats-company
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: cats-company/go.mod
+          cache-dependency-path: cats-company/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: skillhub/package-lock.json
+      - name: Install locked Cloud dependencies
+        working-directory: skillhub
+        run: npm ci --ignore-scripts
+      - name: Recover actual permit after lost HTTPS reply
+        working-directory: cats-company
+        env:
+          SKILLHUB_COMMIT_CONTRACT_ROOT: ${{ github.workspace }}/skillhub
+        run: go test -race ./server -run '^TestSkillHubPublicationCommitCloudContract$' -count=1 -v -timeout 3m
+
   deploy-production:
     name: Deploy production
-    needs: [test, publication-peer-contract, cancellation-recovery-contract]
+    needs: [test, publication-peer-contract, cancellation-recovery-contract, commit-permit-recovery-contract]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
