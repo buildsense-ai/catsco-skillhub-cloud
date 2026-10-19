@@ -76,13 +76,15 @@ and retain the database and publication artifacts for recovery.
 Required CI runs real PostgreSQL regression, cancellation races, quota rollback,
 schema upgrade, immutable scope, inactive publishers, ordinary-path isolation,
 stale leases, bounded attempts and Git/artifact/checkpoint recovery. The real
-dual-store test uses the reviewed CatsCo PR667 merge over verified TLS and
+dual-store test uses the reviewed CatsCo PR670 merge over verified TLS and
 actual Cloud intake/plan/worker code. It drops a permit reply, reopens the CatsCo
 adapter, publishes one signed package after an injected interruption, and checks
-both cancellation orderings. Human admission and Runtime probe/capture are
-test-seeded, not claimed as deployed user experience.
+both cancellation orderings. A separate scenario exercises real signed human
+JWT plan/confirm/status HTTP requests, rejects a wrong confirmation key and
+another actor, and verifies published status after restart. Older race fixtures
+seed human intent; Runtime probe/capture remains synthetic. This is not a live UI E2E.
 
-Remaining work includes trusted human admission, CatsCo durable dispatch, Runtime capture/upload, and private
+Remaining work includes CatsCo durable dispatch, Runtime capture/upload, and private
 user-visible progress. Only after isolated cross-repository acceptance should
 the production switches be considered. Bounded repair and Chinese guide/model
 billing are later milestones, unchanged by this commit layer.
@@ -116,9 +118,10 @@ the trusted admission adapter and isolated acceptance.
 
 The required dual-store contract now uses the actual CatsCo commit client for
 all three actions and actual Cloud/CatsCo handlers in both directions over
-verified TLS. CI pins the reviewed PR667 merge `eb38e08e577a1eb45378cb36949a455d3e698419`.
+verified TLS. CI pins the reviewed PR670 merge `1c4251293018d343f21c74d94358eab2decedab6`.
 Both databases, Git and the
-signed artifact are real; source probing and human admission are test-seeded.
+signed artifact are real; the human HTTP scenario uses actual admission routes.
+Source probing is synthetic and older race scenarios still seed intent.
 
 ## Independent delegated worker lane
 

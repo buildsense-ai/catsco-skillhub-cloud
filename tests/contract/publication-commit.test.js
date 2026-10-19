@@ -148,5 +148,5 @@ test('real CatsCo + Cloud PostgreSQL: frozen plan, human intent, HTTPS permit, c
   const foreign=await callHuman('status',{actor:f.actor});assert.equal(foreign.status,404);
   assert.equal((await store.query('SELECT 1 FROM skill_versions WHERE skill_id=$1',[human.plan.target.skillId])).rowCount,1);
   for(const secret of ['permitId','receipt','manifestHash','private-source'])assert.ok(!JSON.stringify(actual.body).includes(secret));
-  t.diagnostic('Real dual PostgreSQL + HTTPS + Git + signed package; source probe and human intent are test-seeded. No live UI, paid model, or production switches.');
+  t.diagnostic('Real dual PostgreSQL + HTTPS + Git + signed package, including human JWT plan/confirm/status. Older race fixtures seed intent; Runtime source probe/capture remains synthetic. No live UI, paid model, or production switches.');
 });
