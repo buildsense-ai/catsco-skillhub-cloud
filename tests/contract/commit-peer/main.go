@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -48,8 +49,8 @@ type wireReceipt struct {
 	Event         string `json:"eventId"`
 }
 
-func (r wireReceipt) input(issuer string) store.SkillHubPublicationCloudReceipt {
-	return store.SkillHubPublicationCloudReceipt{Query: store.SkillHubPublicationUploadQuery{Issuer: issuer, Audience: "https://hub.example", Action: store.SkillHubPublicationUploadAction,
+func (r wireReceipt) input(issuer, audience string) store.SkillHubPublicationCloudReceipt {
+	return store.SkillHubPublicationCloudReceipt{Query: store.SkillHubPublicationUploadQuery{Issuer: issuer, Audience: audience, Action: store.SkillHubPublicationUploadAction,
 		EntryID: r.EntryID, Revision: r.Revision, Epoch: r.Epoch, RequestHash: r.RequestHash, SourceSnapshotHash: r.SourceHash, RequestBytes: r.Bytes},
 		DelegationID: r.Grant, IdempotencyKey: r.Key, TaskID: r.Task, EventID: r.Event}
 }
@@ -62,6 +63,7 @@ type command struct {
 	SourceHash  string                                `json:"sourceHash"`
 	Bytes       int64                                 `json:"bytes"`
 	Actor       string                                `json:"actor"`
+	Confirm     bool                                  `json:"confirmVersionPublish"`
 }
 
 func must(err error) {
@@ -112,16 +114,22 @@ func main() {
 		w.Write(record.Body.Bytes())
 	}))
 	issuer := "https://" + ts.Listener.Addr().String()
+	audience := os.Getenv("PEER_TEST_AUDIENCE")
+	if !store.ValidSkillHubPublicationOrigin(audience) {
+		panic("test audience required")
+	}
 	for _, name := range []string{"INTROSPECTION", "CLOUD_RECEIPTS", "COMMIT_PERMITS"} {
 		must(os.Setenv("CATSCO_SKILLHUB_PUBLICATION_"+name+"_ENABLED", "true"))
 	}
 	must(os.Setenv("CATSCO_SKILLHUB_PUBLICATION_ISSUER", issuer))
-	must(os.Setenv("CATSCO_SKILLHUB_PUBLICATION_CLOUD_AUDIENCE", "https://hub.example"))
+	must(os.Setenv("CATSCO_SKILLHUB_PUBLICATION_CLOUD_AUDIENCE", audience))
 	must(os.Setenv("CATSCO_SKILLHUB_PUBLICATION_CLOUD_PEER_SECRET", strings.Repeat("1", 64)))
 	must(os.Setenv("CATSCO_SKILLHUB_PUBLICATION_TRUSTED_PROXY_CIDRS", ""))
 	handler.Store(server.NewSkillHubPublicationPeerHandlerFromEnv(a))
 	ts.StartTLS()
 	defer ts.Close()
+	cloud, err := server.NewPublicationCommitCloudClient(server.PublicationCommitCloudConfig{Enabled: true, Issuer: issuer, Audience: audience, PeerSecret: strings.Repeat("1", 64)})
+	must(err)
 	out := json.NewEncoder(os.Stdout)
 	must(out.Encode(map[string]any{"origin": issuer, "ca": string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ts.Certificate().Raw}))}))
 	scan := bufio.NewScanner(os.Stdin)
@@ -129,7 +137,7 @@ func main() {
 	for scan.Scan() {
 		var c command
 		must(json.Unmarshal(scan.Bytes(), &c))
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 		var result any = map[string]bool{"ok": true}
 		switch c.Action {
 		case "seed":
@@ -150,13 +158,13 @@ func main() {
 			probe, err := a.ClaimSkillHubPublicationDelivery(ctx, entry.ID, binding)
 			must(err)
 			must(a.FinishSkillHubPublicationDelivery(ctx, *probe, ""))
-			g, token, err := a.IssueSkillHubPublicationUploadGrant(ctx, store.SkillHubPublicationUploadInput{EntryID: entry.ID, Binding: binding, Issuer: issuer, Audience: "https://hub.example", Action: store.SkillHubPublicationUploadAction, Revision: 1, RequestHash: c.RequestHash, SourceSnapshotHash: c.SourceHash, RequestBytes: c.Bytes})
+			g, token, err := a.IssueSkillHubPublicationUploadGrant(ctx, store.SkillHubPublicationUploadInput{EntryID: entry.ID, Binding: binding, Issuer: issuer, Audience: audience, Action: store.SkillHubPublicationUploadAction, Revision: 1, RequestHash: c.RequestHash, SourceSnapshotHash: c.SourceHash, RequestBytes: c.Bytes})
 			must(err)
 			result = map[string]any{"actor": strconv.FormatInt(actor, 10), "entryRequestId": entry.ID, "token": token.Reveal(), "idempotencyKey": g.IdempotencyKey, "authorityEpoch": g.Epoch}
 		case "admit":
 			actor, err := strconv.ParseInt(c.Actor, 10, 64)
 			must(err)
-			_, err = a.RecordSkillHubPublicationCommitIntent(ctx, actor, store.SkillHubPublicationCommitInput{Receipt: c.Receipt.input(issuer), Target: c.Target})
+			_, err = a.RecordSkillHubPublicationCommitIntent(ctx, actor, store.SkillHubPublicationCommitInput{Receipt: c.Receipt.input(issuer, audience), Target: c.Target})
 			must(err)
 		case "cancel":
 			actor, err := strconv.ParseInt(c.Actor, 10, 64)
@@ -173,6 +181,31 @@ func main() {
 			var count int
 			must(scoped.QueryRow("SELECT count(*) FROM skillhub_publication_commit_permits").Scan(&count))
 			result = map[string]int{"count": count}
+		case "cloud-plan", "cloud-authorize", "cloud-read":
+			var callErr error
+			r := c.Receipt.input(issuer, audience)
+			switch c.Action {
+			case "cloud-plan":
+				var in *store.SkillHubPublicationCommitInput
+				in, callErr = cloud.Plan(ctx, r, c.Confirm)
+				if callErr == nil {
+					result = map[string]any{"schemaVersion": 1, "receipt": c.Receipt, "target": in.Target}
+				}
+			case "cloud-authorize":
+				result, callErr = cloud.Authorize(ctx, r)
+			case "cloud-read":
+				result, callErr = cloud.Read(ctx, r)
+			}
+			if callErr != nil {
+				code := "unavailable"
+				if errors.Is(callErr, store.ErrSkillHubPublicationConflict) {
+					code = "conflict"
+				}
+				if errors.Is(callErr, store.ErrSkillHubPublicationSettled) {
+					code = "cancelled"
+				}
+				result = map[string]any{"error": map[string]string{"code": "skillhub.delegated_commit_" + code}}
+			}
 		default:
 			panic("unknown fixture command")
 		}

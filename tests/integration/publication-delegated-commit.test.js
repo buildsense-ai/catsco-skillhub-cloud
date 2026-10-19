@@ -220,6 +220,22 @@ test('PostgreSQL quota failures roll back reservation and permit atomically, pre
   assert.deepEqual(await plan(c,f),p);
 });
 
+test('PostgreSQL historical commit status is read-only, scoped, and projects no candidate or internal proof',pg,async()=>{
+  const f=await fixture(),c=coordinator(),before=await task(f);
+  const initial=await c.read(f.receipt);assert.equal(initial.state,'delegated_pending');assert.equal(initial.target,null);
+  assert.deepEqual(await task(f),before);
+  await assert.rejects(c.read({...f.receipt,eventId:'pubevent_'+randomUUID()}),code('not_found'));
+  const p=await plan(c,f);assert.deepEqual((await c.read(f.receipt)).target,p.target);
+  await c.authorize(f.receipt);assert.equal((await c.read(f.receipt)).state,'committing');
+  await work(config,{enabled:true,store});const complete=await c.read(f.receipt);
+  assert.equal(complete.state,'published');assert.equal(complete.result.skillId,p.target.skillId);
+  assert.deepEqual(Object.keys(complete).sort(),['schemaVersion','receipt','state','target','permitId','result','errorCode'].sort());
+  const json=JSON.stringify(complete);for(const secret of ['Private source','materialHash','authorizedAt','"manifest":','lease_token'])assert.ok(!json.includes(secret));
+  await store.query("UPDATE users SET status='disabled' WHERE id=$1",[f.owner]);
+  assert.deepEqual(await c.read(f.receipt),complete,'trusted peer can recover history; CatsCo must independently authorize original human');
+  const stopped=await fixture();await control().cancel(stopped.receipt);assert.equal((await c.read(stopped.receipt)).state,'cancelled');
+});
+
 test('PostgreSQL migration019 preserves preexisting cancelled, held and ordinary evidence without backfill',pg,async()=>{
   const names=['012_publication_tasks.sql','014_publication_commits.sql','016_delegated_publication_intake.sql',
     '017_publication_receipt_delivery.sql','018_delegated_publication_cancellation.sql','019_delegated_publication_commit.sql'];

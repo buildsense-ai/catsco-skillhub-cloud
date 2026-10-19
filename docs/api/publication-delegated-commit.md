@@ -1,8 +1,9 @@
 # Delegated publication commit coordination
 
 The internal Cloud coordinator joins an accepted CatsCo delegation to the
-existing recoverable publisher. It does not expose an HTTP route, register a
-scheduler, accept browser-supplied proof, or enable a production flow.
+existing recoverable publisher. An independently default-off service adapter
+exposes plan/read/authorize to CatsCo, not browsers or model tools. It does not
+register a scheduler, accept browser-supplied proof, or enable a production flow.
 Both explicit internal enablement and publication-task/publishing configuration
 are required. The default account worker and session APIs cannot claim, read,
 cancel or publish these tasks.
@@ -80,8 +81,40 @@ adapter, publishes one signed package after an injected interruption, and checks
 both cancellation orderings. Human admission and Runtime probe/capture are
 test-seeded, not claimed as deployed user experience.
 
-Remaining work includes authenticated plan/status/execution service adapters,
-trusted human admission, durable dispatch, Runtime capture/upload, and private
+Remaining work includes trusted human admission, durable dispatch, Runtime capture/upload, and private
 user-visible progress. Only after isolated cross-repository acceptance should
 the production switches be considered. Bounded repair and Chinese guide/model
 billing are later milestones, unchanged by this commit layer.
+
+## Authenticated service adapter
+
+`POST /api/skills/publication-delegations/commit` accepts exact JSON
+`{schemaVersion:1,action,receipt}`; action `plan` additionally requires a boolean
+`confirmVersionPublish`. Only `plan`, `read` and `authorize` are accepted. A
+caller cannot supply a target, permit, publisher UID or source bytes. Responses
+echo the exact historical receipt: plan returns its frozen target, authorize
+returns current state/permit ID, and read returns state plus nullable target,
+permit ID, final result and an allowlisted error code. Only a published read
+contains Skill/version/package/checksum/time. Read does not alter any ledger.
+
+`SKILLHUB_PUBLICATION_COMMIT_SERVICE_ENABLED` defaults false. Static issuer,
+audience, peer secret and exact trusted-proxy addresses have dedicated settings;
+TLS, audience Host and a dedicated service Bearer are mandatory. Cookies,
+Origin, duplicate auth/JSON, encoded/oversized requests and unknown routes fail
+closed before account auth/CORS. Generic agent/session/mutation secrets are
+rejected as this service credential. The handler allows four concurrent calls,
+60 authenticated calls/minute and a 20-second response budget. Work slots remain
+occupied until underlying work settles after disconnect/timeout. Cancellation
+or timeout never implies that a transaction rolled back.
+
+The peer must authorize the original human before planning/status and persist
+exact trusted human intent before authorize. The service secret cannot mint
+that intent: CatsCo's permit endpoint still refuses its absence. Enabling this
+service does not start the delegated worker. Deployment/enablement must wait for
+the trusted admission and durable scheduling adapters and isolated acceptance.
+
+The required dual-store contract now uses the actual CatsCo commit client for
+all three actions and actual Cloud/CatsCo handlers in both directions over
+verified TLS. CI pins the explicit PR667 candidate pending colleague review;
+replace it with the reviewed merge after approval. Both databases, Git and the
+signed artifact are real; source probing and human admission are test-seeded.
