@@ -105,9 +105,61 @@ jobs:
           npm run db:migrate
           npm run test:publication-peer-contract
 
+  cancellation-recovery-contract:
+    name: CatsCo and Cloud durable cancellation recovery
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: cancellation_contract
+          POSTGRES_USER: contract
+          POSTGRES_PASSWORD: contract_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U contract -d cancellation_contract"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      CATS_PG_TEST_DSN: postgres://contract:contract_test@127.0.0.1:5432/cancellation_contract?sslmode=disable
+      SKILLHUB_DATABASE_URL: postgres://contract:contract_test@127.0.0.1:5432/cancellation_contract?sslmode=disable
+      CATSCO_REQUIRE_CANCELLATION_CONTRACT: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: skillhub
+      - uses: actions/checkout@v4
+        with:
+          repository: buildsense-ai/cats-company
+          # PR662 candidate, intentionally not represented as merged CatsCo main.
+          ref: aa216c80dbbec97a388139d26c16e2471605a876
+          path: cats-company
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: cats-company/go.mod
+          cache-dependency-path: cats-company/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: skillhub/package-lock.json
+      - name: Prepare isolated Cloud database
+        working-directory: skillhub
+        run: |
+          npm ci --ignore-scripts
+          npm run db:migrate
+      - name: Test actual sender and peer with lost response
+        working-directory: cats-company
+        env:
+          SKILLHUB_CONTROL_CONTRACT_ROOT: ${{ github.workspace }}/skillhub
+        run: go test -race ./server -run '^TestSkillHubPublicationCancellationCloudContract$' -count=1 -v -timeout 3m
+
   deploy-production:
     name: Deploy production
-    needs: [test, publication-peer-contract]
+    needs: [test, publication-peer-contract, cancellation-recovery-contract]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
