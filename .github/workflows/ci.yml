@@ -135,7 +135,7 @@ jobs:
         with:
           repository: buildsense-ai/cats-company
           # PR662 candidate, intentionally not represented as merged CatsCo main.
-          ref: 86dedecc9831c988f9bf199f6e05e125d4058338
+          ref: aa216c80dbbec97a388139d26c16e2471605a876
           path: cats-company
       - uses: actions/setup-go@v5
         with:
