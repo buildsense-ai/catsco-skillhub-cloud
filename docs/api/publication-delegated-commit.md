@@ -3,7 +3,8 @@
 The internal Cloud coordinator joins an accepted CatsCo delegation to the
 existing recoverable publisher. An independently default-off service adapter
 exposes plan/read/authorize to CatsCo, not browsers or model tools. It does not
-register a scheduler, accept browser-supplied proof, or enable a production flow.
+accept browser-supplied proof or enable a production flow. A separate default-off
+worker lane schedules only commits with durable permits.
 Both explicit internal enablement and publication-task/publishing configuration
 are required. The default account worker and session APIs cannot claim, read,
 cancel or publish these tasks.
@@ -75,13 +76,13 @@ and retain the database and publication artifacts for recovery.
 Required CI runs real PostgreSQL regression, cancellation races, quota rollback,
 schema upgrade, immutable scope, inactive publishers, ordinary-path isolation,
 stale leases, bounded attempts and Git/artifact/checkpoint recovery. The real
-dual-store test uses the reviewed CatsCo PR666 handler over verified TLS and
+dual-store test uses the reviewed CatsCo PR667 merge over verified TLS and
 actual Cloud intake/plan/worker code. It drops a permit reply, reopens the CatsCo
 adapter, publishes one signed package after an injected interruption, and checks
 both cancellation orderings. Human admission and Runtime probe/capture are
 test-seeded, not claimed as deployed user experience.
 
-Remaining work includes trusted human admission, durable dispatch, Runtime capture/upload, and private
+Remaining work includes trusted human admission, CatsCo durable dispatch, Runtime capture/upload, and private
 user-visible progress. Only after isolated cross-repository acceptance should
 the production switches be considered. Bounded repair and Chinese guide/model
 billing are later milestones, unchanged by this commit layer.
@@ -111,10 +112,34 @@ The peer must authorize the original human before planning/status and persist
 exact trusted human intent before authorize. The service secret cannot mint
 that intent: CatsCo's permit endpoint still refuses its absence. Enabling this
 service does not start the delegated worker. Deployment/enablement must wait for
-the trusted admission and durable scheduling adapters and isolated acceptance.
+the trusted admission adapter and isolated acceptance.
 
 The required dual-store contract now uses the actual CatsCo commit client for
 all three actions and actual Cloud/CatsCo handlers in both directions over
-verified TLS. CI pins the explicit PR667 candidate pending colleague review;
-replace it with the reviewed merge after approval. Both databases, Git and the
+verified TLS. CI pins the reviewed PR667 merge `eb38e08e577a1eb45378cb36949a455d3e698419`.
+Both databases, Git and the
 signed artifact are real; source probing and human admission are test-seeded.
+
+## Independent delegated worker lane
+
+`SKILLHUB_PUBLICATION_DELEGATED_WORKER_ENABLED` defaults false and additionally
+requires valid task budgets and `SKILLHUB_PUBLICATION_PUBLISHING_ENABLED=true`.
+It does not require the service endpoint to remain enabled to recover a commit
+already authorized. It does not request permits, plan versions or create intent.
+
+The worker runs one delegated attempt at a time independently of legacy jobs.
+Database leases coordinate multiple processes. Idle/error polls use the worker
+interval (1–60000 ms); errors are redacted, and no in-memory retry loop resets
+the three-attempt durable limit. Invalid optional configuration disables only
+this lane. `--once` drains currently due tasks without waiting through backoff.
+
+SIGTERM/SIGINT stops further claims and waits for the current fenced attempt.
+Forced termination leaves its lease for a later process to recover. Stopping
+an idle lane wakes its timer. Account tasks, held candidates, cancelled tasks
+and completed/exhausted commits are not delegated work. No new migration or
+production switch activation is included.
+
+Unit tests cover defaults, invalid configuration, one in-flight claim, graceful
+stop, error redaction and idle wake-up. Real PostgreSQL tests run two schedulers
+against an expired lease and verify one version; the dual-store contract restarts
+the scheduler after artifact interruption using the reviewed CatsCo client.

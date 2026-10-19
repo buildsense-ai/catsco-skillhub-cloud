@@ -202,8 +202,8 @@ export function createDelegatedPublicationCommitCoordinator({enabled=false,confi
   });
 }
 
-// Explicit internal entry only. Existing application scheduler never calls this.
-// The ordinary worker factory remains account-only.
+// Internal worker entry. The separately gated delegated scheduler calls this;
+// the ordinary worker factory remains account-only.
 export function processDelegatedPublicationCommit(config,{enabled=false,store,...dependencies}={}) {
   if(enabled!==true)return Promise.resolve(null);
   if(!store?.tx || !store?.query)return Promise.reject(new DelegatedCommitError('configuration'));

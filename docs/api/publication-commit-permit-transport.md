@@ -2,7 +2,8 @@
 
 The service client and internal commit coordinator default off. A separately
 default-off service adapter exposes plan/read/authorize, not user approval or an
-application scheduler. Migration 019 permits only delegated commits bound to retained proof;
+application scheduler. A separately gated worker lane can execute existing durable
+permits without issuing new ones. Migration 019 permits only delegated commits bound to retained proof;
 ordinary account APIs and workers remain account-only.
 
 createPublicationCommitPermitClient({enabled,issuer,audience,peerSecret})
@@ -58,6 +59,6 @@ writing. A separate required dual-store contract exercises actual Cloud intake,
 plan, permit and signed package publication through the real CatsCo PostgreSQL
 handler. Source probing and trusted human intent remain explicit test setup;
 neither contract is a live Runtime/UI publication E2E. The dual-store test now
-also exercises the real CatsCo plan/status client, pinning PR667's explicit
-candidate while it awaits colleague review. It is not represented as merged main.
+also exercises the real CatsCo plan/status client and Cloud delegated scheduler,
+pinning the reviewed PR667 merge `eb38e08e577a1eb45378cb36949a455d3e698419`.
 

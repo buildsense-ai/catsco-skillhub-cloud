@@ -187,8 +187,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: buildsense-ai/cats-company
-          # PR667 client candidate under colleague review; NOT merged main.
-          ref: 472e670cc9a6220b35ed094de937282b3078aaca
+          # Reviewed PR667 merge: actual service client and PostgreSQL permit handler.
+          ref: eb38e08e577a1eb45378cb36949a455d3e698419
           path: cats-company
       - uses: actions/setup-go@v5
         with:
@@ -212,7 +212,7 @@ jobs:
         working-directory: skillhub
         env:
           CATSCO_CONTRACT_ROOT: ../cats-company
-          CATSCO_CONTRACT_REVISION: 472e670cc9a6220b35ed094de937282b3078aaca
+          CATSCO_CONTRACT_REVISION: eb38e08e577a1eb45378cb36949a455d3e698419
         run: |
           npm run db:migrate
           node --test tests/contract/publication-commit.test.js
