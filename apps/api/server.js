@@ -51,6 +51,7 @@ import { handlePresentationRequest } from "./presentations.js";
 import { createPublishValidationHandler } from "./publish-validation.js";
 import { createPublicationTasksHandler } from "./publication-tasks.js";
 import { createPublicationControlHandler } from "./publication-control.js";
+import { createPublicationCommitHandler } from "./publication-commit.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const adminIndexPath = path.resolve(here, "../admin/public/index-v2.html");
@@ -71,9 +72,11 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
   const handlePublishValidation = createPublishValidationHandler(config, store);
   const handlePublicationTasks = createPublicationTasksHandler(config, store);
   const handlePublicationControl = createPublicationControlHandler(config, store);
+  const handlePublicationCommit = createPublicationCommitHandler(config, store);
 
   return http.createServer(async (req, res) => {
     res.setHeader("X-Request-Id", randomId());
+    if (await handlePublicationCommit(req, res)) return;
     if (await handlePublicationControl(req, res)) return;
     applyCors(config, req, res);
 

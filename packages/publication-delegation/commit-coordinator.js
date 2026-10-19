@@ -52,11 +52,11 @@ export function createDelegatedPublicationCommitCoordinator({enabled=false,confi
     await c.query("SET LOCAL statement_timeout='10s'");
     return fn(c);
   });
-  const load=async(c,r,lock=false)=>{
+  const load=async(c,r,lock=false,historical=false)=>{
     if(lock)await c.query('SELECT id FROM publication_tasks WHERE id=$1 FOR UPDATE',[r.taskId]);
     // New statement after row lock: do not reuse a pre-wait joined snapshot.
     const row=(await c.query(
-      'SELECT t.*,d.issuer,d.audience,d.actor_uid,d.profile_id,d.namespace,p.target,p.manifest,p.identity,p.receipt AS plan_receipt,'+
+      `SELECT ${historical?'t.id,t.state,t.candidate_hash,t.error_code,t.publication_result':'t.*'},d.issuer,d.audience,d.actor_uid,d.profile_id,d.namespace,p.target,p.manifest,p.identity,p.receipt AS plan_receipt,`+
       ' proof.proof FROM publication_tasks t JOIN publication_delegations d ON d.task_id=t.id'+
       ' JOIN publication_delegation_outbox o ON o.task_id=t.id LEFT JOIN publication_delegated_plans p ON p.task_id=t.id'+
       ' LEFT JOIN publication_delegated_permits proof ON proof.task_id=t.id'+
@@ -67,7 +67,7 @@ export function createDelegatedPublicationCommitCoordinator({enabled=false,confi
       [r.taskId,issuer,audience,r.entryRequestId,r.candidateRevision,r.acceptanceEpoch,r.requestHash,r.sourceSnapshotHash,
         r.requestBytes,r.delegationId,r.idempotencyKey,r.eventId])).rows[0];
     if(!row)fail('not_found');
-    if(row.state==='cancelled')fail('cancelled');
+    if(row.state==='cancelled' && !historical)fail('cancelled');
     if(row.target && (!validPublicationCommitTarget(row.target) || !equal(row.plan_receipt,r) ||
       row.target.manifestHash!==digest(row.manifest) || row.target.candidateHash!==row.candidate_hash))fail('conflict');
     return row;
@@ -89,6 +89,25 @@ export function createDelegatedPublicationCommitCoordinator({enabled=false,confi
   };
   const view=row=>Object.freeze({schemaVersion:1,receipt:Object.freeze({...row.plan_receipt}),target:Object.freeze({...row.target})});
   return Object.freeze({
+    read(receipt) {
+      return run(receipt,async r=>{
+        const row=await tx(c=>load(c,r,false,true));
+        if(!['delegated_pending','cancelled','committing','publish_queued','publish_failed','published'].includes(row.state))fail('conflict');
+        if(row.proof && !validPublicationCommitPermit(row.proof,r,row.target))fail('conflict');
+        const knownErrors=['owner_inactive','publisher_changed','prepared_changed','lease_lost','publish_unavailable',
+          'publish_attempts_exhausted','final_validation_failed'].map(s=>'skillhub.publication_task_'+s);
+        let result=null;
+        if(row.state==='published') {
+          const p=row.publication_result;
+          if(!p || !row.target || p.skillId!==row.target.skillId || p.version!==row.target.version ||
+            p.publishedAt!==row.target.releaseAt || !/^pkg_[a-f0-9-]{36}$/.test(p.packageId??'') ||
+            !/^[a-f0-9]{64}$/.test(p.checksumSha256??''))fail('conflict');
+          result=Object.fromEntries(['skillId','version','packageId','checksumSha256','publishedAt'].map(k=>[k,p[k]]));
+        }
+        return {schemaVersion:1,receipt:r,state:row.state,target:row.target??null,permitId:row.proof?.permitId??null,
+          result,errorCode:row.error_code?(knownErrors.includes(row.error_code)?row.error_code:'skillhub.publication_task_publish_unavailable'):null};
+      });
+    },
     prepare(receipt,{confirmVersionPublish,signal}={}) {
       return run(receipt,async r=>{
         if(typeof confirmVersionPublish!=='boolean')fail('invalid');

@@ -17,6 +17,8 @@ import {createPublicationCommitPermitClient} from '../../packages/publication-de
 import {createDelegatedPublicationControlStore} from '../../packages/publication-delegation/control-store.js';
 import {createDelegatedPublicationCommitCoordinator,processDelegatedPublicationCommit} from '../../packages/publication-delegation/commit-coordinator.js';
 import {delegatedFixture,cleanupDelegatedFixture,delegatedSource,hash} from '../helpers/delegated-publication.js';
+import {createPublicationCommitHandler,PUBLICATION_COMMIT_PATH} from '../../apps/api/publication-commit.js';
+import {publicationPeerTLS} from '../helpers/publication-peer-tls.js';
 
 test('real CatsCo + Cloud PostgreSQL: frozen plan, human intent, HTTPS permit, cancel ordering and recoverable Git/package publication',
   {timeout:240000},async t=>{
@@ -25,10 +27,11 @@ test('real CatsCo + Cloud PostgreSQL: frozen plan, human intent, HTTPS permit, c
   const catsRoot=path.resolve(process.env.CATSCO_CONTRACT_ROOT);
   assert.equal(execFileSync('git',['rev-parse','HEAD'],{cwd:catsRoot,encoding:'utf8'}).trim(),process.env.CATSCO_CONTRACT_REVISION);
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'skillhub-dual-commit-'));
-  let child,closed,lines,store;const fixtures=[];
+  let child,closed,lines,store,cloudServer,tls;const fixtures=[];
   t.after(async()=>{
     try{if(store)for(const f of fixtures)await cleanupDelegatedFixture(store,f);}finally{
-      await closePools();lines?.close();
+      if(cloudServer){cloudServer.closeAllConnections();await new Promise(r=>cloudServer.close(r));}
+      await tls?.close();await closePools();lines?.close();
       if(child){child.stdin.end();const timer=setTimeout(()=>child.kill(),5000);await closed;clearTimeout(timer);}
       await fs.rm(root,{recursive:true,force:true});
     }
@@ -56,7 +59,20 @@ test('real CatsCo + Cloud PostgreSQL: frozen plan, human intent, HTTPS permit, c
   const config=loadConfig({root:path.join(root,'cloud'),databaseUrl:process.env.SKILLHUB_TEST_DATABASE_URL,nodeEnv:'test',
     publicationTasksEnabled:true,publicationPublishingEnabled:true,allowAutoKeygen:true});
   store=createStore(config);await issueSigningKeyCertificate(config);
-  const coordinator=()=>createDelegatedPublicationCommitCoordinator({...peer,store,config,permitClient});
+  tls=await publicationPeerTLS();
+  const handler=createPublicationCommitHandler({...config,publicationCommitService:{...peer,trustedProxyAddresses:[]}},store,
+    {coordinator:createDelegatedPublicationCommitCoordinator({...peer,store,config,permitClient})});
+  cloudServer=https.createServer(tls,(req,res)=>void handler(req,res));
+  await new Promise(r=>cloudServer.listen(0,'127.0.0.1',r));
+  const cloudCall=(action,receipt,extra={})=>new Promise((resolve,reject)=>{
+    const req=https.request(`https://127.0.0.1:${cloudServer.address().port}${PUBLICATION_COMMIT_PATH}`,{method:'POST',
+      ca:tls.cert,servername:'localhost',agent:false,headers:{Host:'hub.example',Authorization:'Bearer '+peer.peerSecret,'Content-Type':'application/json'}},res=>{
+      let text='';res.on('data',b=>text+=b);res.on('error',reject);res.on('end',()=>{
+        const body=JSON.parse(text);if(res.statusCode===200)resolve(body);else reject(Object.assign(Error('Cloud service rejected'),body.error));
+      });
+    });req.on('error',reject);req.end(JSON.stringify({schemaVersion:1,action,receipt,...extra}));
+  });
+  const coordinator=()=>({prepare:(r,o)=>cloudCall('plan',r,o),authorize:r=>cloudCall('authorize',r),read:r=>cloudCall('read',r)});
   const control=createDelegatedPublicationControlStore({...peer,store});
   const state=async f=>(await store.query('SELECT state FROM publication_tasks WHERE id=$1',[f.receipt.taskId])).rows[0].state;
   async function prepare(){
@@ -69,12 +85,12 @@ test('real CatsCo + Cloud PostgreSQL: frozen plan, human intent, HTTPS permit, c
     return {f,plan};
   }
   const {f,plan}=await prepare();
-  await assert.rejects(coordinator().authorize(f.receipt),{code:'skillhub.publication_commit_permit_conflict'});
+  await assert.rejects(coordinator().authorize(f.receipt),{code:'skillhub.delegated_commit_conflict'});
   assert.equal((await command({action:'count'})).count,0,'service cannot invent trusted human intent');
   // This is explicit test-only human admission, not a live UI/runtime E2E.
   await command({action:'admit',actor:f.actor,...plan});
   await command({action:'lose'});
-  await assert.rejects(coordinator().authorize(f.receipt),{code:'skillhub.publication_commit_permit_unavailable'});
+  await assert.rejects(coordinator().authorize(f.receipt),{code:'skillhub.delegated_commit_unavailable'});
   assert.equal((await command({action:'count'})).count,1,'permit committed in CatsCo before dropped reply');
   assert.equal(await state(f),'delegated_pending');
   assert.equal((await store.query('SELECT 1 FROM publication_commits WHERE task_id=$1',[f.receipt.taskId])).rowCount,0);
@@ -89,18 +105,19 @@ test('real CatsCo + Cloud PostgreSQL: frozen plan, human intent, HTTPS permit, c
   await store.query("UPDATE publication_tasks SET run_after=now()-interval '1 second' WHERE id=$1",[f.receipt.taskId]);
   await processDelegatedPublicationCommit(config,{enabled:true,store});
   assert.equal(await state(f),'published');
-  const replay=await coordinator().authorize(f.receipt);assert.equal(replay.replayed,true);
+  const replay=await coordinator().authorize(f.receipt);assert.equal(replay.state,'published');
+  const observed=await coordinator().read(f.receipt);assert.equal(observed.result.skillId,plan.target.skillId);
   const final=(await store.query('SELECT * FROM publication_commits WHERE task_id=$1',[f.receipt.taskId])).rows[0];
   assert.deepEqual(final.identity,retained.identity);assert.deepEqual(final.receipt,retained.receipt);
   assert.equal((await store.query('SELECT 1 FROM skill_versions WHERE skill_id=$1',[plan.target.skillId])).rowCount,1);
   const stopped=await prepare();await command({action:'admit',actor:stopped.f.actor,...stopped.plan});
   await command({action:'cancel',actor:stopped.f.actor,receipt:stopped.f.receipt});
-  await assert.rejects(coordinator().authorize(stopped.f.receipt),{code:'skillhub.publication_commit_permit_cancelled'});
+  await assert.rejects(coordinator().authorize(stopped.f.receipt),{code:'skillhub.delegated_commit_cancelled'});
   assert.equal((await control.cancel(stopped.f.receipt)).executionState,'cancelled');
   // A historical CatsCo permit is not allowed to resurrect a Cloud cancellation.
   const late=await prepare();await command({action:'admit',actor:late.f.actor,...late.plan});
   await command({action:'lose'});
-  await assert.rejects(coordinator().authorize(late.f.receipt),{code:'skillhub.publication_commit_permit_unavailable'});
+  await assert.rejects(coordinator().authorize(late.f.receipt),{code:'skillhub.delegated_commit_unavailable'});
   await control.cancel(late.f.receipt);
   await assert.rejects(coordinator().authorize(late.f.receipt),{code:'skillhub.delegated_commit_cancelled'});
   assert.equal((await command({action:'count'})).count,2);
