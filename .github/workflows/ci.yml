@@ -186,7 +186,7 @@ jobs:
         with:
           repository: buildsense-ai/cats-company
           # Candidate under colleague review, NOT represented as merged main.
-          ref: 2249a15f82fc4cc1e946e3ecded715827592ec79
+          ref: 81aade2820a64113d5b8258cae1a7e2d5e3536bf
           path: cats-company
       - uses: actions/setup-go@v5
         with:
