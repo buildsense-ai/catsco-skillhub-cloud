@@ -11,8 +11,8 @@ const matches = (value, pattern) => typeof value === 'string' && pattern.test(va
 const conflict = () => taskError(409,'request_conflict','Publication association conflicts with the accepted request.');
 const identityUnavailable = () => taskError(403,'publisher_unverified','An active issuer-bound publisher is required.');
 
-// Internal only: no API/worker imports this module and there is no environment
-// enablement. The injected peer must be the pinned PR31 introspection client.
+// Called by the separately gated runtime upload adapter. The injected peer
+// must be the pinned introspection client, never a browser identity assertion.
 export function createDelegatedPublicationIntake({ enabled = false, config, store, introspectionClient, issuer, audience } = {}) {
   let settings;
   if (enabled) {

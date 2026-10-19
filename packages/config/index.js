@@ -36,6 +36,13 @@ export function loadConfig(overrides = {}) {
     publicBaseUrl: overrides.publicBaseUrl ?? process.env.SKILLHUB_PUBLIC_BASE_URL ?? "http://127.0.0.1:9000",
     packageBaseUrl: overrides.packageBaseUrl ?? process.env.SKILLHUB_PACKAGE_BASE_URL ?? "http://127.0.0.1:9000/packages",
     databaseUrl: overrides.databaseUrl ?? process.env.SKILLHUB_DATABASE_URL ?? "",
+    publicationUpload: {
+      enabled: overrides.publicationUploadEnabled ?? readBool("SKILLHUB_PUBLICATION_UPLOAD_ENABLED", false),
+      issuer: overrides.publicationUploadIssuer ?? process.env.SKILLHUB_PUBLICATION_UPLOAD_ISSUER ?? "",
+      audience: overrides.publicationUploadAudience ?? process.env.SKILLHUB_PUBLICATION_UPLOAD_AUDIENCE ?? "",
+      peerSecret: overrides.publicationUploadPeerSecret ?? process.env.SKILLHUB_PUBLICATION_UPLOAD_PEER_SECRET ?? "",
+      trustedProxyAddresses: overrides.publicationUploadTrustedProxyAddresses ?? splitList(process.env.SKILLHUB_PUBLICATION_UPLOAD_TRUSTED_PROXY_ADDRESSES)
+    },
     publicationCommitService: {
       enabled: overrides.publicationCommitServiceEnabled ?? readBool("SKILLHUB_PUBLICATION_COMMIT_SERVICE_ENABLED", false),
       issuer: overrides.publicationCommitServiceIssuer ?? process.env.SKILLHUB_PUBLICATION_COMMIT_SERVICE_ISSUER ?? "",

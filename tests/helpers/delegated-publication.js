@@ -8,15 +8,15 @@ export const hash=b=>createHash('sha256').update(b).digest('hex');
 export const delegatedSource=(files=[])=>Buffer.from(JSON.stringify({source:{type:'files',files:[{path:'SKILL.md',
   content:'---\nname: commit-test\ndescription: Fixture only\n---\nPrivate source\n'},...files]}}));
 export async function delegatedFixture(store,config,{issuer='https://commit.invalid',audience='https://cloud.invalid',
-  actor=String(BigInt('0x'+id().slice(0,12))+1000n),files=[],grant,introspectionClient}={}) {
+  actor=String(BigInt('0x'+id().slice(0,12))+1000n),files=[],rawBody=delegatedSource(files),grant,introspectionClient,acceptCandidate}={}) {
   const suffix=id();
   const identity=await store.claimCatsCoPublisherIdentity({catsCoUid:actor,catsCoIssuer:issuer,
     namespace:`delegated-${suffix}`,displayName:'Commit fixture',contact:'',
     internalEmail:`${suffix}@example.invalid`,passwordHash:'fixture'});
-  const rawBody=delegatedSource(files);
-  const input={rawBody,sourceSnapshotHash:validatePublishRequest(rawBody.toString()).body.validation.candidateHash,
+  const checked=validatePublishRequest(rawBody.toString());
+  const input={rawBody,sourceSnapshotHash:(checked.body.validation??checked.body.error?.validation).candidateHash,
     entryRequestId:`pubentry_${id()}`,token:`pubupload_${id()+id()}`,idempotencyKey:`pubcandidate_${id()}`,authorityEpoch:1,...grant};
-  const accept=createDelegatedPublicationIntake({enabled:true,config,store,issuer,audience,
+  const accept=acceptCandidate??createDelegatedPublicationIntake({enabled:true,config,store,issuer,audience,
     introspectionClient:introspectionClient??{async checkUploadGrant(r) {
       return {issuer,audience,action:'candidate.upload',actorCatsCoUid:actor,botUid:'999',
         entryRequestId:r.entryRequestId,candidateRevision:1,authorityEpoch:r.authorityEpoch,

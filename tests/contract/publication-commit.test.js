@@ -10,16 +10,17 @@ import {fileURLToPath} from 'node:url';
 import {loadConfig} from '../../packages/config/index.js';
 import {createStore,closePools} from '../../packages/database/store.js';
 import {issueSigningKeyCertificate} from '../../packages/signing/index.js';
-import {validatePublishRequest} from '../../packages/publish-validation/index.js';
 import {createPublicationIntrospectionClient} from '../../packages/publication-delegation/introspection.js';
 import {createPublicationReceiptClient} from '../../packages/publication-delegation/receipt-client.js';
 import {createPublicationCommitPermitClient} from '../../packages/publication-delegation/commit-permit-client.js';
 import {createDelegatedPublicationControlStore} from '../../packages/publication-delegation/control-store.js';
 import {createDelegatedPublicationCommitCoordinator,processDelegatedPublicationCommit} from '../../packages/publication-delegation/commit-coordinator.js';
 import {createDelegatedPublicationScheduler} from '../../packages/publication-delegation/commit-scheduler.js';
-import {delegatedFixture,cleanupDelegatedFixture,delegatedSource,hash} from '../helpers/delegated-publication.js';
+import {delegatedFixture,cleanupDelegatedFixture,hash} from '../helpers/delegated-publication.js';
 import {createPublicationCommitHandler} from '../../apps/api/publication-commit.js';
 import {publicationPeerTLS} from '../helpers/publication-peer-tls.js';
+import {runtimePublicationCaptures} from '../helpers/runtime-publication-capture.js';
+import {createPublicationUploadHandler,PUBLICATION_UPLOAD_PATH} from '../../apps/api/publication-upload.js';
 
 test('real CatsCo + Cloud PostgreSQL: frozen plan, human intent, HTTPS permit, cancel ordering and recoverable Git/package publication',
   {timeout:240000},async t=>{
@@ -27,8 +28,9 @@ test('real CatsCo + Cloud PostgreSQL: frozen plan, human intent, HTTPS permit, c
     'both repositories and real databases are REQUIRED, not skipped');
   const catsRoot=path.resolve(process.env.CATSCO_CONTRACT_ROOT);
   assert.equal(execFileSync('git',['rev-parse','HEAD'],{cwd:catsRoot,encoding:'utf8'}).trim(),process.env.CATSCO_CONTRACT_REVISION);
+  const captures=await runtimePublicationCaptures();
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'skillhub-dual-commit-'));
-  let child,closed,lines,store,cloudServer,tls,handler;const fixtures=[];
+  let child,closed,lines,store,cloudServer,tls,handler,uploadHandler,loseUpload=false;const fixtures=[];
   t.after(async()=>{
     try{if(store)for(const f of fixtures)await cleanupDelegatedFixture(store,f);}finally{
       if(cloudServer){cloudServer.closeAllConnections();await new Promise(r=>cloudServer.close(r));}
@@ -41,7 +43,16 @@ test('real CatsCo + Cloud PostgreSQL: frozen plan, human intent, HTTPS permit, c
   execFileSync('go',['build','-mod=readonly','-o',binary,fileURLToPath(new URL('./commit-peer/main.go',import.meta.url))],
     {cwd:catsRoot,env:{...process.env,GOWORK:'off'},stdio:'pipe',timeout:150000});
   tls=await publicationPeerTLS();
-  cloudServer=https.createServer(tls,(req,res)=>void handler(req,res));
+  cloudServer=https.createServer(tls,(req,res)=>{
+    if(req.url===PUBLICATION_UPLOAD_PATH){
+      const end=res.end.bind(res);
+      res.end=(...args)=>{
+        if(loseUpload&&res.statusCode===201){loseUpload=false;res.destroy();return res;}
+        return end(...args);
+      };
+      void uploadHandler(req,res);
+    }else void handler(req,res);
+  });
   await new Promise(r=>cloudServer.listen(0,'127.0.0.1',r));
   const audience=`https://127.0.0.1:${cloudServer.address().port}`;
   const caPath=path.join(root,'cloud-ca.pem');await fs.writeFile(caPath,tls.cert);
@@ -66,6 +77,7 @@ test('real CatsCo + Cloud PostgreSQL: frozen plan, human intent, HTTPS permit, c
   const config=loadConfig({root:path.join(root,'cloud'),databaseUrl:process.env.SKILLHUB_TEST_DATABASE_URL,nodeEnv:'test',
     publicationTasksEnabled:true,publicationPublishingEnabled:true,publicationDelegatedWorkerEnabled:true,allowAutoKeygen:true});
   store=createStore(config);await issueSigningKeyCertificate(config);
+  uploadHandler=createPublicationUploadHandler({...config,publicationUpload:{...peer,trustedProxyAddresses:[]}},store,{introspectionClient});
   handler=createPublicationCommitHandler({...config,publicationCommitService:{...peer,trustedProxyAddresses:[]}},store,
     {coordinator:createDelegatedPublicationCommitCoordinator({...peer,store,config,permitClient})});
   const cloudCall=async(action,receipt,extra={})=>{
@@ -75,11 +87,31 @@ test('real CatsCo + Cloud PostgreSQL: frozen plan, human intent, HTTPS permit, c
   };
   const coordinator=()=>({prepare:(r,o)=>cloudCall('plan',r,o),authorize:r=>cloudCall('authorize',r),read:r=>cloudCall('read',r)});
   const control=createDelegatedPublicationControlStore({...peer,store});
+  const upload=input=>new Promise((resolve,reject)=>{
+    const req=https.request(audience+PUBLICATION_UPLOAD_PATH,{method:'POST',ca:tls.cert,servername:'localhost',agent:false,
+      headers:{Authorization:'Bearer '+input.token,'Content-Type':'application/json','Content-Length':input.rawBody.length,
+        'X-Publication-Entry':input.entryRequestId,'X-Publication-Epoch':String(input.authorityEpoch),
+        'X-Publication-Source-Hash':input.sourceSnapshotHash,'Idempotency-Key':input.idempotencyKey}},res=>{
+      let data='';res.on('data',b=>{data+=b;if(data.length>8192)req.destroy(Error('Upload response too large'));});
+      res.on('error',reject);res.on('end',()=>{
+        try{assert.ok([200,201].includes(res.statusCode),`Upload HTTP ${res.statusCode}`);resolve(JSON.parse(data));}catch(e){reject(e);}
+      });
+    });req.on('error',reject);req.setTimeout(60000,()=>req.destroy(Error('Upload timeout')));req.end(input.rawBody);
+  });
   const state=async f=>(await store.query('SELECT state FROM publication_tasks WHERE id=$1',[f.receipt.taskId])).rows[0].state;
   async function prepare(){
-    const raw=delegatedSource(),sourceHash=validatePublishRequest(raw.toString()).body.validation.candidateHash;
+    const raw=Buffer.from(captures[0].request),sourceHash=captures[0].receipt.sourceSnapshotHash;
     const {actor,...grant}=await command({action:'seed',requestHash:hash(raw),sourceHash,bytes:raw.length});
-    const f=await delegatedFixture(store,config,{issuer:peer.issuer,audience:peer.audience,actor,grant,introspectionClient});
+    const f=await delegatedFixture(store,config,{issuer:peer.issuer,audience:peer.audience,actor,grant,introspectionClient,rawBody:raw,
+      acceptCandidate:async input=>{
+        if(fixtures.length===0){loseUpload=true;await assert.rejects(upload(input));}
+        const first=await upload(input),again=await upload(input);
+        assert.equal(again.created,false);assert.deepEqual(again.association,first.association);
+        assert.equal(first.association.candidateHash,captures[0].receipt.sourceSnapshotHash);
+        assert.equal(first.association.requestHash,captures[0].receipt.requestHash);
+        assert.deepEqual((await store.query('SELECT candidate FROM publication_tasks WHERE id=$1',[first.association.taskId])).rows[0].candidate,raw);
+        return first;
+      }});
     fixtures.push(f);f.actor=actor;
     assert.equal((await receiptClient.deliver(f.receipt)).commitAllowed,false);
     const plan=await coordinator().prepare(f.receipt,{confirmVersionPublish:false});
@@ -166,6 +198,19 @@ test('real CatsCo + Cloud PostgreSQL: frozen plan, human intent, HTTPS permit, c
   // Cloud observations. One pass each, without resetting any durable budget.
   for(let n=0;n<5;n++)await command({action:'dispatch'});
   assert.deepEqual(await delivery(recovery.f),{state:'accepted',attempts:1,lastCode:''});
+  for(const captured of captures.slice(1)){
+    const rawBody=Buffer.from(captured.request);
+    const {actor,...grant}=await command({action:'seed',requestHash:captured.receipt.requestHash,sourceHash:captured.receipt.sourceSnapshotHash,bytes:rawBody.length});
+    const rejected=await delegatedFixture(store,config,{issuer:peer.issuer,audience:peer.audience,actor,grant,rawBody,acceptCandidate:upload});
+    fixtures.push(rejected);
+    const held=(await store.query('SELECT candidate,intake_result,state FROM publication_tasks WHERE id=$1',[rejected.receipt.taskId])).rows[0];
+    assert.deepEqual(held.candidate,rawBody);assert.equal(held.state,'delegated_pending');
+    const report=held.intake_result.body.validation??held.intake_result.body.error?.validation;
+    assert.equal(report.outcome,'rejected','readable malformed source stays private with a rejection report');
+    await assert.rejects(coordinator().prepare(rejected.receipt,{confirmVersionPublish:false}));
+    assert.equal((await store.query('SELECT 1 FROM publication_commits WHERE task_id=$1',[rejected.receipt.taskId])).rowCount,0);
+    await assert.rejects(upload({...rejected.input,rawBody:Buffer.concat([rawBody,Buffer.from(' ')])}),/Upload HTTP 403/);
+  }
   assert.equal(await delivery(recovery.f,f.actor),null,'delivery history is original-human private');
   assert.equal((await delivery(stopped.f)).state,'needs_attention');
   assert.equal((await delivery(late.f)).state,'needs_attention');
@@ -179,5 +224,5 @@ test('real CatsCo + Cloud PostgreSQL: frozen plan, human intent, HTTPS permit, c
   assert.equal(recovered.body.result.skillId,recovery.plan.target.skillId);
   assert.equal((await store.query('SELECT 1 FROM skill_versions WHERE skill_id=$1',[recovery.plan.target.skillId])).rowCount,1);
   assert.deepEqual(await delivery(recovery.f),{state:'accepted',attempts:1,lastCode:''});
-  t.diagnostic('Real dual PostgreSQL + HTTPS + Git + signed package, human JWT plan/confirm/status and actual CatsCo dispatcher recovery after a lost permit reply. Older race fixtures seed intent; Runtime source probe/capture remains synthetic. No live UI, paid model, or production switches.');
+  t.diagnostic('Real XiaoBa immutable capture bytes -> Cloud HTTPS upload with lost-response replay -> dual PostgreSQL -> human JWT confirmation -> actual CatsCo dispatcher -> Git/signed package. Capture dispatch and grant issuance remain test adapters; no live runtime identity/routing or UI E2E, paid model, or production switches.');
 });
