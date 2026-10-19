@@ -9,6 +9,9 @@ import { createStore, closePools } from '../../packages/database/store.js';
 import { loadConfig } from '../../packages/config/index.js';
 import { validatePublishRequest } from '../../packages/publish-validation/index.js';
 import { publicationTaskSettings } from '../../packages/publication-tasks/config.js';
+import https from 'node:https';
+import { createPublicationControlHandler, PUBLICATION_CONTROL_PATH } from '../../apps/api/publication-control.js';
+import { publicationPeerTLS } from '../helpers/publication-peer-tls.js';
 
 const issuer = 'https://control.invalid', audience = 'https://cloud.invalid';
 const id = () => randomUUID().replaceAll('-', '');
@@ -115,6 +118,49 @@ async function fixture() {
   return { owner: identity.user.id, profile: identity.developerProfile, input, accept, receipt };
 }
 const task = async f => (await store.query('SELECT * FROM publication_tasks WHERE id=$1', [f.receipt.taskId])).rows[0];
+
+test('PostgreSQL authenticated control HTTP recovers lost cancellation responses and never restores candidate bytes', pg, async t => {
+  const f = await fixture(), tls = await publicationPeerTLS();
+  let handler, lose = true;
+  const server = https.createServer(tls, async (req, res) => {
+    // Lose only the response after the actual handler/store committed.
+    const end = res.end.bind(res);
+    res.end = (...args) => { if (lose && res.statusCode === 200) { lose = false; res.destroy(); return res; } return end(...args); };
+    await handler(req, res);
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); await tls.close(); });
+  const origin = `https://127.0.0.1:${server.address().port}`, peerSecret = '9'.repeat(64);
+  // Trusted proxy rewrites Host in production; this fixture uses direct TLS
+  // with the fixed historical audience in Host and the test CA for transport.
+  const settings = { enabled: true, issuer, audience, peerSecret, trustedProxyAddresses: [] };
+  const restart = () => { handler = createPublicationControlHandler({ publicationControl: settings }, createStore(config)); };
+  restart();
+  const cancellationId = `pubcancel_${id()}`;
+  const send = (action = 'cancel', reference = f.receipt, token = peerSecret) => new Promise((resolve, reject) => {
+    const req = https.request(origin + PUBLICATION_CONTROL_PATH, { method: 'POST', ca: tls.cert, servername: 'localhost', agent: false,
+      headers: { Host: new URL(audience).host, Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }, res => {
+      let text = ''; res.on('data', b => { text += b; }); res.on('error', reject);
+      res.on('end', () => resolve({ status: res.statusCode, body: JSON.parse(text) }));
+    });
+    req.on('error', reject);
+    req.end(JSON.stringify({ schemaVersion: 1, action, receipt: reference, ...(action === 'cancel' ? { cancellationId } : {}) }));
+  });
+  assert.equal((await send('cancel', f.receipt, '8'.repeat(64))).status, 401);
+  assert.equal((await task(f)).state, 'delegated_pending');
+  await assert.rejects(send(), { code: 'ECONNRESET' });
+  const afterLost = await task(f);
+  assert.equal(afterLost.state, 'cancelled'); assert.equal(afterLost.candidate, null);
+  restart();
+  const replay = await send();
+  assert.equal(replay.status, 200); assert.equal(replay.body.cancellationId, cancellationId);
+  assert.equal(replay.body.executionState, 'cancelled');
+  assert.equal(replay.body.cancelledAt, new Date(afterLost.delegated_cancelled_at).toISOString());
+  assert.equal((await send('read')).body.cancelledAt, replay.body.cancelledAt);
+  assert.equal((await send('cancel', { ...f.receipt, eventId: reference().eventId })).status, 404);
+  assert.deepEqual(await task(f), afterLost);
+  assert.equal((await f.accept({ ...f.input, authorityEpoch: 2 })).association.state, 'cancelled');
+});
 
 test('PostgreSQL delegated cancel is durable and idempotent; reads do not mutate and replies are bounded', pg, async () => {
   const f = await fixture(), c = control(store), before = await task(f);
