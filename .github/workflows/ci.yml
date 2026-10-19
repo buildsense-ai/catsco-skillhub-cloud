@@ -187,8 +187,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: buildsense-ai/cats-company
-          # PR666 reviewed merge: authenticated, durable commit permits.
-          ref: 03c354a857fd9472d626f7f0fa36ea0886825841
+          # PR667 client candidate under colleague review; NOT merged main.
+          ref: 55c4e228e02b569ae4418a9c3da0948b9c0a3f8b
           path: cats-company
       - uses: actions/setup-go@v5
         with:
@@ -212,7 +212,7 @@ jobs:
         working-directory: skillhub
         env:
           CATSCO_CONTRACT_ROOT: ../cats-company
-          CATSCO_CONTRACT_REVISION: 03c354a857fd9472d626f7f0fa36ea0886825841
+          CATSCO_CONTRACT_REVISION: 55c4e228e02b569ae4418a9c3da0948b9c0a3f8b
         run: |
           npm run db:migrate
           node --test tests/contract/publication-commit.test.js

@@ -17,7 +17,7 @@ import {createPublicationCommitPermitClient} from '../../packages/publication-de
 import {createDelegatedPublicationControlStore} from '../../packages/publication-delegation/control-store.js';
 import {createDelegatedPublicationCommitCoordinator,processDelegatedPublicationCommit} from '../../packages/publication-delegation/commit-coordinator.js';
 import {delegatedFixture,cleanupDelegatedFixture,delegatedSource,hash} from '../helpers/delegated-publication.js';
-import {createPublicationCommitHandler,PUBLICATION_COMMIT_PATH} from '../../apps/api/publication-commit.js';
+import {createPublicationCommitHandler} from '../../apps/api/publication-commit.js';
 import {publicationPeerTLS} from '../helpers/publication-peer-tls.js';
 
 test('real CatsCo + Cloud PostgreSQL: frozen plan, human intent, HTTPS permit, cancel ordering and recoverable Git/package publication',
@@ -27,7 +27,7 @@ test('real CatsCo + Cloud PostgreSQL: frozen plan, human intent, HTTPS permit, c
   const catsRoot=path.resolve(process.env.CATSCO_CONTRACT_ROOT);
   assert.equal(execFileSync('git',['rev-parse','HEAD'],{cwd:catsRoot,encoding:'utf8'}).trim(),process.env.CATSCO_CONTRACT_REVISION);
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'skillhub-dual-commit-'));
-  let child,closed,lines,store,cloudServer,tls;const fixtures=[];
+  let child,closed,lines,store,cloudServer,tls,handler;const fixtures=[];
   t.after(async()=>{
     try{if(store)for(const f of fixtures)await cleanupDelegatedFixture(store,f);}finally{
       if(cloudServer){cloudServer.closeAllConnections();await new Promise(r=>cloudServer.close(r));}
@@ -39,19 +39,25 @@ test('real CatsCo + Cloud PostgreSQL: frozen plan, human intent, HTTPS permit, c
   const binary=path.join(root,process.platform==='win32'?'peer.exe':'peer');
   execFileSync('go',['build','-mod=readonly','-o',binary,fileURLToPath(new URL('./commit-peer/main.go',import.meta.url))],
     {cwd:catsRoot,env:{...process.env,GOWORK:'off'},stdio:'pipe',timeout:150000});
-  child=spawn(binary,[],{stdio:['pipe','pipe','pipe'],windowsHide:true});
+  tls=await publicationPeerTLS();
+  cloudServer=https.createServer(tls,(req,res)=>void handler(req,res));
+  await new Promise(r=>cloudServer.listen(0,'127.0.0.1',r));
+  const audience=`https://127.0.0.1:${cloudServer.address().port}`;
+  const caPath=path.join(root,'cloud-ca.pem');await fs.writeFile(caPath,tls.cert);
+  child=spawn(binary,[],{stdio:['pipe','pipe','pipe'],windowsHide:true,
+    env:{...process.env,PEER_TEST_AUDIENCE:audience,SSL_CERT_FILE:caPath}});
   let stderr='';child.stderr.on('data',b=>stderr=(stderr+b.toString()).slice(-4096));
   closed=new Promise(r=>child.once('close',r));lines=createInterface({input:child.stdout});
   const response=()=>new Promise((resolve,reject)=>{
     const cleanup=()=>{clearTimeout(timer);lines.off('line',line);child.off('exit',exit);};
     const line=s=>{cleanup();try{resolve(JSON.parse(s));}catch(e){reject(e);}};
     const exit=code=>{cleanup();reject(Error(`test peer exited ${code}: ${stderr}`));};
-    const timer=setTimeout(()=>{cleanup();reject(Error('test peer command timeout'));},20000);
+    const timer=setTimeout(()=>{cleanup();reject(Error('test peer command timeout'));},30000);
     lines.once('line',line);child.once('exit',exit);
   });
   const startup=await response();
   const command=async input=>{const pending=response();child.stdin.write(JSON.stringify(input)+'\n');return pending;};
-  const peer={enabled:true,issuer:startup.origin,audience:'https://hub.example',peerSecret:'1'.repeat(64)};
+  const peer={enabled:true,issuer:startup.origin,audience,peerSecret:'1'.repeat(64)};
   const transport={requestImpl:(url,options,callback)=>https.request(url,{...options,ca:startup.ca},callback)};
   const introspectionClient=createPublicationIntrospectionClient(peer,transport);
   const receiptClient=createPublicationReceiptClient(peer,transport);
@@ -59,19 +65,13 @@ test('real CatsCo + Cloud PostgreSQL: frozen plan, human intent, HTTPS permit, c
   const config=loadConfig({root:path.join(root,'cloud'),databaseUrl:process.env.SKILLHUB_TEST_DATABASE_URL,nodeEnv:'test',
     publicationTasksEnabled:true,publicationPublishingEnabled:true,allowAutoKeygen:true});
   store=createStore(config);await issueSigningKeyCertificate(config);
-  tls=await publicationPeerTLS();
-  const handler=createPublicationCommitHandler({...config,publicationCommitService:{...peer,trustedProxyAddresses:[]}},store,
+  handler=createPublicationCommitHandler({...config,publicationCommitService:{...peer,trustedProxyAddresses:[]}},store,
     {coordinator:createDelegatedPublicationCommitCoordinator({...peer,store,config,permitClient})});
-  cloudServer=https.createServer(tls,(req,res)=>void handler(req,res));
-  await new Promise(r=>cloudServer.listen(0,'127.0.0.1',r));
-  const cloudCall=(action,receipt,extra={})=>new Promise((resolve,reject)=>{
-    const req=https.request(`https://127.0.0.1:${cloudServer.address().port}${PUBLICATION_COMMIT_PATH}`,{method:'POST',
-      ca:tls.cert,servername:'localhost',agent:false,headers:{Host:'hub.example',Authorization:'Bearer '+peer.peerSecret,'Content-Type':'application/json'}},res=>{
-      let text='';res.on('data',b=>text+=b);res.on('error',reject);res.on('end',()=>{
-        const body=JSON.parse(text);if(res.statusCode===200)resolve(body);else reject(Object.assign(Error('Cloud service rejected'),body.error));
-      });
-    });req.on('error',reject);req.end(JSON.stringify({schemaVersion:1,action,receipt,...extra}));
-  });
+  const cloudCall=async(action,receipt,extra={})=>{
+    const body=await command({action:'cloud-'+action,receipt,...extra});
+    if(body.error)throw Object.assign(Error('Cloud service rejected'),body.error);
+    return body;
+  };
   const coordinator=()=>({prepare:(r,o)=>cloudCall('plan',r,o),authorize:r=>cloudCall('authorize',r),read:r=>cloudCall('read',r)});
   const control=createDelegatedPublicationControlStore({...peer,store});
   const state=async f=>(await store.query('SELECT state FROM publication_tasks WHERE id=$1',[f.receipt.taskId])).rows[0].state;
