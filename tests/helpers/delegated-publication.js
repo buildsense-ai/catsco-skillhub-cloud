@@ -5,14 +5,15 @@ import {createDelegatedPublicationIntake} from '../../packages/publication-deleg
 import {validatePublishRequest} from '../../packages/publish-validation/index.js';
 export const id=()=>randomUUID().replaceAll('-','');
 export const hash=b=>createHash('sha256').update(b).digest('hex');
+export const delegatedSource=(files=[])=>Buffer.from(JSON.stringify({source:{type:'files',files:[{path:'SKILL.md',
+  content:'---\nname: commit-test\ndescription: Fixture only\n---\nPrivate source\n'},...files]}}));
 export async function delegatedFixture(store,config,{issuer='https://commit.invalid',audience='https://cloud.invalid',
   actor=String(BigInt('0x'+id().slice(0,12))+1000n),files=[],grant,introspectionClient}={}) {
   const suffix=id();
   const identity=await store.claimCatsCoPublisherIdentity({catsCoUid:actor,catsCoIssuer:issuer,
     namespace:`delegated-${suffix}`,displayName:'Commit fixture',contact:'',
     internalEmail:`${suffix}@example.invalid`,passwordHash:'fixture'});
-  const rawBody=Buffer.from(JSON.stringify({source:{type:'files',files:[{path:'SKILL.md',
-    content:'---\nname: commit-test\ndescription: Fixture only\n---\nPrivate source\n'},...files]}}));
+  const rawBody=delegatedSource(files);
   const input={rawBody,sourceSnapshotHash:validatePublishRequest(rawBody.toString()).body.validation.candidateHash,
     entryRequestId:`pubentry_${id()}`,token:`pubupload_${id()+id()}`,idempotencyKey:`pubcandidate_${id()}`,authorityEpoch:1,...grant};
   const accept=createDelegatedPublicationIntake({enabled:true,config,store,issuer,audience,
