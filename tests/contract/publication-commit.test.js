@@ -130,5 +130,23 @@ test('real CatsCo + Cloud PostgreSQL: frozen plan, human intent, HTTPS permit, c
   const idle=createDelegatedPublicationScheduler(config,{store});
   assert.equal(await idle.tick(),null,'cancelled/unpermitted/published tasks are never claimed');
   await idle.stop();
+  // Real human JWT -> CatsCo handler -> Cloud plan/authorization -> CatsCo
+  // permit -> Cloud scheduler, not a direct trusted-intent fixture insert.
+  const human=await prepare();
+  const callHuman=(action,extra={})=>command({action:'human-'+action,actor:human.f.actor,receipt:human.f.receipt,...extra});
+  const planned=await callHuman('plan',{confirmVersionPublish:false});assert.equal(planned.status,200);
+  assert.equal(planned.body.plan.skillId,human.plan.target.skillId);
+  assert.equal((await command({action:'count'})).count,2,'plan alone does not authorize');
+  assert.equal((await callHuman('confirm',{confirmationKey:'f'.repeat(64)})).status,409);
+  const accepted=await callHuman('confirm',{confirmationKey:planned.body.plan.confirmationKey});
+  assert.equal(accepted.status,202);assert.equal(accepted.body.executionState,'unknown');
+  const scheduled=createDelegatedPublicationScheduler(config,{store});
+  await scheduled.run({once:true});await scheduled.stop();
+  await command({action:'reopen'});
+  const actual=await callHuman('status');assert.equal(actual.status,200);
+  assert.equal(actual.body.executionState,'published');assert.equal(actual.body.result.skillId,human.plan.target.skillId);
+  const foreign=await callHuman('status',{actor:f.actor});assert.equal(foreign.status,404);
+  assert.equal((await store.query('SELECT 1 FROM skill_versions WHERE skill_id=$1',[human.plan.target.skillId])).rowCount,1);
+  for(const secret of ['permitId','receipt','manifestHash','private-source'])assert.ok(!JSON.stringify(actual.body).includes(secret));
   t.diagnostic('Real dual PostgreSQL + HTTPS + Git + signed package; source probe and human intent are test-seeded. No live UI, paid model, or production switches.');
 });

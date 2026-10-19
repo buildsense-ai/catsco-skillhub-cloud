@@ -4,12 +4,14 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -56,14 +58,15 @@ func (r wireReceipt) input(issuer, audience string) store.SkillHubPublicationClo
 }
 
 type command struct {
-	Action      string                                `json:"action"`
-	Receipt     wireReceipt                           `json:"receipt"`
-	Target      store.SkillHubPublicationCommitTarget `json:"target"`
-	RequestHash string                                `json:"requestHash"`
-	SourceHash  string                                `json:"sourceHash"`
-	Bytes       int64                                 `json:"bytes"`
-	Actor       string                                `json:"actor"`
-	Confirm     bool                                  `json:"confirmVersionPublish"`
+	Action          string                                `json:"action"`
+	Receipt         wireReceipt                           `json:"receipt"`
+	Target          store.SkillHubPublicationCommitTarget `json:"target"`
+	RequestHash     string                                `json:"requestHash"`
+	SourceHash      string                                `json:"sourceHash"`
+	Bytes           int64                                 `json:"bytes"`
+	Actor           string                                `json:"actor"`
+	Confirm         bool                                  `json:"confirmVersionPublish"`
+	ConfirmationKey string                                `json:"confirmationKey"`
 }
 
 func must(err error) {
@@ -97,8 +100,13 @@ func main() {
 	must(a.CreateSchema())
 	defer func() { a.Close() }()
 	var handler atomic.Pointer[server.SkillHubPublicationPeerHandler]
+	var human atomic.Pointer[server.SkillHubPublicationHumanCommitHandler]
 	var lose atomic.Bool
 	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, server.SkillHubPublicationHumanCommitPrefix) {
+			human.Load().Handle(w, r)
+			return
+		}
 		record := httptest.NewRecorder()
 		handler.Load().Handle(&capture{w, record}, r)
 		if r.URL.Path == server.SkillHubPublicationCommitPermitPath && record.Code == 200 && lose.Swap(false) {
@@ -125,7 +133,9 @@ func main() {
 	must(os.Setenv("CATSCO_SKILLHUB_PUBLICATION_CLOUD_AUDIENCE", audience))
 	must(os.Setenv("CATSCO_SKILLHUB_PUBLICATION_CLOUD_PEER_SECRET", strings.Repeat("1", 64)))
 	must(os.Setenv("CATSCO_SKILLHUB_PUBLICATION_TRUSTED_PROXY_CIDRS", ""))
+	must(os.Setenv("CATSCO_SKILLHUB_PUBLICATION_HUMAN_COMMIT_ENABLED", "true"))
 	handler.Store(server.NewSkillHubPublicationPeerHandlerFromEnv(a))
+	human.Store(server.NewSkillHubPublicationHumanCommitHandlerFromEnv(a))
 	ts.StartTLS()
 	defer ts.Close()
 	cloud, err := server.NewPublicationCommitCloudClient(server.PublicationCommitCloudConfig{Enabled: true, Issuer: issuer, Audience: audience, PeerSecret: strings.Repeat("1", 64)})
@@ -177,6 +187,38 @@ func main() {
 			a.Close()
 			open()
 			handler.Store(server.NewSkillHubPublicationPeerHandlerFromEnv(a))
+			human.Store(server.NewSkillHubPublicationHumanCommitHandlerFromEnv(a))
+		case "human-plan", "human-confirm", "human-status":
+			actor, err := strconv.ParseInt(c.Actor, 10, 64)
+			must(err)
+			token, err := server.GenerateToken(actor, "contract-human", "contract@example.invalid")
+			must(err)
+			action := strings.TrimPrefix(c.Action, "human-")
+			method := "POST"
+			body := map[string]any{"schemaVersion": 1, "confirmVersionPublish": c.Confirm}
+			if action == "confirm" {
+				body = map[string]any{"schemaVersion": 1, "confirmationKey": c.ConfirmationKey}
+			}
+			data, err := json.Marshal(body)
+			must(err)
+			if action == "status" {
+				method = "GET"
+				data = nil
+			}
+			req, err := http.NewRequestWithContext(ctx, method, issuer+server.SkillHubPublicationHumanCommitPrefix+"entries/"+c.Receipt.EntryID+"/"+action, bytes.NewReader(data))
+			must(err)
+			req.Header.Set("Authorization", "Bearer "+token)
+			if method == "POST" {
+				req.Header.Set("Content-Type", "application/json")
+			}
+			res, err := ts.Client().Do(req)
+			must(err)
+			raw, err := io.ReadAll(io.LimitReader(res.Body, 8193))
+			res.Body.Close()
+			must(err)
+			var decoded any
+			must(json.Unmarshal(raw, &decoded))
+			result = map[string]any{"status": res.StatusCode, "body": decoded}
 		case "count":
 			var count int
 			must(scoped.QueryRow("SELECT count(*) FROM skillhub_publication_commit_permits").Scan(&count))
