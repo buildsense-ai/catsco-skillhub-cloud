@@ -1,8 +1,9 @@
 # Publication commit permit transport
 
-This is an inactive service client, not a publishing worker or user approval
-path. Existing SQL guards still prohibit delegated final commits. No application
-registers this client and no production switch is added here.
+The service client and internal commit coordinator default off. No user approval
+API or application scheduler registers them, and no production switch enables
+them. Migration 019 permits only delegated commits bound to retained proof;
+ordinary account APIs and workers remain account-only.
 
 createPublicationCommitPermitClient({enabled,issuer,audience,peerSecret})
 defaults off. With explicit configuration it POSTs only to the fixed CatsCo
@@ -35,9 +36,10 @@ The permit is historical evidence for one immutable action. After a lost reply,
 request the same facts: CatsCo returns the original ID and timestamp. Cancellation
 before first issuance denies authorization. Later local cancellation or authority
 loss does not erase a previously issued permit. This does **not** allow Cloud to
-revive a cancelled task: future worker integration must serialize permit recording
-and commit start against Cloud cancellation, recheck publisher identity and
-recover package writes idempotently. No such integration is enabled by this PR.
+revive a cancelled task: the internal coordinator serializes permit recording
+and commit start against Cloud cancellation, rechecks publisher identity and
+uses the existing recoverable Git/package worker. It is not enabled in the
+application. See [delegated commit coordination](publication-delegated-commit.md).
 
 ## Verification
 
@@ -45,13 +47,15 @@ TLS integration tests cover strict request/response scope, default-off config,
 snapshot isolation, timestamps, status mapping, redirect/cert failures, malformed
 and oversized bodies, abort/deadline handling and concurrency.
 
-The required CI permit contract pins a CatsCo candidate under colleague review
+The required CI permit contract pins the reviewed CatsCo PR666 merge
 and runs its real HTTPS handler and PostgreSQL adapter against this actual Node
 client. It commits a permit, drops the response, reopens the adapter/handler and
 uses a fresh client; the original permit/time must survive. It also checks missing
 intent, wrong target/credentials, cancellation-first denial and historical replay
 after cancellation/disablement. Missing dependencies fail CI. Receipt and trusted
-intent are test setup; this is not live user approval, Cloud package writing,
-runtime capture/upload or a full publication E2E test. Update the candidate pin
-to its reviewed merge commit after CatsCo review.
+intent are test setup; that transport test is not live user approval or package
+writing. A separate required dual-store contract exercises actual Cloud intake,
+plan, permit and signed package publication through the real CatsCo PostgreSQL
+handler. Source probing and trusted human intent remain explicit test setup;
+neither contract is a live Runtime/UI publication E2E.
 
