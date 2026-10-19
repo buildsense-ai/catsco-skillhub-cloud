@@ -97,6 +97,12 @@ test('control HTTP trusts forwarded TLS only from an explicitly configured socke
   assert.equal((await proxy.send(input(), { headers: { 'X-Forwarded-Proto': 'https' } })).status, 200);
 });
 
+test('control HTTP accepts equivalent explicit HTTPS port but never a different authority', async t => {
+  const f = await fixture(t, { settings: { audience: 'https://hub.example:443' } });
+  for (const Host of ['hub.example', 'hub.example:443']) assert.equal((await f.send(input(), { headers: { Host } })).status, 200);
+  for (const Host of ['hub.example:444', 'other.example:443', 'hub.example:0443']) assert.equal((await f.send(input(), { headers: { Host } })).status, 401);
+});
+
 test('control HTTP rejects duplicate JSON, extra authority fields, invalid references and oversized or encoded bodies', async t => {
   const f = await fixture(t);
   const invalid = [null, [], {}, { ...input(), actorUid: '85' }, { ...input(), cancellationId: input().cancellationId + '\n' },

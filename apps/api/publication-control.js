@@ -25,7 +25,7 @@ const header = (req, name) => {
 export function createPublicationControlHandler(config, store, dependencies = {}) {
   const settings = config.publicationControl ?? {};
   const enabled = settings.enabled === true;
-  let control, peerHost, secret, proxies;
+  let control, peerHosts, secret, proxies;
   const limiter = new RateLimiter({ limit: 120, windowMs: 60000, maxBuckets: 1 });
   const budget = dependencies.timeoutMs ?? 5000; // test injection, never caller input
   try {
@@ -33,7 +33,10 @@ export function createPublicationControlHandler(config, store, dependencies = {}
       if (!validReceiptPeerConfig(settings) || !Number.isInteger(budget) || budget < 1 || budget > 5000 ||
           !Array.isArray(settings.trustedProxyAddresses) || settings.trustedProxyAddresses.some(ip => !isIP(ip)) ||
           [config.agent?.clientSecret, config.session?.secret, config.mutationWriter?.secret].includes(settings.peerSecret)) throw new Error();
-      peerHost = new URL(settings.audience).host;
+      const audienceURL = new URL(settings.audience);
+      // Node canonicalizes explicit :443 away; Go may preserve it in Host.
+      // Accept only those two equivalent HTTPS authority spellings.
+      peerHosts = new Set([audienceURL.host, ...(!audienceURL.port ? [audienceURL.hostname + ':443'] : [])]);
       secret = Buffer.from(`Bearer ${settings.peerSecret}`);
       proxies = new Set(settings.trustedProxyAddresses);
       control = dependencies.control ?? createDelegatedPublicationControlStore({ ...settings, store });
@@ -58,7 +61,7 @@ export function createPublicationControlHandler(config, store, dependencies = {}
     if (req.method !== 'POST') { fail(405, 'invalid'); return true; }
     try {
       const proxyTLS = proxies.has(req.socket.remoteAddress) && header(req, 'x-forwarded-proto') === 'https';
-      if ((!req.socket.encrypted && !proxyTLS) || header(req, 'host') !== peerHost ||
+      if ((!req.socket.encrypted && !proxyTLS) || !peerHosts.has(header(req, 'host')) ||
           header(req, 'origin') !== undefined || header(req, 'cookie') !== undefined) throw new Error();
       const supplied = Buffer.from(header(req, 'authorization') ?? '');
       if (supplied.length !== secret.length || !timingSafeEqual(supplied, secret)) throw new Error();
