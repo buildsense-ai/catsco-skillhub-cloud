@@ -187,8 +187,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: buildsense-ai/cats-company
-          # Reviewed PR670 merge: real human confirmation, client and PG permit handler.
-          ref: 1c4251293018d343f21c74d94358eab2decedab6
+          # Reviewed PR672 merge: real human confirmation and durable commit dispatcher.
+          ref: b987e59a7f1a52f7a67f02fbdf8eb12aab9b1e3e
           path: cats-company
       - uses: actions/setup-go@v5
         with:
@@ -212,7 +212,7 @@ jobs:
         working-directory: skillhub
         env:
           CATSCO_CONTRACT_ROOT: ../cats-company
-          CATSCO_CONTRACT_REVISION: 1c4251293018d343f21c74d94358eab2decedab6
+          CATSCO_CONTRACT_REVISION: b987e59a7f1a52f7a67f02fbdf8eb12aab9b1e3e
         run: |
           npm run db:migrate
           node --test tests/contract/publication-commit.test.js

@@ -223,6 +223,15 @@ func main() {
 			var count int
 			must(scoped.QueryRow("SELECT count(*) FROM skillhub_publication_commit_permits").Scan(&count))
 			result = map[string]int{"count": count}
+		case "dispatch":
+			worker, err := server.NewPublicationCommitDispatcher(server.PublicationCommitCloudConfig{Enabled: true, Issuer: issuer, Audience: audience, PeerSecret: strings.Repeat("1", 64)}, a)
+			must(err)
+			must(worker.RunOnce(ctx))
+		case "delivery":
+			actor, err := strconv.ParseInt(c.Actor, 10, 64)
+			must(err)
+			result, err = a.GetSkillHubPublicationCommitDelivery(ctx, actor, c.Receipt.EntryID)
+			must(err)
 		case "cloud-plan", "cloud-authorize", "cloud-read":
 			var callErr error
 			r := c.Receipt.input(issuer, audience)

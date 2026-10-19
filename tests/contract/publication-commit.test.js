@@ -148,5 +148,36 @@ test('real CatsCo + Cloud PostgreSQL: frozen plan, human intent, HTTPS permit, c
   const foreign=await callHuman('status',{actor:f.actor});assert.equal(foreign.status,404);
   assert.equal((await store.query('SELECT 1 FROM skill_versions WHERE skill_id=$1',[human.plan.target.skillId])).rowCount,1);
   for(const secret of ['permitId','receipt','manifestHash','private-source'])assert.ok(!JSON.stringify(actual.body).includes(secret));
-  t.diagnostic('Real dual PostgreSQL + HTTPS + Git + signed package, including human JWT plan/confirm/status. Older race fixtures seed intent; Runtime source probe/capture remains synthetic. No live UI, paid model, or production switches.');
+  // Human confirmation is durable even when the permit response disappears.
+  // Reopen CatsCo, then use ONLY its actual durable dispatcher to finish the
+  // authorization. No repeated human confirmation or direct authorize call.
+  const recovery=await prepare();
+  const recoverHuman=(action,extra={})=>command({action:'human-'+action,actor:recovery.f.actor,receipt:recovery.f.receipt,...extra});
+  const recoverPlan=await recoverHuman('plan',{confirmVersionPublish:false});assert.equal(recoverPlan.status,200);
+  const beforePermits=(await command({action:'count'})).count;
+  await command({action:'lose'});
+  assert.equal((await recoverHuman('confirm',{confirmationKey:recoverPlan.body.plan.confirmationKey})).status,503);
+  assert.equal((await command({action:'count'})).count,beforePermits+1);
+  assert.equal(await state(recovery.f),'delegated_pending');
+  const delivery=(fixture,actor=fixture.actor)=>command({action:'delivery',actor,receipt:fixture.receipt});
+  assert.deepEqual(await delivery(recovery.f),{state:'pending',attempts:0,lastCode:''});
+  await command({action:'reopen'});
+  // The five confirmed fixtures are the queue, including earlier terminal
+  // Cloud observations. One pass each, without resetting any durable budget.
+  for(let n=0;n<5;n++)await command({action:'dispatch'});
+  assert.deepEqual(await delivery(recovery.f),{state:'accepted',attempts:1,lastCode:''});
+  assert.equal(await delivery(recovery.f,f.actor),null,'delivery history is original-human private');
+  assert.equal((await delivery(stopped.f)).state,'needs_attention');
+  assert.equal((await delivery(late.f)).state,'needs_attention');
+  assert.equal((await command({action:'count'})).count,beforePermits+1,'dispatcher recovers the retained permit');
+  assert.equal(await state(recovery.f),'committing','delivery ACK is not publication success');
+  const recoveryScheduler=createDelegatedPublicationScheduler(config,{store});
+  await recoveryScheduler.run({once:true});await recoveryScheduler.stop();
+  await command({action:'reopen'});await command({action:'dispatch'});
+  const recovered=await recoverHuman('status');assert.equal(recovered.status,200);
+  assert.equal(recovered.body.executionState,'published');
+  assert.equal(recovered.body.result.skillId,recovery.plan.target.skillId);
+  assert.equal((await store.query('SELECT 1 FROM skill_versions WHERE skill_id=$1',[recovery.plan.target.skillId])).rowCount,1);
+  assert.deepEqual(await delivery(recovery.f),{state:'accepted',attempts:1,lastCode:''});
+  t.diagnostic('Real dual PostgreSQL + HTTPS + Git + signed package, human JWT plan/confirm/status and actual CatsCo dispatcher recovery after a lost permit reply. Older race fixtures seed intent; Runtime source probe/capture remains synthetic. No live UI, paid model, or production switches.');
 });
