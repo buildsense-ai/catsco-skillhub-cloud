@@ -190,6 +190,12 @@ jobs:
           # Reviewed PR672 merge: real human confirmation and durable commit dispatcher.
           ref: b987e59a7f1a52f7a67f02fbdf8eb12aab9b1e3e
           path: cats-company
+      - uses: actions/checkout@v4
+        with:
+          repository: buildsense-ai/XiaoBa-CLI
+          # Reviewed PR540 merge: immutable private runtime capture.
+          ref: ffbf4846d3e1a4db28e1e10da4ad5f39b5643b64
+          path: xiaoba
       - uses: actions/setup-go@v5
         with:
           go-version-file: cats-company/go.mod
@@ -202,6 +208,9 @@ jobs:
       - name: Install locked Cloud dependencies
         working-directory: skillhub
         run: npm ci --ignore-scripts
+      - name: Install pinned runtime capture dependencies
+        working-directory: xiaoba
+        run: npm ci --ignore-scripts
       - name: Recover actual permit after lost HTTPS reply
         working-directory: cats-company
         env:
@@ -213,6 +222,8 @@ jobs:
         env:
           CATSCO_CONTRACT_ROOT: ../cats-company
           CATSCO_CONTRACT_REVISION: b987e59a7f1a52f7a67f02fbdf8eb12aab9b1e3e
+          XIAOBA_CONTRACT_ROOT: ../xiaoba
+          XIAOBA_CONTRACT_REVISION: ffbf4846d3e1a4db28e1e10da4ad5f39b5643b64
         run: |
           npm run db:migrate
           node --test tests/contract/publication-commit.test.js

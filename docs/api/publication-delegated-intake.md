@@ -1,20 +1,21 @@
 # Delegated publication intake foundation
 
 Cloud can atomically retain an immutable candidate, its CatsCo association and
-one reference-only callback outbox record. This internal foundation is disabled
-by default and has no production API or worker caller. `delegated_pending`
+one reference-only callback outbox record. This foundation is disabled
+by default; its separately gated [runtime HTTP adapter](publication-candidate-upload.md)
+authenticates scoped upload grants before admission. `delegated_pending`
 means held for a future protocol, not validated for publication or published.
 
 ## Admission and identity
 
 `createDelegatedPublicationIntake` requires explicit internal enablement,
 publication task settings, configured canonical HTTPS issuer/audience and the
-pinned introspection client. There is no environment switch or HTTP route.
+pinned introspection client. The HTTP adapter has an independent default-off switch.
 Input is the six-field introspection request, including the opaque grant and
 exact candidate bytes; Cloud owner IDs, profile IDs and arbitrary fields are
 rejected. A configured concurrency cap covers the entire operation, including
-database settlement after client cancellation. A future exposed endpoint must
-also provide authenticated admission, read deadlines and account rate limits.
+database settlement after client cancellation. The HTTP adapter additionally
+provides pre-validation grant checks, read deadlines and verified-account rate limits.
 
 Before the first await, admission snapshots the input. The bounded validation
 worker parses those bytes and computes the canonical candidate digest. Only a
