@@ -185,8 +185,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: buildsense-ai/cats-company
-          # Candidate under colleague review, NOT represented as merged main.
-          ref: 81aade2820a64113d5b8258cae1a7e2d5e3536bf
+          # PR666 reviewed merge: authenticated, durable commit permits.
+          ref: 03c354a857fd9472d626f7f0fa36ea0886825841
           path: cats-company
       - uses: actions/setup-go@v5
         with:

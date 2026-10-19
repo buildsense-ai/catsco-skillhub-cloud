@@ -25,7 +25,8 @@ export function createPublicationReceiptStore(store,{issuer,audience}) {
         const row=(await c.query(`SELECT o.task_id,o.event_id,o.delivery_attempts,d.entry_request_id,d.candidate_revision,
           d.authority_epoch,d.request_bytes,d.delegation_id,t.request_key,t.request_hash,t.candidate_hash
           FROM publication_delegation_outbox o JOIN publication_delegations d USING(task_id) JOIN publication_tasks t ON t.id=o.task_id
-          WHERE d.issuer=$1 AND d.audience=$2 AND t.authority_kind='catsco' AND t.state IN ('delegated_pending','cancelled')
+          WHERE d.issuer=$1 AND d.audience=$2 AND t.authority_kind='catsco'
+          AND t.state IN ('delegated_pending','cancelled','committing','publish_queued','publish_failed','published')
           AND o.delivery_attempts<8 AND ((o.delivery_state='pending' AND o.next_attempt_at<=clock_timestamp()) OR
             (o.delivery_state='leased' AND o.lease_until<=clock_timestamp()))
           ORDER BY o.next_attempt_at,o.created_at,o.task_id LIMIT 1 FOR UPDATE OF o SKIP LOCKED`,[issuer,audience])).rows[0];

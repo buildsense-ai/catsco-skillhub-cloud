@@ -82,12 +82,15 @@ export function createDelegatedPublicationIntake({ enabled = false, config, stor
         const prior = (await client.query(`SELECT d.*,t.owner_user_id,t.request_key,t.request_hash,t.candidate_hash,
           t.candidate_bytes,t.expires_at,t.state,o.event_id FROM publication_delegations d
           JOIN publication_tasks t ON t.id=d.task_id JOIN publication_delegation_outbox o ON o.task_id=d.task_id
-          WHERE d.issuer=$1 AND d.entry_request_id=$2 AND d.candidate_revision=1 FOR SHARE OF t`,[issuer,grant.entryRequestId])).rows[0];
+          WHERE d.issuer=$1 AND d.entry_request_id=$2 AND d.candidate_revision=1`,[issuer,grant.entryRequestId])).rows[0];
         const receipt = row => ({ taskId:row.task_id, issuer, entryRequestId:row.entry_request_id, candidateRevision:1,
           candidateHash:row.candidate_hash, requestHash:row.request_hash, authorityEpoch:Number(row.authority_epoch),
           eventId:row.event_id, state:row.state,
           candidateAvailable:row.state!=='cancelled' && row.candidate_bytes>0 && new Date(row.expires_at).getTime()>Date.now() });
         if (prior) {
+          // Retained identity is immutable; this is a historical observation,
+          // not a new execution authority. Do not hold a task row lock while
+          // owning the intake quota lock (commit accounting takes reverse order).
           // CatsCo renewal increments the token epoch but preserves grant ID,
           // entry, candidate and key. A live renewal may recover this original
           // receipt; it must not rewrite the accepted epoch or authorize commit.

@@ -20,19 +20,27 @@ async function authority(client, ownerId, expected) {
   return profile;
 }
 
-async function ownedLease(client, task) {
+async function ownedLease(client, task, kind='account') {
   await client.query("SET LOCAL lock_timeout='5s'");
   await client.query("SET LOCAL statement_timeout='10s'");
   await authority(client,task.owner_user_id,task.intent);
   await client.query('SELECT id FROM publication_tasks WHERE id=$1 AND owner_user_id=$2 FOR UPDATE',[task.id,task.owner_user_id]);
   const row = (await client.query(`${privateSelect} WHERE t.id=$1 AND t.owner_user_id=$2
-    AND t.authority_kind='account' AND t.lease_token=$3 AND t.lease_until>clock_timestamp()
-    AND t.state IN ('publishing','committing') FOR UPDATE OF t`,[task.id,task.owner_user_id,task.lease_token])).rows[0];
+    AND t.authority_kind=$4 AND t.lease_token=$3 AND t.lease_until>clock_timestamp()
+    AND t.state IN ('publishing','committing') FOR UPDATE OF t`,[task.id,task.owner_user_id,task.lease_token,kind])).rows[0];
   if (!row) throw lost();
+  if(kind==='catsco') {
+    const proof=await client.query(`SELECT 1 FROM publication_delegated_permits permit
+      JOIN publication_delegations d USING(task_id) JOIN publisher_profiles p ON p.id=d.profile_id
+      WHERE permit.task_id=$1 AND p.user_id=$2 AND p.status='active' AND p.namespace=d.namespace
+        AND p.catsco_uid=d.actor_uid AND p.catsco_issuer=d.issuer`,[row.id,row.owner_user_id]);
+    if(!proof.rowCount || row.intent?.delegated_permit_task!==row.id)throw lost();
+  }
   return row;
 }
 
-export function createPublicationCommitStore({ query, tx, config }) {
+export function createPublicationCommitStore({ query, tx, config, delegated=false }) {
+  const kind=delegated===true?'catsco':'account';
   async function charge(client,id,ownerId) {
     const settings=publicationTaskSettings(config);
     if (!settings) throw taskError(503,'unavailable','Publication storage is unavailable.');
@@ -40,7 +48,9 @@ export function createPublicationCommitStore({ query, tx, config }) {
     // per-owner/global storage budgets as candidate bytes.
     await client.query("SELECT pg_advisory_xact_lock(hashtext('skillhub-publication-task-intake')::bigint)");
     await client.query(`UPDATE publication_tasks SET commit_bytes=octet_length(
-      (SELECT to_jsonb(c)::text FROM publication_commits c WHERE c.task_id=$1)) WHERE id=$1`,[id]);
+      (SELECT to_jsonb(c)::text FROM publication_commits c WHERE c.task_id=$1))
+      +COALESCE((SELECT octet_length(to_jsonb(p)::text) FROM publication_delegated_plans p WHERE p.task_id=$1),0)
+      +COALESCE((SELECT octet_length(to_jsonb(p)::text) FROM publication_delegated_permits p WHERE p.task_id=$1),0) WHERE id=$1`,[id]);
     const usage=(await client.query(`SELECT COALESCE(sum(candidate_bytes+commit_bytes),0)::bigint AS total,
       COALESCE(sum(candidate_bytes+commit_bytes) FILTER (WHERE owner_user_id=$1),0)::bigint AS owned FROM publication_tasks`,[ownerId])).rows[0];
     if (Number(usage.total)>settings.maxStoredBytes || Number(usage.owned)>settings.maxStoredBytesPerOwner) {
@@ -105,10 +115,10 @@ export function createPublicationCommitStore({ query, tx, config }) {
         await client.query(`UPDATE publication_tasks SET state='publish_failed',error_code='skillhub.publication_task_publish_attempts_exhausted',
           lease_token=NULL,lease_until=NULL,updated_at=now() WHERE id IN
           (SELECT t.id FROM publication_tasks t JOIN publication_commits c ON c.task_id=t.id
-           WHERE t.authority_kind='account' AND t.state IN ('publishing','committing') AND t.lease_until<=now() AND c.attempts>=$1
+           WHERE t.authority_kind='${kind}' AND t.state IN ('publishing','committing') AND t.lease_until<=now() AND c.attempts>=$1
            LIMIT 100 FOR UPDATE OF t SKIP LOCKED)`,[MAX_ATTEMPTS]);
-        const selected = (await client.query(`${privateSelect} WHERE t.authority_kind='account' AND c.attempts<$1 AND t.candidate IS NOT NULL
-          AND ((t.state='publish_queued' AND t.run_after<=now()) OR (t.state IN ('publishing','committing') AND t.lease_until<=now()))
+        const selected = (await client.query(`${privateSelect} WHERE t.authority_kind='${kind}' AND c.attempts<$1 AND t.candidate IS NOT NULL
+          AND ((t.state='publish_queued' AND t.run_after<=now()) OR (t.state IN ('publishing','committing') AND (t.lease_until<=now() OR (t.authority_kind='catsco' AND t.lease_until IS NULL)) AND t.run_after<=now()))
           ORDER BY t.created_at FOR UPDATE OF t SKIP LOCKED LIMIT 1`,[MAX_ATTEMPTS])).rows[0];
         if (!selected) return null;
         const row=(await client.query(`${privateSelect} WHERE t.id=$1`,[selected.id])).rows[0];
@@ -121,13 +131,13 @@ export function createPublicationCommitStore({ query, tx, config }) {
     },
     async renewPublicationCommit(task,settings) {
       const result = await query(`UPDATE publication_tasks SET lease_until=now()+($3::bigint*interval '1 millisecond')
-        WHERE authority_kind='account' AND id=$1 AND lease_token=$2 AND lease_until>clock_timestamp() AND state IN ('publishing','committing')`,
+        WHERE authority_kind='${kind}' AND id=$1 AND lease_token=$2 AND lease_until>clock_timestamp() AND state IN ('publishing','committing')`,
       [task.id,task.lease_token,settings.leaseMs]);
       return result.rowCount===1;
     },
     async beginPublicationCommit(task,receipt,validationResult=null) {
       return transaction(async client => {
-        const row = await ownedLease(client,task);
+        const row = await ownedLease(client,task,kind);
         if (receipt.candidateHash!==row.candidate_hash || receipt.requestHash!==row.request_hash ||
           canonicalJson(receipt.identity)!==canonicalJson(row.intent.identity) ||
           (row.intent.receipt && canonicalJson(row.intent.receipt)!==canonicalJson(receipt))) {
@@ -144,7 +154,7 @@ export function createPublicationCommitStore({ query, tx, config }) {
     },
     async checkpointPublicationCommit(task,checkpoint) {
       return transaction(async client => {
-        const row = await ownedLease(client,task);
+        const row = await ownedLease(client,task,kind);
         if (row.state!=='committing' || !row.intent.receipt) throw lost();
         if (row.intent.checkpoint) return row.intent.checkpoint;
         const {packageVersion:p,scanRun:s}=checkpoint, i=row.intent.identity;
@@ -162,7 +172,7 @@ export function createPublicationCommitStore({ query, tx, config }) {
         // Do not require active authority to close a now-revoked attempt.
         await client.query('SELECT id FROM publication_tasks WHERE id=$1 FOR UPDATE',[task.id]);
         const row = (await client.query(`${privateSelect} WHERE t.id=$1 AND t.lease_token=$2
-          AND t.authority_kind='account' AND t.lease_until>clock_timestamp() AND t.state IN ('publishing','committing') FOR UPDATE OF t`,[task.id,task.lease_token])).rows[0];
+          AND t.authority_kind='${kind}' AND t.lease_until>clock_timestamp() AND t.state IN ('publishing','committing') FOR UPDATE OF t`,[task.id,task.lease_token])).rows[0];
         if (!row) return false;
         const state = retry && row.intent.attempts<MAX_ATTEMPTS ? 'publish_queued' : 'publish_failed';
         await client.query(`UPDATE publication_tasks SET state=$3,error_code=$4,validation_result=COALESCE($5,validation_result),
@@ -176,7 +186,7 @@ export function createPublicationCommitStore({ query, tx, config }) {
 
 // Called inside the same transaction that inserts skill_versions. No file IO.
 export async function lockPublicationCompletion(client,task,packageVersion,submission) {
-  const row=await ownedLease(client,task);
+  const row=await ownedLease(client,task,task.authority_kind==='catsco'?'catsco':'account');
   if (row.state!=='committing' || !row.intent.checkpoint ||
     canonicalJson(row.intent.checkpoint.packageVersion)!==canonicalJson(packageVersion) ||
     submission.id!==row.intent.identity.uploadId || submission.submitterId!==row.owner_user_id) throw lost();

@@ -44,6 +44,17 @@ function validAuthorizedAt(v) {
   return Number.isFinite(at.getTime()) && at.toISOString()===whole && at.getUTCFullYear()>1;
 }
 
+// Reused at the storage boundary; authorization still comes only from the
+// authenticated peer response, never from a browser-supplied permit object.
+export function validPublicationCommitPermit(value, receipt, target) {
+  return validPublicationReceipt(receipt) && validPublicationCommitTarget(target) &&
+    exact(value,['schemaVersion','receipt','target','permitId','intentHash','authorityEpoch','authorizedAt']) &&
+    value.schemaVersion===1 && same(value.receipt,receipt) && same(value.target,target) &&
+    matches(value.permitId,/^pubpermit_[a-f0-9]{32}$/) && matches(value.intentHash,hash) &&
+    Number.isInteger(value.authorityEpoch) && value.authorityEpoch>=receipt.acceptanceEpoch && value.authorityEpoch<=8 &&
+    validAuthorizedAt(value.authorizedAt);
+}
+
 // Native HTTPS only: no proxy env, redirects, caller URLs or upload credentials.
 // Slots are held until transport close, including after abort or invalid replies.
 function send(url,secret,body,signal,requestImpl) {
@@ -119,11 +130,7 @@ export function createPublicationCommitPermitClient(config={}, {requestImpl=http
           throw new PublicationCommitPermitError(codes[value.error.code]);
         throw new PublicationCommitPermitError();
       }
-      if(!exact(value,['schemaVersion','receipt','target','permitId','intentHash','authorityEpoch','authorizedAt']) ||
-        value.schemaVersion!==1 || !same(value.receipt,receipt) || !same(value.target,target) ||
-        !matches(value.permitId,/^pubpermit_[a-f0-9]{32}$/) || !matches(value.intentHash,hash) ||
-        !Number.isInteger(value.authorityEpoch) || value.authorityEpoch<receipt.acceptanceEpoch || value.authorityEpoch>8 ||
-        !validAuthorizedAt(value.authorizedAt))throw new PublicationCommitPermitError();
+      if(!validPublicationCommitPermit(value,receipt,target))throw new PublicationCommitPermitError();
       Object.freeze(value.receipt); Object.freeze(value.target);
       return Object.freeze(value);
     } finally {active--;}
