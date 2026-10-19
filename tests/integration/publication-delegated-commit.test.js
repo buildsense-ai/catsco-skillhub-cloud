@@ -201,3 +201,59 @@ test('PostgreSQL concurrent intake replay, planning, permit and cancellation nev
     assert.equal((await count(f,'publication_delegated_permits')).length,row.state==='committing'?1:0);
   }
 });
+
+test('PostgreSQL quota failures roll back reservation and permit atomically, preserving exact retry facts',pg,async()=>{
+  const f=await fixture();
+  const limited=bytes=>({...config,publicationTasks:{...config.publicationTasks,maxStoredBytesPerOwner:bytes}});
+  const initial=await task(f);
+  await assert.rejects(plan(coordinator(undefined,{config:limited(Number(initial.candidate_bytes))}),f),code('storage_limit'));
+  assert.deepEqual(await task(f),initial);
+  assert.equal((await count(f,'publication_delegated_plans')).length,0);
+  assert.equal((await store.query('SELECT 1 FROM publication_version_reservations WHERE owner_user_id=$1',[f.owner])).rowCount,0);
+  const c=coordinator(),p=await plan(c,f),planned=await task(f);let retained;
+  const peer={authorize:async input=>{retained??=proof(input);return retained;}};
+  await assert.rejects(coordinator(peer,{config:limited(Number(planned.candidate_bytes)+Number(planned.commit_bytes))}).authorize(f.receipt),code('storage_limit'));
+  assert.deepEqual(await task(f),planned);
+  assert.equal((await count(f,'publication_delegated_permits')).length,0);
+  assert.equal((await count(f,'publication_commits')).length,0);
+  assert.equal((await coordinator(peer).authorize(f.receipt)).permitId,retained.permitId);
+  assert.deepEqual(await plan(c,f),p);
+});
+
+test('PostgreSQL migration019 preserves preexisting cancelled, held and ordinary evidence without backfill',pg,async()=>{
+  const names=['012_publication_tasks.sql','014_publication_commits.sql','016_delegated_publication_intake.sql',
+    '017_publication_receipt_delivery.sql','018_delegated_publication_cancellation.sql','019_delegated_publication_commit.sql'];
+  const migrations=await Promise.all(names.map(n=>fs.readFile(new URL('../../infra/migrations/'+n,import.meta.url),'utf8')));
+  const schema='commit_migration_'+id();
+  await store.tx(async c=>{
+    await c.query(`CREATE SCHEMA ${schema}`);await c.query(`SET LOCAL search_path TO ${schema}`);
+    await c.query("CREATE TABLE users(id text PRIMARY KEY); INSERT INTO users VALUES('owner')");
+    for(const migration of migrations.slice(0,-1))await c.query(migration);
+    for(const [key,kind] of [['held','catsco'],['cancelled','catsco'],['ordinary','account']]) {
+      await c.query(`INSERT INTO publication_tasks(id,owner_user_id,request_key,request_hash,candidate_hash,candidate,candidate_bytes,
+        state,intake_result,expires_at,purge_after,authority_kind)
+        VALUES($1,'owner',$1,$2,$2,$3,1,$4,'{}',now()+interval '1 day',now()+interval '2 days',$5)`,
+        [key,'a'.repeat(64),Buffer.from('x'),kind==='catsco'?'delegated_pending':'queued',kind]);
+      if(kind==='catsco') {
+        await c.query(`INSERT INTO publication_delegations(task_id,issuer,audience,entry_request_id,candidate_revision,actor_uid,bot_uid,
+          profile_id,namespace,delegation_id,authority_epoch,request_bytes) VALUES($1,$2,$3,$1,1,'1','2','profile','namespace',$1,1,1)`,[key,issuer,audience]);
+        await c.query('INSERT INTO publication_delegation_outbox(task_id,event_id) VALUES($1,$1)',[key]);
+      }
+    }
+    await c.query("UPDATE publication_tasks SET state='cancelled',candidate=NULL,candidate_bytes=0,delegated_cancelled_at=now() WHERE id='cancelled'");
+    await c.query(`INSERT INTO publication_commits(task_id,profile_id,namespace,confirm_version,manifest,identity,scan_id,package_id)
+      VALUES('ordinary','profile','namespace',false,'{}','{}','scan','package')`);
+    const tables=['publication_tasks','publication_delegations','publication_delegation_outbox'];
+    const before=await Promise.all(tables.map(t=>c.query(`SELECT * FROM ${t} ORDER BY 1`)));
+    await c.query(migrations.at(-1));
+    for(let i=0;i<tables.length;i++)assert.deepEqual((await c.query(`SELECT * FROM ${tables[i]} ORDER BY 1`)).rows,before[i].rows);
+    assert.equal((await c.query('SELECT * FROM publication_delegated_plans')).rowCount,0);
+    assert.equal((await c.query('SELECT * FROM publication_delegated_permits')).rowCount,0);
+    assert.equal((await c.query('SELECT delegated_permit_task FROM publication_commits')).rows[0].delegated_permit_task,null);
+    await c.query('SAVEPOINT invalid_insert');
+    await assert.rejects(c.query(`INSERT INTO publication_tasks(id,owner_user_id,request_key,request_hash,state,intake_result,expires_at,purge_after,authority_kind)
+      VALUES('bypass','owner','bypass','hash','committing','{}',now()+interval '1 day',now()+interval '2 days','catsco')`),{code:'23514'});
+    await c.query('ROLLBACK TO SAVEPOINT invalid_insert');
+    await c.query(`DROP SCHEMA ${schema} CASCADE`);
+  });
+});
