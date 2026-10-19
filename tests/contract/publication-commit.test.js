@@ -94,7 +94,7 @@ test('real CatsCo + Cloud PostgreSQL: frozen plan, human intent, HTTPS permit, c
         'X-Publication-Source-Hash':input.sourceSnapshotHash,'Idempotency-Key':input.idempotencyKey}},res=>{
       let data='';res.on('data',b=>{data+=b;if(data.length>8192)req.destroy(Error('Upload response too large'));});
       res.on('error',reject);res.on('end',()=>{
-        try{assert.ok([200,201].includes(res.statusCode),`Upload HTTP ${res.statusCode}`);resolve(JSON.parse(data));}catch(e){reject(e);}
+        try{const body=JSON.parse(data);assert.ok([200,201].includes(res.statusCode),`Upload HTTP ${res.statusCode}: ${body.error?.code??'no-code'}`);resolve(body);}catch(e){reject(e);}
       });
     });req.on('error',reject);req.setTimeout(60000,()=>req.destroy(Error('Upload timeout')));req.end(input.rawBody);
   });
