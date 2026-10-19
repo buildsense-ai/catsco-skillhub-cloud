@@ -7,6 +7,7 @@ import path from 'node:path';
 import https from 'node:https';
 import {createInterface} from 'node:readline';
 import {fileURLToPath} from 'node:url';
+import {setTimeout as delay} from 'node:timers/promises';
 import {loadConfig} from '../../packages/config/index.js';
 import {createStore,closePools} from '../../packages/database/store.js';
 import {issueSigningKeyCertificate} from '../../packages/signing/index.js';
@@ -72,9 +73,18 @@ test('real CatsCo + Cloud PostgreSQL: frozen plan, human intent, HTTPS permit, c
   const command=async input=>{const pending=response();child.stdin.write(JSON.stringify(input)+'\n');return pending;};
   const peer={enabled:true,issuer:startup.origin,audience,peerSecret:'1'.repeat(64)};
   const transport={requestImpl:(url,options,callback)=>https.request(url,{...options,ca:startup.ca},callback)};
-  const introspectionClient=createPublicationIntrospectionClient(peer,transport);
-  const receiptClient=createPublicationReceiptClient(peer,transport);
-  const permitClient=createPublicationCommitPermitClient(peer,transport);
+  // This contract deliberately performs repeated upload/permit replays in a
+  // tight loop. Respect the real CatsCo 120/minute, burst-20 peer budget; do
+  // not disable it or rebuild handlers merely to reset the rate limiter.
+  let nextPeerAt=0;
+  const paced=(client,method)=>({async [method](...args){
+    const now=Date.now(),at=Math.max(now,nextPeerAt);nextPeerAt=at+550;
+    if(at>now)await delay(at-now);
+    return client[method](...args);
+  }});
+  const introspectionClient=paced(createPublicationIntrospectionClient(peer,transport),'checkUploadGrant');
+  const receiptClient=paced(createPublicationReceiptClient(peer,transport),'deliver');
+  const permitClient=paced(createPublicationCommitPermitClient(peer,transport),'authorize');
   const config=loadConfig({root:path.join(root,'cloud'),databaseUrl:process.env.SKILLHUB_TEST_DATABASE_URL,nodeEnv:'test',
     publicationTasksEnabled:true,publicationPublishingEnabled:true,publicationDelegatedWorkerEnabled:true,allowAutoKeygen:true});
   store=createStore(config);await issueSigningKeyCertificate(config);
