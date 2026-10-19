@@ -1,8 +1,8 @@
 # Publication commit permit transport
 
-The service client and internal commit coordinator default off. No user approval
-API or application scheduler registers them, and no production switch enables
-them. Migration 019 permits only delegated commits bound to retained proof;
+The service client and internal commit coordinator default off. A separately
+default-off service adapter exposes plan/read/authorize, not user approval or an
+application scheduler. Migration 019 permits only delegated commits bound to retained proof;
 ordinary account APIs and workers remain account-only.
 
 createPublicationCommitPermitClient({enabled,issuer,audience,peerSecret})
@@ -47,7 +47,7 @@ TLS integration tests cover strict request/response scope, default-off config,
 snapshot isolation, timestamps, status mapping, redirect/cert failures, malformed
 and oversized bodies, abort/deadline handling and concurrency.
 
-The required CI permit contract pins the reviewed CatsCo PR666 merge
+The required CI permit contract includes the reviewed CatsCo PR666 code
 and runs its real HTTPS handler and PostgreSQL adapter against this actual Node
 client. It commits a permit, drops the response, reopens the adapter/handler and
 uses a fresh client; the original permit/time must survive. It also checks missing
@@ -57,5 +57,7 @@ intent are test setup; that transport test is not live user approval or package
 writing. A separate required dual-store contract exercises actual Cloud intake,
 plan, permit and signed package publication through the real CatsCo PostgreSQL
 handler. Source probing and trusted human intent remain explicit test setup;
-neither contract is a live Runtime/UI publication E2E.
+neither contract is a live Runtime/UI publication E2E. The dual-store test now
+also exercises the real CatsCo plan/status client, pinning PR667's explicit
+candidate while it awaits colleague review. It is not represented as merged main.
 

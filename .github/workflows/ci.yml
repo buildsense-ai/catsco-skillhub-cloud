@@ -188,7 +188,7 @@ jobs:
         with:
           repository: buildsense-ai/cats-company
           # PR667 client candidate under colleague review; NOT merged main.
-          ref: 55c4e228e02b569ae4418a9c3da0948b9c0a3f8b
+          ref: 472e670cc9a6220b35ed094de937282b3078aaca
           path: cats-company
       - uses: actions/setup-go@v5
         with:
@@ -212,7 +212,7 @@ jobs:
         working-directory: skillhub
         env:
           CATSCO_CONTRACT_ROOT: ../cats-company
-          CATSCO_CONTRACT_REVISION: 55c4e228e02b569ae4418a9c3da0948b9c0a3f8b
+          CATSCO_CONTRACT_REVISION: 472e670cc9a6220b35ed094de937282b3078aaca
         run: |
           npm run db:migrate
           node --test tests/contract/publication-commit.test.js
