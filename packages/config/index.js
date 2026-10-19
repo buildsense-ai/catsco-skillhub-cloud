@@ -50,6 +50,9 @@ export function loadConfig(overrides = {}) {
       peerSecret: overrides.publicationControlPeerSecret ?? process.env.SKILLHUB_PUBLICATION_CONTROL_PEER_SECRET ?? "",
       trustedProxyAddresses: overrides.publicationControlTrustedProxyAddresses ?? splitList(process.env.SKILLHUB_PUBLICATION_CONTROL_TRUSTED_PROXY_ADDRESSES)
     },
+    publicationDelegatedWorker: {
+      enabled: overrides.publicationDelegatedWorkerEnabled ?? readBool("SKILLHUB_PUBLICATION_DELEGATED_WORKER_ENABLED", false)
+    },
     publicationPublishing: {
       enabled: overrides.publicationPublishingEnabled ?? readBool("SKILLHUB_PUBLICATION_PUBLISHING_ENABLED", false)
     },

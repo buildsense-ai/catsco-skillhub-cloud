@@ -16,6 +16,7 @@ import {createPublicationReceiptClient} from '../../packages/publication-delegat
 import {createPublicationCommitPermitClient} from '../../packages/publication-delegation/commit-permit-client.js';
 import {createDelegatedPublicationControlStore} from '../../packages/publication-delegation/control-store.js';
 import {createDelegatedPublicationCommitCoordinator,processDelegatedPublicationCommit} from '../../packages/publication-delegation/commit-coordinator.js';
+import {createDelegatedPublicationScheduler} from '../../packages/publication-delegation/commit-scheduler.js';
 import {delegatedFixture,cleanupDelegatedFixture,delegatedSource,hash} from '../helpers/delegated-publication.js';
 import {createPublicationCommitHandler} from '../../apps/api/publication-commit.js';
 import {publicationPeerTLS} from '../helpers/publication-peer-tls.js';
@@ -63,7 +64,7 @@ test('real CatsCo + Cloud PostgreSQL: frozen plan, human intent, HTTPS permit, c
   const receiptClient=createPublicationReceiptClient(peer,transport);
   const permitClient=createPublicationCommitPermitClient(peer,transport);
   const config=loadConfig({root:path.join(root,'cloud'),databaseUrl:process.env.SKILLHUB_TEST_DATABASE_URL,nodeEnv:'test',
-    publicationTasksEnabled:true,publicationPublishingEnabled:true,allowAutoKeygen:true});
+    publicationTasksEnabled:true,publicationPublishingEnabled:true,publicationDelegatedWorkerEnabled:true,allowAutoKeygen:true});
   store=createStore(config);await issueSigningKeyCertificate(config);
   handler=createPublicationCommitHandler({...config,publicationCommitService:{...peer,trustedProxyAddresses:[]}},store,
     {coordinator:createDelegatedPublicationCommitCoordinator({...peer,store,config,permitClient})});
@@ -99,11 +100,15 @@ test('real CatsCo + Cloud PostgreSQL: frozen plan, human intent, HTTPS permit, c
   assert.equal((await coordinator().authorize(f.receipt)).state,'committing');
   await command({action:'cancel',actor:f.actor,receipt:f.receipt});
   await assert.rejects(control.cancel(f.receipt),{code:'skillhub.publication_control_conflict'});
-  await processDelegatedPublicationCommit(config,{enabled:true,store,afterArtifact(){throw Error('test interruption');}});
+  const interrupted=createDelegatedPublicationScheduler(config,{store,
+    processCommit:(c,o)=>processDelegatedPublicationCommit(c,{...o,afterArtifact(){throw Error('test interruption');}})});
+  await interrupted.run({once:true});await interrupted.stop();
   assert.equal(await state(f),'publish_queued');
   const retained=(await store.query('SELECT * FROM publication_commits WHERE task_id=$1',[f.receipt.taskId])).rows[0];
   await store.query("UPDATE publication_tasks SET run_after=now()-interval '1 second' WHERE id=$1",[f.receipt.taskId]);
-  await processDelegatedPublicationCommit(config,{enabled:true,store});
+  // New scheduler, same durable identity/attempt budget. No direct worker call.
+  const resumed=createDelegatedPublicationScheduler(config,{store});
+  await resumed.run({once:true});await resumed.stop();
   assert.equal(await state(f),'published');
   const replay=await coordinator().authorize(f.receipt);assert.equal(replay.state,'published');
   const observed=await coordinator().read(f.receipt);assert.equal(observed.result.skillId,plan.target.skillId);
@@ -122,5 +127,8 @@ test('real CatsCo + Cloud PostgreSQL: frozen plan, human intent, HTTPS permit, c
   await assert.rejects(coordinator().authorize(late.f.receipt),{code:'skillhub.delegated_commit_cancelled'});
   assert.equal((await command({action:'count'})).count,2);
   assert.equal((await store.query('SELECT 1 FROM publication_delegated_permits')).rowCount,1);
+  const idle=createDelegatedPublicationScheduler(config,{store});
+  assert.equal(await idle.tick(),null,'cancelled/unpermitted/published tasks are never claimed');
+  await idle.stop();
   t.diagnostic('Real dual PostgreSQL + HTTPS + Git + signed package; source probe and human intent are test-seeded. No live UI, paid model, or production switches.');
 });

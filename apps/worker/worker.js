@@ -6,10 +6,12 @@ import { createStore } from "../../packages/database/store.js";
 import { processPublicationTask } from "../../packages/publication-tasks/worker.js";
 import { processPublicationCommit } from '../../packages/publication-tasks/commit-worker.js';
 import { publicationTaskSettings } from "../../packages/publication-tasks/config.js";
+import { createDelegatedPublicationScheduler } from '../../packages/publication-delegation/commit-scheduler.js';
 
 export async function startWorker(config = loadConfig(), { once = false } = {}) {
   await ensureRuntimeDirectories(config);
   const taskStore = createStore(config);
+  const delegated = createDelegatedPublicationScheduler(config, {store: taskStore});
   let tasksEnabled = false;
   try { tasksEnabled = Boolean(publicationTaskSettings(config)); } catch { /* optional feature fails closed */ }
   let lastTaskMaintenance = 0;
@@ -30,27 +32,36 @@ export async function startWorker(config = loadConfig(), { once = false } = {}) 
     }
   };
 
-  if (once) {
-    const results = await processJobs(config);
-    while (await tickTasks()) { /* drain due validation tasks; retries have backoff */ }
-    console.log(JSON.stringify({ processed: results.length, results: results.map((item) => ({ jobId: item.job.id, type: item.job.type, status: item.status })) }, null, 2));
-    return results;
-  }
-
-  console.log(`CatsCo SkillHub worker started as ${config.worker.id}`);
   let stopped = false;
   const stop = () => {
     stopped = true;
+    void delegated.stop().catch(()=>{}); // also stop admission while legacy IO settles
   };
   process.once("SIGTERM", stop);
   process.once("SIGINT", stop);
-
-  while (!stopped) {
-    const result = await processNextJob(config);
-    const taskResult = await tickTasks();
-    if (!result && !taskResult) await sleep(config.worker.pollMs);
+  // Run independently: a slow permitted Git/package operation never blocks
+  // the legacy lane. Its own SQL lease/retry limits survive process restarts.
+  const delegatedRun=delegated.run({once});
+  try {
+    if (once) {
+      const results = await processJobs(config);
+      while (!stopped && await tickTasks()) { /* due work only; retries have backoff */ }
+      await delegatedRun;
+      console.log(JSON.stringify({ processed: results.length, results: results.map((item) => ({ jobId: item.job.id, type: item.job.type, status: item.status })) }, null, 2));
+      return results;
+    }
+    console.log(`CatsCo SkillHub worker started as ${config.worker.id}`);
+    while (!stopped) {
+      const result = await processNextJob(config);
+      const taskResult = await tickTasks();
+      if (!result && !taskResult) await sleep(config.worker.pollMs);
+    }
+    console.log("CatsCo SkillHub worker stopped");
+  } finally {
+    await delegated.stop();
+    process.removeListener('SIGTERM',stop);
+    process.removeListener('SIGINT',stop);
   }
-  console.log("CatsCo SkillHub worker stopped");
 }
 
 function sleep(ms) {

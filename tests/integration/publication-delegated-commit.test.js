@@ -13,6 +13,7 @@ import {processPublicationCommit} from '../../packages/publication-tasks/commit-
 import {createDelegatedPublicationCommitCoordinator as createCoordinator,processDelegatedPublicationCommit as work} from '../../packages/publication-delegation/commit-coordinator.js';
 import {createDelegatedPublicationControlStore} from '../../packages/publication-delegation/control-store.js';
 import {createPublicationReceiptStore} from '../../packages/publication-delegation/receipt-store.js';
+import {createDelegatedPublicationScheduler} from '../../packages/publication-delegation/commit-scheduler.js';
 import {delegatedFixture,cleanupDelegatedFixture,id} from '../helpers/delegated-publication.js';
 
 const databaseUrl=process.env.SKILLHUB_TEST_DATABASE_URL,pg={skip:!databaseUrl};
@@ -234,6 +235,31 @@ test('PostgreSQL historical commit status is read-only, scoped, and projects no 
   await store.query("UPDATE users SET status='disabled' WHERE id=$1",[f.owner]);
   assert.deepEqual(await c.read(f.receipt),complete,'trusted peer can recover history; CatsCo must independently authorize original human');
   const stopped=await fixture();await control().cancel(stopped.receipt);assert.equal((await c.read(stopped.receipt)).state,'cancelled');
+});
+
+test('PostgreSQL scheduler gates, concurrent processes and expired lease recovery preserve one publication',pg,async()=>{
+  const held=await fixture(),cancelled=await fixture();await control().cancel(cancelled.receipt);
+  const {f}=await admitted();
+  const schedulerConfig={...config,publicationDelegatedWorker:{enabled:true}};
+  const off=createDelegatedPublicationScheduler(config,{store});
+  assert.equal(await off.tick(),null);await off.stop();
+  assert.equal((await count(f,'publication_commits'))[0].attempts,0);
+  const crashed=createPublicationCommitStore({...store,config,delegated:true});
+  const claim=await crashed.claimPublicationCommit(settings);
+  assert.equal(claim.id,f.receipt.taskId);
+  const a=createDelegatedPublicationScheduler(schedulerConfig,{store});
+  const b=createDelegatedPublicationScheduler(schedulerConfig,{store});
+  try {
+    assert.equal(await a.tick(),null,'another live lease is not stolen');
+    await store.query("UPDATE publication_tasks SET lease_until=now()-interval '1 second' WHERE id=$1",[claim.id]);
+    const results=await Promise.all([a.tick(),b.tick()]);
+    assert.equal(results.filter(Boolean).length,1);
+    assert.equal((await task(f)).state,'published');
+    assert.equal((await count(f,'publication_commits'))[0].attempts,2);
+    assert.equal((await task(held)).state,'delegated_pending');
+    assert.equal((await task(cancelled)).state,'cancelled');
+    assert.equal((await store.query('SELECT 1 FROM skill_versions WHERE owner_user_id=$1',[f.owner])).rowCount,1);
+  } finally {await a.stop();await b.stop();}
 });
 
 test('PostgreSQL migration019 preserves preexisting cancelled, held and ordinary evidence without backfill',pg,async()=>{
