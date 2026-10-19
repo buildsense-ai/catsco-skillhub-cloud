@@ -57,8 +57,9 @@ after cancellation/disablement. Missing dependencies fail CI. Receipt and truste
 intent are test setup; that transport test is not live user approval or package
 writing. A separate required dual-store contract exercises actual Cloud intake,
 plan, permit and signed package publication through the real CatsCo PostgreSQL
-handler. Source probing and trusted human intent remain explicit test setup;
-neither contract is a live Runtime/UI publication E2E. The dual-store test now
+handler. Source probing remains explicit test setup. A new human JWT HTTP
+scenario exercises real plan/confirm/status admission; older race fixtures seed
+intent. Neither contract is a live Runtime/UI publication E2E. The dual-store test now
 also exercises the real CatsCo plan/status client and Cloud delegated scheduler,
-pinning the reviewed PR667 merge `eb38e08e577a1eb45378cb36949a455d3e698419`.
+pinning the reviewed PR670 merge `1c4251293018d343f21c74d94358eab2decedab6`.
 
