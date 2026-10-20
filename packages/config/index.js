@@ -60,6 +60,29 @@ export function loadConfig(overrides = {}) {
     publicationDelegatedWorker: {
       enabled: overrides.publicationDelegatedWorkerEnabled ?? readBool("SKILLHUB_PUBLICATION_DELEGATED_WORKER_ENABLED", false)
     },
+    // Cloud acceptance evidence is delivered to the independently
+    // authenticated CatsCo peer. Keep this lane dormant until rollout.
+    publicationReceiptDelivery: {
+      enabled:
+        overrides.publicationReceiptDeliveryEnabled
+        ?? readBool("SKILLHUB_PUBLICATION_RECEIPT_DELIVERY_ENABLED", false),
+      issuer:
+        overrides.publicationReceiptDeliveryIssuer
+        ?? process.env.SKILLHUB_PUBLICATION_RECEIPT_ISSUER
+        ?? "",
+      audience:
+        overrides.publicationReceiptDeliveryAudience
+        ?? process.env.SKILLHUB_PUBLICATION_RECEIPT_AUDIENCE
+        ?? "",
+      peerSecret:
+        overrides.publicationReceiptDeliveryPeerSecret
+        ?? process.env.SKILLHUB_PUBLICATION_RECEIPT_PEER_SECRET
+        ?? "",
+      pollMs: readInt(
+        "SKILLHUB_PUBLICATION_RECEIPT_POLL_MS",
+        overrides.publicationReceiptDeliveryPollMs ?? 5000
+      )
+    },
     publicationPublishing: {
       enabled: overrides.publicationPublishingEnabled ?? readBool("SKILLHUB_PUBLICATION_PUBLISHING_ENABLED", false)
     },
