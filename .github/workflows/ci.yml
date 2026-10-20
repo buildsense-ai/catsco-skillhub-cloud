@@ -187,14 +187,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: buildsense-ai/cats-company
-          # Reviewed PR672 merge: real human confirmation and durable commit dispatcher.
-          ref: b987e59a7f1a52f7a67f02fbdf8eb12aab9b1e3e
+          # Reviewed PR675 merge: capture-backed grants and unique migration numbers.
+          ref: 7d89431dafaaea0053b88a78286546ab72292da1
           path: cats-company
       - uses: actions/checkout@v4
         with:
           repository: buildsense-ai/XiaoBa-CLI
-          # Reviewed PR540 merge: immutable private runtime capture.
-          ref: ffbf4846d3e1a4db28e1e10da4ad5f39b5643b64
+          # Reviewed PR541 merge: immutable private capture and pinned uploader.
+          ref: d7b3cbdea91bc300a0a5b3008cee51b83c0fc760
           path: xiaoba
       - uses: actions/setup-go@v5
         with:
@@ -221,9 +221,9 @@ jobs:
         working-directory: skillhub
         env:
           CATSCO_CONTRACT_ROOT: ../cats-company
-          CATSCO_CONTRACT_REVISION: b987e59a7f1a52f7a67f02fbdf8eb12aab9b1e3e
+          CATSCO_CONTRACT_REVISION: 7d89431dafaaea0053b88a78286546ab72292da1
           XIAOBA_CONTRACT_ROOT: ../xiaoba
-          XIAOBA_CONTRACT_REVISION: ffbf4846d3e1a4db28e1e10da4ad5f39b5643b64
+          XIAOBA_CONTRACT_REVISION: d7b3cbdea91bc300a0a5b3008cee51b83c0fc760
         run: |
           npm run db:migrate
           node --test tests/contract/publication-commit.test.js

@@ -168,8 +168,29 @@ func main() {
 			probe, err := a.ClaimSkillHubPublicationDelivery(ctx, entry.ID, binding)
 			must(err)
 			must(a.FinishSkillHubPublicationDelivery(ctx, *probe, ""))
-			g, token, err := a.IssueSkillHubPublicationUploadGrant(ctx, store.SkillHubPublicationUploadInput{EntryID: entry.ID, Binding: binding, Issuer: issuer, Audience: audience, Action: store.SkillHubPublicationUploadAction, Revision: 1, RequestHash: c.RequestHash, SourceSnapshotHash: c.SourceHash, RequestBytes: c.Bytes})
+			upload := store.SkillHubPublicationUploadInput{EntryID: entry.ID, Binding: binding, Issuer: issuer, Audience: audience, Action: store.SkillHubPublicationUploadAction, Revision: 1, RequestHash: c.RequestHash, SourceSnapshotHash: c.SourceHash, RequestBytes: c.Bytes}
+			// Test-only trusted adapter: the JS caller supplies actual retained
+			// XiaoBa capture digests. A successful source probe alone must never
+			// become upload authority. This does not authenticate a live socket.
+			if _, _, err := a.IssueSkillHubPublicationUploadGrant(ctx, upload); !errors.Is(err, store.ErrSkillHubPublicationDenied) {
+				panic("source probe alone must not authorize upload")
+			}
+			input := store.SkillHubPublicationCaptureInput{EntryID: entry.ID, Binding: binding, Revision: 1,
+				RequestHash: c.RequestHash, SourceSnapshotHash: c.SourceHash, RequestBytes: c.Bytes}
+			captured, err := a.RecordSkillHubPublicationCapture(ctx, input)
 			must(err)
+			wrong := upload
+			wrong.RequestBytes++
+			if _, _, err := a.IssueSkillHubPublicationUploadGrant(ctx, wrong); !errors.Is(err, store.ErrSkillHubPublicationConflict) {
+				panic("capture must reject a different upload body")
+			}
+			g, token, err := a.IssueSkillHubPublicationUploadGrant(ctx, upload)
+			must(err)
+			replayed, err := a.RecordSkillHubPublicationCapture(ctx, input)
+			must(err)
+			if *replayed != *captured {
+				panic("grant issuance must not replace capture evidence")
+			}
 			result = map[string]any{"actor": strconv.FormatInt(actor, 10), "entryRequestId": entry.ID, "token": token.Reveal(), "idempotencyKey": g.IdempotencyKey, "authorityEpoch": g.Epoch}
 		case "admit":
 			actor, err := strconv.ParseInt(c.Actor, 10, 64)
