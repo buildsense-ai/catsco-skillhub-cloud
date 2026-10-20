@@ -61,7 +61,7 @@ handler. Source probing remains explicit test setup. A new human JWT HTTP
 scenario exercises real plan/confirm/status admission; older race fixtures seed
 intent. Neither contract is a live Runtime/UI publication E2E. The dual-store test now
 also exercises the real CatsCo plan/status client and Cloud delegated scheduler,
-pinning the reviewed PR672 merge `b987e59a7f1a52f7a67f02fbdf8eb12aab9b1e3e`.
+pinning the reviewed PR675 merge `7d89431dafaaea0053b88a78286546ab72292da1`.
 It now also drives the actual CatsCo durable commit dispatcher after a lost
 permit reply, without reconfirmation or test-driven authorization.
 

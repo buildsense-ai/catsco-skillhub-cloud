@@ -75,10 +75,14 @@ tuning and proxy body limits are rollout checks, not reasons to trust XFF.
 
 HTTP tests cover strict transport/header/auth boundaries, replay projections,
 slow bodies, held slots, private errors and legacy API coexistence. The required
-three-repository contract pins reviewed XiaoBa PR540 and CatsCo PR672, verifies
+three-repository contract pins reviewed XiaoBa PR541 and CatsCo PR675, verifies
 three actual captures against Cloud validation, uploads real captured bytes
 over HTTPS, loses the first committed upload response, and replays into the
 existing dual-PostgreSQL/human-confirmation/dispatcher/Git/signed-package flow.
+The real CatsCo store rejects probe-only issuance, records the retained capture
+digests, rejects mismatched byte counts, and preserves the original capture on
+grant issuance/replay. These assertions run for valid and invalid metadata;
+format validation cannot be used as a substitute for byte-bound authority.
 The capture fixture and CatsCo grant issuance are still test adapters: this is
 not proof of live Bot routing, trusted capture dispatch or complete UI E2E.
 No production feature flag is enabled by this change.
