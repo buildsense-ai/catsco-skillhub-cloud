@@ -7,11 +7,28 @@ import { processPublicationTask } from "../../packages/publication-tasks/worker.
 import { processPublicationCommit } from '../../packages/publication-tasks/commit-worker.js';
 import { publicationTaskSettings } from "../../packages/publication-tasks/config.js";
 import { createDelegatedPublicationScheduler } from '../../packages/publication-delegation/commit-scheduler.js';
+import { createPublicationReceiptDispatcher } from '../../packages/publication-delegation/receipt-worker.js';
+
+// A Cloud acceptance receipt is historical evidence only. This lane never
+// grants a commit permit and never changes publication state by itself.
+export function createPublicationReceiptDelivery(config, store, dependencies = {}) {
+  const settings = config?.publicationReceiptDelivery ?? {};
+  return createPublicationReceiptDispatcher(
+    { ...settings, store },
+    {
+      ...dependencies,
+      pollIntervalMs: dependencies.pollIntervalMs ?? settings.pollMs
+    }
+  );
+}
 
 export async function startWorker(config = loadConfig(), { once = false } = {}) {
   await ensureRuntimeDirectories(config);
   const taskStore = createStore(config);
   const delegated = createDelegatedPublicationScheduler(config, {store: taskStore});
+  const receiptDelivery = createPublicationReceiptDelivery(config, taskStore);
+  if (once) await receiptDelivery.runOnce();
+  else receiptDelivery.start();
   let tasksEnabled = false;
   try { tasksEnabled = Boolean(publicationTaskSettings(config)); } catch { /* optional feature fails closed */ }
   let lastTaskMaintenance = 0;
@@ -36,6 +53,7 @@ export async function startWorker(config = loadConfig(), { once = false } = {}) 
   const stop = () => {
     stopped = true;
     void delegated.stop().catch(()=>{}); // also stop admission while legacy IO settles
+    void receiptDelivery.stop().catch(()=>{});
   };
   process.once("SIGTERM", stop);
   process.once("SIGINT", stop);
@@ -59,6 +77,7 @@ export async function startWorker(config = loadConfig(), { once = false } = {}) 
     console.log("CatsCo SkillHub worker stopped");
   } finally {
     await delegated.stop();
+    await receiptDelivery.stop();
     process.removeListener('SIGTERM',stop);
     process.removeListener('SIGINT',stop);
   }

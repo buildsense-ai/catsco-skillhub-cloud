@@ -77,6 +77,26 @@ SKILLHUB_MUTATION_WRITER_MAX_REQUEST_BYTES=31457280
 才会全量开放。
 回滚时先关闭 `WRITE`，继续保留 `READ`，否则已有 BotDefinition 引用无法恢复。
 
+## Delegated publication receipt delivery（默认关闭）
+
+候选 Skill 上传被 Cloud 接收后，worker 可以把最小、不可变的 acceptance
+receipt 投递回 CatsCo，供 CatsCo 持久记录。该回执不是发布成功、不是
+commit permit，也不会替代人工确认。未完成三仓隔离验收前保持关闭：
+
+```env
+SKILLHUB_PUBLICATION_RECEIPT_DELIVERY_ENABLED=false
+SKILLHUB_PUBLICATION_RECEIPT_ISSUER=https://app.catsco.cc
+SKILLHUB_PUBLICATION_RECEIPT_AUDIENCE=https://skillhub.catsco.fun:19990
+SKILLHUB_PUBLICATION_RECEIPT_PEER_SECRET=独立的64位十六进制服务间密钥
+SKILLHUB_PUBLICATION_RECEIPT_POLL_MS=5000
+```
+
+`ISSUER` 是 CatsCo receipt endpoint 的固定 origin，`AUDIENCE` 是当前
+Cloud origin；两者必须不同。生产启用还必须满足 CatsCo 的
+`CATSCO_SKILLHUB_PUBLICATION_CLOUD_RECEIPTS_ENABLED` 及独立的服务间
+TLS/密钥配置。关闭该开关只停止新投递，不删除 Cloud 端已保留的任务或
+outbox 证据，重启后可按 lease 继续恢复。
+
 ## 签名
 
 ```env
