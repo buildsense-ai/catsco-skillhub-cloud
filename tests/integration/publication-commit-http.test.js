@@ -17,6 +17,7 @@ const input=(action='plan')=>({schemaVersion:1,action,receipt,...(action==='plan
 let tls;before(async()=>{tls=await publicationPeerTLS();});after(async()=>{await tls.close();});
 async function fixture(t,{plain=false,settings={},coordinator,timeoutMs=20000}={}){
   const calls=[];coordinator??={prepare:async(r,o)=>{calls.push(['plan',r,o]);return {schemaVersion:1,receipt:r,target:{}};},
+    report:async r=>{calls.push(['report',r]);return {schemaVersion:1,receipt:r,validation:{}};},
     read:async r=>{calls.push(['read',r]);return {schemaVersion:1,receipt:r,state:'delegated_pending'};},
     authorize:async r=>{calls.push(['authorize',r]);return {state:'committing',permitId:'pubpermit_'+'a'.repeat(32),replayed:true};}};
   let handler;const server=(plain?http:https).createServer(...(plain?[]:[tls]),(req,res)=>{
@@ -39,15 +40,15 @@ async function fixture(t,{plain=false,settings={},coordinator,timeoutMs=20000}={
 }
 test('commit HTTP strict peer auth, plan/read/authorize action and no browser/session fallback',async t=>{
   const f=await fixture(t);
-  for(const action of ['plan','read','authorize']){
+  for(const action of ['plan','read','report','authorize']){
     const r=await f.send(input(action));assert.equal(r.status,200);assert.equal(r.headers['cache-control'],'no-store');
     assert.deepEqual(r.body.receipt,receipt);assert.equal(r.headers['access-control-allow-origin'],undefined);
   }
-  assert.equal(f.calls.length,3);assert.equal(f.calls[0][2].confirmVersionPublish,false);
+  assert.equal(f.calls.length,4);assert.equal(f.calls[0][2].confirmVersionPublish,false);
   for(const headers of [{Authorization:''},{Authorization:'Bearer pubupload_'+secret},
     {Authorization:['Bearer '+secret,'Bearer '+secret]},{Cookie:'session=x'},{Origin:'https://cats.example'},{Host:'other.invalid'}])
     assert.equal((await f.send(input(),{headers})).status,401);
-  assert.equal(f.calls.length,3);
+  assert.equal(f.calls.length,4);
 });
 test('commit HTTP default-off/configuration/path guards and pinned proxy TLS',async t=>{
   for(const settings of [{enabled:false},{issuer:'http://bad'},{peerSecret:'bad'},{trustedProxyAddresses:['*']}]){
@@ -65,6 +66,7 @@ test('commit HTTP rejects caller targets, approval identity, credentials, duplic
   const f=await fixture(t);
   for(const body of [null,[],{},input('cancel'),{...input(),target:{}},{...input(),actorUid:'85'},
     {...input(),confirmVersionPublish:'true'},{...input('authorize'),confirmVersionPublish:true},
+    {...input('report'),validation:{}},{...input('report'),confirmVersionPublish:true},
     {...input(),receipt:{...receipt,token:'private'}},JSON.stringify(input()).replace('"schemaVersion":1','"schemaVersion":1,"schemaVersion":1'),
     'x'.repeat(4097)])assert.equal((await f.send(body)).status,400);
   for(const headers of [{'Content-Type':'text/plain'},{'Content-Encoding':'gzip'},{'Content-Length':'4097'}])assert.equal((await f.send(input(),{headers})).status,400);

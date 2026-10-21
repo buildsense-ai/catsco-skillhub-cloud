@@ -286,6 +286,17 @@ or queued events at a safe turn boundary, not injected into an active tool
 message sequence. Deleted/inaccessible topics retain owner-queryable status but
 receive no automatic replacement chat. This stage does not implement that engine.
 
+The delegated commit peer's `action: "report"` reads the immutable
+`publication_tasks.intake_result` captured at admission. It is bound to the full
+receipt (issuer, audience, request, candidate, delegation, idempotency and event)
+and never reruns validation, allocates a plan, authorizes a commit, or returns
+candidate bytes. CatsCo exposes it only to the original authenticated human at
+`GET /api/skillhub/publications/commit/entries/{entryRequestId}/report`; the
+response contains the same bounded `validation` projection used by Cloud. A
+cancelled or expired task may still return its historical report while the
+CatsCo owner record remains valid. Malformed or cross-candidate reports fail
+closed as infrastructure errors.
+
 ## Implementation sequence and rollout gate
 
 | Order | Change | Exit evidence |

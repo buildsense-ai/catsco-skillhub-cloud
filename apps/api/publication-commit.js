@@ -69,11 +69,12 @@ export function createPublicationCommitHandler(config,store,dependencies={}){
       try{input=parseStrictJson(new TextDecoder('utf-8',{fatal:true}).decode(await readRaw(req,4096,controller.signal)),{maxDepth:5,maxNodes:80});}
       catch{throw new DelegatedCommitError(controller.signal.aborted?'unavailable':'invalid');}
       const keys=['schemaVersion','action','receipt',...(input?.action==='plan'?['confirmVersionPublish']:[])];
-      if(!exact(input,keys)||input.schemaVersion!==1||!['plan','authorize','read'].includes(input.action)||
+      if(!exact(input,keys)||input.schemaVersion!==1||!['plan','authorize','read','report'].includes(input.action)||
         !validPublicationReceipt(input.receipt)||(input.action==='plan'&&typeof input.confirmVersionPublish!=='boolean'))throw new DelegatedCommitError('invalid');
       if(controller.signal.aborted)throw new DelegatedCommitError('unavailable');
       if(input.action==='plan')return coordinator.prepare(input.receipt,{confirmVersionPublish:input.confirmVersionPublish,signal:controller.signal});
       if(input.action==='read')return coordinator.read(input.receipt);
+      if(input.action==='report')return coordinator.report(input.receipt);
       const result=await coordinator.authorize(input.receipt,{signal:controller.signal});
       return {schemaVersion:1,receipt:input.receipt,state:result.state,permitId:result.permitId};
     })();
