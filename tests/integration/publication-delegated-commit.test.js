@@ -243,7 +243,7 @@ test('PostgreSQL initial validation report is durable, exact-receipt scoped and 
   const report=await coordinator().report(f.receipt);
   assert.deepEqual(report.validation,before.intake_result.body.error.validation);
   assert.equal(report.validation.issues[0].repairPolicy,'confirmation_required');
-  assert.deepEqual(Object.keys(report).sort(),['schemaVersion','receipt','validation']);
+  assert.deepEqual(Object.keys(report).sort(),['schemaVersion','receipt','validation'].sort());
   assert.deepEqual(await task(f),before,'GET does not repair, revalidate, allocate or authorize');
   for(const [k,value] of Object.entries({entryRequestId:'pubentry_'+id(),candidateRevision:2,acceptanceEpoch:2,
     requestHash:'a'.repeat(64),sourceSnapshotHash:'b'.repeat(64),requestBytes:f.receipt.requestBytes+1,
