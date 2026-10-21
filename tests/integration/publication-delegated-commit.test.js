@@ -237,6 +237,33 @@ test('PostgreSQL historical commit status is read-only, scoped, and projects no 
   const stopped=await fixture();await control().cancel(stopped.receipt);assert.equal((await c.read(stopped.receipt)).state,'cancelled');
 });
 
+test('PostgreSQL initial validation report is durable, exact-receipt scoped and independent of cancellation/expiry',pg,async()=>{
+  const rawBody=Buffer.from(JSON.stringify({source:{type:'files',files:[{path:'SKILL.md',content:'---\nname: private-skill\n---\nPrivate report fixture'}]}}));
+  const f=await fixture({rawBody}),before=await task(f);
+  const report=await coordinator().report(f.receipt);
+  assert.deepEqual(report.validation,before.intake_result.body.error.validation);
+  assert.equal(report.validation.issues[0].repairPolicy,'confirmation_required');
+  assert.deepEqual(Object.keys(report).sort(),['schemaVersion','receipt','validation'].sort());
+  assert.deepEqual(await task(f),before,'GET does not repair, revalidate, allocate or authorize');
+  for(const [k,value] of Object.entries({entryRequestId:'pubentry_'+id(),candidateRevision:2,acceptanceEpoch:2,
+    requestHash:'a'.repeat(64),sourceSnapshotHash:'b'.repeat(64),requestBytes:f.receipt.requestBytes+1,
+    delegationId:'pubgrant_'+id(),idempotencyKey:'pubcandidate_'+id(),taskId:'pubtask_'+randomUUID(),eventId:'pubevent_'+randomUUID()})) {
+    await assert.rejects(coordinator().report({...f.receipt,[k]:value}),{code:k==='candidateRevision'?'skillhub.delegated_commit_invalid':'skillhub.delegated_commit_not_found'});
+  }
+  await assert.rejects(coordinator(undefined,{issuer:'https://other.invalid'}).report(f.receipt),code('not_found'));
+  await assert.rejects(coordinator(undefined,{audience:'https://other.invalid'}).report(f.receipt),code('not_found'));
+  await control().cancel(f.receipt);
+  await store.query("UPDATE publication_tasks SET expires_at=now()-interval '1 day' WHERE id=$1",[f.receipt.taskId]);
+  await store.query("UPDATE users SET status='disabled' WHERE id=$1",[f.owner]);
+  assert.deepEqual(await coordinator().report(f.receipt),report,'historical read checks original human in CatsCo, not live Bot/profile');
+  assert.equal((await task(f)).candidate,null);
+  assert.equal((await count(f,'publication_delegated_plans')).length,0);
+  assert.equal((await count(f,'publication_delegated_permits')).length,0);
+  assert.equal(await store.getPublicationTask(f.owner,f.receipt.taskId),null,'account route cannot read delegated report');
+  await store.query("UPDATE publication_tasks SET intake_result='{}' WHERE id=$1",[f.receipt.taskId]);
+  await assert.rejects(coordinator().report(f.receipt),code('unavailable'));
+});
+
 test('PostgreSQL scheduler gates, concurrent processes and expired lease recovery preserve one publication',pg,async()=>{
   const held=await fixture(),cancelled=await fixture();await control().cancel(cancelled.receipt);
   const {f}=await admitted();

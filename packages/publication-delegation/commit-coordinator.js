@@ -10,6 +10,7 @@ import {runPreparePublication} from '../publication-tasks/prepare.js';
 import {reservePublicVersion,lockPublicSkill} from '../publication-tasks/versions.js';
 import {createPublicationCommitStore} from '../publication-tasks/commit-store.js';
 import {processPublicationCommit} from '../publication-tasks/commit-worker.js';
+import {delegatedValidationReport} from './validation-report.js';
 
 const digest=v=>createHash('sha256').update(canonicalJson(v)).digest('hex');
 const equal=(a,b)=>canonicalJson(a)===canonicalJson(b);
@@ -89,6 +90,23 @@ export function createDelegatedPublicationCommitCoordinator({enabled=false,confi
   };
   const view=row=>Object.freeze({schemaVersion:1,receipt:Object.freeze({...row.plan_receipt}),target:Object.freeze({...row.target})});
   return Object.freeze({
+    // Initial validation of the immutable uploaded candidate, not final publish
+    // status. This read never loads candidate bytes or touches plan/permit state.
+    report(receipt) {
+      return run(receipt,async r=>{
+        const row=await tx(async c=>(await c.query(
+          `SELECT t.intake_result FROM publication_tasks t JOIN publication_delegations d ON d.task_id=t.id
+           JOIN publication_delegation_outbox o ON o.task_id=t.id
+           WHERE t.id=$1 AND t.authority_kind='catsco' AND d.issuer=$2 AND d.audience=$3
+             AND d.entry_request_id=$4 AND d.candidate_revision=$5 AND d.authority_epoch=$6
+             AND t.request_hash=$7 AND t.candidate_hash=$8 AND d.request_bytes=$9
+             AND d.delegation_id=$10 AND t.request_key=$11 AND o.event_id=$12`,
+          [r.taskId,issuer,audience,r.entryRequestId,r.candidateRevision,r.acceptanceEpoch,r.requestHash,r.sourceSnapshotHash,
+            r.requestBytes,r.delegationId,r.idempotencyKey,r.eventId])).rows[0]);
+        if(!row)fail('not_found');
+        return {schemaVersion:1,receipt:r,validation:delegatedValidationReport(row.intake_result,r.sourceSnapshotHash)};
+      });
+    },
     read(receipt) {
       return run(receipt,async r=>{
         const row=await tx(c=>load(c,r,false,true));
