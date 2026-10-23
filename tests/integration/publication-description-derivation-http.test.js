@@ -84,7 +84,7 @@ test('same application replay returns the retained receipt without reading sourc
     application_id: input.applicationId, task_id: input.taskId,
     request_hash: input.requestHash, candidate_hash: input.candidateHash,
     proposal_digest: proposalDigest(input.proposal),
-    derived_request_hash: 'e'.repeat(64), derived_candidate_hash: 'f'.repeat(64),
+    derived_bytes: 123, derived_request_hash: 'e'.repeat(64), derived_candidate_hash: 'f'.repeat(64),
     derivation_receipt: { schemaVersion: '1', replay: true }
   };
   const store = {
@@ -96,7 +96,7 @@ test('same application replay returns the retained receipt without reading sourc
     const response = await request(port, input);
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), {
-      applicationId: input.applicationId, taskId: input.taskId,
+      applicationId: input.applicationId, taskId: input.taskId, derivedBytes: 123,
       derivedRequestHash: 'e'.repeat(64), derivedCandidateHash: 'f'.repeat(64),
       receipt: { schemaVersion: '1', replay: true }, replayed: true
     });
