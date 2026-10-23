@@ -87,7 +87,7 @@ export function createPublicationDescriptionDerivationHandler(config, store, dep
       if (existing) {
         if (existing.task_id !== input.taskId || existing.request_hash !== input.requestHash || existing.candidate_hash !== input.candidateHash ||
           existing.proposal_digest !== expectedProposalDigest) throw new PublicationDescriptionDerivationError('conflict');
-        return { applicationId: existing.application_id, taskId: existing.task_id, derivedRequestHash: existing.derived_request_hash,
+        return { applicationId: existing.application_id, taskId: existing.task_id, derivedBytes: Number(existing.derived_bytes), derivedRequestHash: existing.derived_request_hash,
           derivedCandidateHash: existing.derived_candidate_hash, receipt: existing.derivation_receipt, replayed: true };
       }
       const source = await store.getPublicationDescriptionDerivationSource(input.taskId);
@@ -110,7 +110,7 @@ export function createPublicationDescriptionDerivationHandler(config, store, dep
       }
       if (result.derived.receipt.proposalDigest !== expectedProposalDigest) throw new PublicationDescriptionDerivationError('receipt_mismatch', 409);
       const row = await store.retainPublicationDescriptionDerivation({ applicationId: input.applicationId, taskId: input.taskId, proposal: input.proposal, derived: result.derived });
-      return { applicationId: row.application_id, taskId: row.task_id, derivedRequestHash: row.derived_request_hash,
+      return { applicationId: row.application_id, taskId: row.task_id, derivedBytes: Number(row.derived_bytes), derivedRequestHash: row.derived_request_hash,
         derivedCandidateHash: row.derived_candidate_hash, receipt: row.derivation_receipt, replayed: false };
     })();
     work.then(() => { active--; }, () => { active--; });
