@@ -50,6 +50,14 @@ export function loadConfig(overrides = {}) {
       peerSecret: overrides.publicationCommitServicePeerSecret ?? process.env.SKILLHUB_PUBLICATION_COMMIT_SERVICE_PEER_SECRET ?? "",
       trustedProxyAddresses: overrides.publicationCommitServiceTrustedProxyAddresses ?? splitList(process.env.SKILLHUB_PUBLICATION_COMMIT_SERVICE_TRUSTED_PROXY_ADDRESSES)
     },
+    publicationDescriptionDerivation: {
+      enabled: overrides.publicationDescriptionDerivationEnabled ?? readBool("SKILLHUB_PUBLICATION_DESCRIPTION_DERIVATION_ENABLED", false),
+      issuer: overrides.publicationDescriptionDerivationIssuer ?? process.env.SKILLHUB_PUBLICATION_DESCRIPTION_DERIVATION_ISSUER ?? "",
+      audience: overrides.publicationDescriptionDerivationAudience ?? process.env.SKILLHUB_PUBLICATION_DESCRIPTION_DERIVATION_AUDIENCE ?? "",
+      peerSecret: overrides.publicationDescriptionDerivationPeerSecret ?? process.env.SKILLHUB_PUBLICATION_DESCRIPTION_DERIVATION_PEER_SECRET ?? "",
+      trustedProxyAddresses: overrides.publicationDescriptionDerivationTrustedProxyAddresses ?? splitList(process.env.SKILLHUB_PUBLICATION_DESCRIPTION_DERIVATION_TRUSTED_PROXY_ADDRESSES),
+      timeoutMs: overrides.publicationDescriptionDerivationTimeoutMs ?? Number(process.env.SKILLHUB_PUBLICATION_DESCRIPTION_DERIVATION_TIMEOUT_MS ?? 30000)
+    },
     publicationControl: {
       enabled: overrides.publicationControlEnabled ?? readBool("SKILLHUB_PUBLICATION_CONTROL_ENABLED", false),
       issuer: overrides.publicationControlIssuer ?? process.env.SKILLHUB_PUBLICATION_CONTROL_ISSUER ?? "",
