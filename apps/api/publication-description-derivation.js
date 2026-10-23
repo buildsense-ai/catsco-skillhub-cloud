@@ -96,6 +96,7 @@ export function createPublicationDescriptionDerivationHandler(config, store, dep
         new Date(source.expires_at).getTime() <= Date.now()) throw new PublicationDescriptionDerivationError('source_unavailable', 409);
       const validation = source.validation_result ?? source.intake_result;
       const taskSettings = publicationTaskSettings(config);
+      if (!taskSettings) throw new PublicationDescriptionDerivationError('configuration', 503);
       const result = await runDerivePublicationDescription({ rawJson: source.candidate.toString('utf8'), requestHash: input.requestHash,
         candidateHash: input.candidateHash, validation: validation?.body?.validation ?? validation?.body?.error?.validation,
         proposal: input.proposal }, taskSettings?.limits ?? {}, { timeoutMs: Math.min(20000, budget), signal: controller.signal });

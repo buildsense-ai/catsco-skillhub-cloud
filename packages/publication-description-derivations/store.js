@@ -35,13 +35,6 @@ export function createPublicationDescriptionDerivationStore({ query, tx }) {
     FROM publication_description_derivations WHERE application_id=$1`, [applicationId])).rows[0] ?? null;
 
   return {
-    async getSource(taskId) {
-      if (!/^pubtask_[0-9a-f-]{36}$/.test(taskId)) return null;
-      const result = await query(`SELECT id,authority_kind,request_hash,candidate_hash,candidate,
-        candidate_bytes,intake_result,validation_result,state,expires_at
-        FROM publication_tasks WHERE id=$1 AND authority_kind='catsco'`, [taskId]);
-      return result.rows[0] ?? null;
-    },
     async retainPublicationDescriptionDerivation({ applicationId, taskId, proposal, derived }) {
       if (!id(applicationId) || !/^pubtask_[0-9a-f-]{36}$/.test(taskId) || !exactProposal(proposal)
         || !derived || typeof derived.rawJson !== 'string' || !derived.receipt

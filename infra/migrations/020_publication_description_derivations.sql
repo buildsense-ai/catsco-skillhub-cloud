@@ -22,9 +22,6 @@ CREATE INDEX publication_description_derivations_task ON publication_description
 
 CREATE FUNCTION guard_publication_description_derivation() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-  IF TG_OP='UPDATE' THEN
-    RAISE EXCEPTION 'Description derivation is immutable' USING ERRCODE='23514';
-  END IF;
   IF NOT EXISTS (
     SELECT 1 FROM publication_tasks t
     WHERE t.id=NEW.task_id AND t.authority_kind='catsco'
