@@ -261,7 +261,13 @@ export function readEntryFrontmatter(file, inputLimits = {}) {
   if (!match) throw new InputError('frontmatter.missing', '入口须包含受支持的 YAML 或 JSON frontmatter。');
   const data = match[1] === 'json' ? parseStrictJson(match[2], limits) : yamlMetadata(match[2], limits);
   if (!object(data)) throw new InputError('frontmatter.invalid', '入口 frontmatter 必须是字段对象。');
-  return { data, format: match[1] ?? 'yaml', header: match[2], body: text.slice(match[0].length) };
+  // Private byte range for deterministic candidate derivation. Include any BOMs
+  // stripped by textFile/replace in the offset, but never rewrite delimiters or
+  // runtime instructions. Parsing/validation still has this single authority.
+  const headerStart = file.buffer.length - Buffer.byteLength(text)
+    + Buffer.byteLength(text.slice(0, match[0].indexOf('\n') + 1));
+  return { data, format: match[1] ?? 'yaml', header: match[2], body: text.slice(match[0].length),
+    headerRange: { start: headerStart, end: headerStart + Buffer.byteLength(match[2]) } };
 }
 
 function frontmatter(file, entryIndex, limits, issues) {
