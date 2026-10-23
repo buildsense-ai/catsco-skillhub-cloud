@@ -4,6 +4,7 @@ import { generateId, JobStatus, nowIso, sha256, ValidationError } from "../domai
 import { createPresentationStore, ensurePresentationSchema } from "../presentations/store.js";
 import { createPresentationAssetStore } from "../presentations/asset-store.js";
 import { createPublicationTaskStore } from "../publication-tasks/store.js";
+import { createPublicationDescriptionDerivationStore } from "../publication-description-derivations/store.js";
 import { requireCatsCoIssuer, assertCatsCoIssuerMatches } from '../publication-delegation/identity.js';
 import { createPublicationCommitStore, lockPublicationCompletion, finishPublicationCompletion } from '../publication-tasks/commit-store.js';
 import { createPublicVersionStore, adoptPublicVersion, comparePublicVersions } from "../publication-tasks/versions.js";
@@ -142,6 +143,7 @@ export function createStore(config) {
     ...createPresentationStore({ query, tx }),
     ...createPresentationAssetStore({ query, tx }),
     ...createPublicationTaskStore({ query, tx }),
+    ...createPublicationDescriptionDerivationStore({ query, tx }),
     ...createPublicationCommitStore({ query, tx, config }),
     ...createPublicVersionStore({ tx }),
     async listCatalogueVersions({ viewerUserId = null, viewerCatsCoUid = null, includeAll = false } = {}) {
