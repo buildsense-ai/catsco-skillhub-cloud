@@ -1,0 +1,46 @@
+name: Description validation paired contract
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  description-validation-paired:
+    name: Real Cloud and CatsCo description validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Host this contract in private Cloud so public CatsCo PRs do not need a
+      # private-repository credential. Both product revisions are immutable.
+      - name: Checkout pinned Cloud validation implementation
+        uses: actions/checkout@v4
+        with:
+          ref: 4d661ac7ae07fb5c923f186be548f14ba0673c11
+          path: skillhub
+      - name: Checkout paired CatsCo consumer
+        uses: actions/checkout@v4
+        with:
+          repository: buildsense-ai/cats-company
+          ref: 2a8d46d24ac01259b8e1c638e69566e3938a78ef
+          path: cats-company
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: skillhub/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: cats-company/go.mod
+          cache-dependency-path: cats-company/go.sum
+      - name: Install pinned Cloud dependencies
+        working-directory: skillhub
+        run: npm ci --ignore-scripts --prefer-offline --no-audit --fund=false
+      - name: Require all real peer cases without skip fallback
+        working-directory: cats-company
+        env:
+          SKILLHUB_REPO: ../skillhub
+        run: node scripts/test-publication-description-validation-paired.mjs
