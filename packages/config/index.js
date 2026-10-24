@@ -52,6 +52,7 @@ export function loadConfig(overrides = {}) {
     },
     publicationDescriptionDerivation: {
       enabled: overrides.publicationDescriptionDerivationEnabled ?? readBool("SKILLHUB_PUBLICATION_DESCRIPTION_DERIVATION_ENABLED", false),
+      readEnabled: overrides.publicationDescriptionReadEnabled ?? readBool("SKILLHUB_PUBLICATION_DESCRIPTION_READ_ENABLED", false),
       issuer: overrides.publicationDescriptionDerivationIssuer ?? process.env.SKILLHUB_PUBLICATION_DESCRIPTION_DERIVATION_ISSUER ?? "",
       audience: overrides.publicationDescriptionDerivationAudience ?? process.env.SKILLHUB_PUBLICATION_DESCRIPTION_DERIVATION_AUDIENCE ?? "",
       peerSecret: overrides.publicationDescriptionDerivationPeerSecret ?? process.env.SKILLHUB_PUBLICATION_DESCRIPTION_DERIVATION_PEER_SECRET ?? "",

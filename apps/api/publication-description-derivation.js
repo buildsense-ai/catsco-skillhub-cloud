@@ -6,13 +6,19 @@ import { runDerivePublicationDescription } from '../../packages/publication-task
 import { publicationTaskSettings } from '../../packages/publication-tasks/config.js';
 import { exactProposal, proposalDigest, PublicationDescriptionDerivationError } from '../../packages/publication-description-derivations/store.js';
 import { readRaw, withAbort } from './publish-validation.js';
+import { readPublicationDescriptionCopy } from '../../packages/publication-description-derivations/read.js';
 
 export const PUBLICATION_DESCRIPTION_DERIVATION_PATH = '/api/skills/publication-descriptions/internal/derive';
+export const PUBLICATION_DESCRIPTION_READ_PATH = '/api/skills/publication-descriptions/internal/read';
 const exact = (value, keys) => value && typeof value === 'object' && !Array.isArray(value)
   && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
 const hash = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const application = value => typeof value === 'string' && /^pubdesc_[a-f0-9]{64}$/.test(value);
 const task = value => typeof value === 'string' && /^pubtask_[0-9a-f-]{36}$/.test(value);
+const httpsOrigin = value => {
+  try { const parsed = new URL(value); return parsed.protocol === 'https:' && parsed.origin === value && !parsed.username && !parsed.password; }
+  catch { return false; }
+};
 const header = (req, name) => {
   const values = [];
   for (let i = 0; i < req.rawHeaders.length; i += 2) if (req.rawHeaders[i].toLowerCase() === name) values.push(req.rawHeaders[i + 1]);
@@ -33,7 +39,7 @@ export function createPublicationDescriptionDerivationHandler(config, store, dep
     if (enabled) {
       if (!Number.isInteger(budget) || budget < 1000 || budget > 60000 ||
         typeof settings.peerSecret !== 'string' || !/^pubderive_[a-f0-9]{64}$/.test(settings.peerSecret) ||
-        !/^https:\/\//.test(settings.issuer) || !/^https:\/\//.test(settings.audience) ||
+        !httpsOrigin(settings.issuer) || !httpsOrigin(settings.audience) ||
         !Array.isArray(settings.trustedProxyAddresses) || settings.trustedProxyAddresses.some(ip => !isIP(ip))) throw Error();
       const audience = new URL(settings.audience);
       hosts = new Set([audience.host, ...(!audience.port ? [audience.hostname + ':443'] : [])]);
@@ -43,10 +49,18 @@ export function createPublicationDescriptionDerivationHandler(config, store, dep
   } catch { secret = null; }
   let active = 0;
   return async (req, res) => {
-    if (!req.url?.startsWith(PUBLICATION_DESCRIPTION_DERIVATION_PATH)) return false;
+    if (!req.url?.startsWith(PUBLICATION_DESCRIPTION_DERIVATION_PATH)
+      && !req.url?.startsWith(PUBLICATION_DESCRIPTION_READ_PATH)) return false;
+    const reading = req.url === PUBLICATION_DESCRIPTION_READ_PATH;
     const reply = (status, body) => {
       if (res.destroyed || res.writableEnded) return;
       if (!req.complete) res.setHeader('Connection', 'close');
+      if (reading && status === 200) {
+        res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': body.length,
+          'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+        res.end(body);
+        return;
+      }
       res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify(body));
     };
@@ -54,7 +68,8 @@ export function createPublicationDescriptionDerivationHandler(config, store, dep
       code: `skillhub.publication_description_derivation_${kind}`,
       message: 'Description derivation could not be completed.'
     } });
-    if (!enabled || req.url !== PUBLICATION_DESCRIPTION_DERIVATION_PATH) { fail(404, 'disabled'); return true; }
+    if (!enabled || (req.url !== PUBLICATION_DESCRIPTION_DERIVATION_PATH && !reading)
+      || (reading && settings.readEnabled !== true)) { fail(404, 'disabled'); return true; }
     if (!secret) { fail(503, 'configuration'); return true; }
     if (req.method !== 'POST') { fail(405, 'invalid'); return true; }
     try {
@@ -69,7 +84,11 @@ export function createPublicationDescriptionDerivationHandler(config, store, dep
     active++;
     const controller = new AbortController(), abort = () => controller.abort();
     req.once('aborted', abort); res.once('close', abort);
-    const timer = setTimeout(abort, budget);
+    const responseDone = new Promise(resolve => { res.once('finish', resolve); res.once('close', resolve); });
+    const timer = setTimeout(() => {
+      abort();
+      if (res.headersSent && !res.writableFinished) res.destroy();
+    }, budget);
     const work = (async () => {
       const length = header(req, 'content-length');
       if (header(req, 'content-encoding') !== undefined ||
@@ -78,6 +97,12 @@ export function createPublicationDescriptionDerivationHandler(config, store, dep
       let input;
       try { input = parseStrictJson(new TextDecoder('utf-8', { fatal: true }).decode(await readRaw(req, 32768, controller.signal)), { maxDepth: 8, maxNodes: 100 }); }
       catch { throw new PublicationDescriptionDerivationError(controller.signal.aborted ? 'unavailable' : 'invalid', controller.signal.aborted ? 503 : 400); }
+      if (reading) {
+        const taskSettings = publicationTaskSettings(config);
+        if (!taskSettings) throw new PublicationDescriptionDerivationError('configuration', 503);
+        return readPublicationDescriptionCopy(store, input, taskSettings.limits,
+          { timeoutMs: Math.min(20000, budget), memoryMb: taskSettings.execution.workerMemoryMb, signal: controller.signal });
+      }
       if (!exact(input, ['schemaVersion', 'applicationId', 'taskId', 'requestHash', 'candidateHash', 'proposal']) ||
         input.schemaVersion !== 1 || !application(input.applicationId) || !task(input.taskId) ||
         !hash(input.requestHash) || !hash(input.candidateHash) || !exactProposal(input.proposal)) throw new PublicationDescriptionDerivationError('invalid', 400);
@@ -92,8 +117,8 @@ export function createPublicationDescriptionDerivationHandler(config, store, dep
       }
       const source = await store.getPublicationDescriptionDerivationSource(input.taskId);
       if (!source || source.authority_kind !== 'catsco' || !source.candidate || source.request_hash !== input.requestHash || source.candidate_hash !== input.candidateHash ||
-        source.candidate_bytes !== source.candidate.length || source.state !== 'delegated_pending' ||
-        new Date(source.expires_at).getTime() <= Date.now()) throw new PublicationDescriptionDerivationError('source_unavailable', 409);
+        Number(source.candidate_bytes) !== source.candidate.length || source.state !== 'delegated_pending' || source.commit_started !== false ||
+        !Number.isFinite(new Date(source.expires_at).getTime()) || new Date(source.expires_at).getTime() <= Date.now()) throw new PublicationDescriptionDerivationError('source_unavailable', 409);
       const validation = source.validation_result ?? source.intake_result;
       const taskSettings = publicationTaskSettings(config);
       if (!taskSettings) throw new PublicationDescriptionDerivationError('configuration', 503);
@@ -113,11 +138,14 @@ export function createPublicationDescriptionDerivationHandler(config, store, dep
       return { applicationId: row.application_id, taskId: row.task_id, derivedBytes: Number(row.derived_bytes), derivedRequestHash: row.derived_request_hash,
         derivedCandidateHash: row.derived_candidate_hash, receipt: row.derivation_receipt, replayed: false };
     })();
-    work.then(() => { active--; }, () => { active--; });
+    // A large private response keeps its slot until both SQL/worker work and
+    // response transmission settle. Disconnects cannot free a still-busy slot.
+    void Promise.allSettled([work, responseDone]).then(() => {
+      active--; clearTimeout(timer); req.off('aborted', abort); res.off('close', abort);
+    });
     try { reply(200, await withAbort(work, controller.signal)); }
     catch (error) { const kind = error instanceof PublicationDescriptionDerivationError ? error.code.replace('skillhub.publication_description_derivation_', '') : 'unavailable';
       fail(error.status ?? ({ invalid: 400, conflict: 409, source_unavailable: 409 }[kind] ?? 503), kind); }
-    finally { clearTimeout(timer); req.off('aborted', abort); res.off('close', abort); }
     return true;
   };
 }
