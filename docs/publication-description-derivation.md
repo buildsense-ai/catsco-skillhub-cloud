@@ -92,3 +92,38 @@ handlers/stores, immutable PostgreSQL rows, source expiry/cancellation, forged
 binding/bytes, real verified HTTPS and default-off/browser rejection. PostgreSQL
 tests require `SKILLHUB_TEST_DATABASE_URL`; skips without a DSN are not database
 verification. The required CI integration job runs them against real PostgreSQL.
+
+## Private derived-candidate validation report
+
+`POST /api/skills/publication-descriptions/internal/validate` is a report-only
+view of the same retained private copy. It requires the base derivation switch
+and `SKILLHUB_PUBLICATION_DESCRIPTION_VALIDATION_ENABLED=true` (default false),
+the dedicated peer credential, and the same HTTPS/host/proxy/browser restrictions.
+It does not require enabling the octet read route or grant access to its bytes.
+
+The request is exactly the read/recovery request above. The original candidate,
+complete original report, confirmed proposal, full derivation receipt, derived
+byte length and current limits must all match. The bounded worker rederives and
+validates the exact retained package; the original source is checked again
+afterward. This reuses the existing integrity proof rather than validating
+untrusted caller bytes or treating the original rejected report as the result.
+
+The JSON response contains exactly `schemaVersion: 1`, `applicationId`, `taskId`,
+`derivedBytes`, `receipt` (the complete retained derivation receipt) and
+`validation` (the standard complete validator report). The report's
+`candidateHash` is the DERIVED candidate hash, its limits fingerprint matches
+the receipt, and truncated reports are refused. No source bytes, private file
+paths, proposal text, download URL or execution grant is returned. Failures use
+the existing fixed redacted errors. The shared two-slot limit lasts until both
+worker/SQL work and response delivery settle, including timeout/disconnection.
+
+Validation is read-only and generates a fresh standard report ID. It retains
+no report, changes no publication/repair state, and makes no model call. A
+future CatsCo continuation must check current actor/Bot/Owner/body/private task,
+exact current round/confirmation/application and live original Runtime source
+before and after the peer request, then durably bind the accepted report at its
+own state transition. A report ID/hash or a `passed` result alone cannot resume
+`waiting_confirmation`, allocate a new round, reset the three-round budget or
+publish. General private-candidate ancestry and round-2/3 derivation remain
+follow-up work; this view only validates copies supported by the current
+deterministic description derivation. No production switch is enabled here.

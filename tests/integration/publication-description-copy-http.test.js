@@ -4,13 +4,15 @@ import https from 'node:https';
 import { test } from 'node:test';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import { loadConfig } from '../../packages/config/index.js';
-import { createPublicationDescriptionDerivationHandler, PUBLICATION_DESCRIPTION_READ_PATH } from '../../apps/api/publication-description-derivation.js';
+import { createPublicationDescriptionDerivationHandler, PUBLICATION_DESCRIPTION_READ_PATH,
+  PUBLICATION_DESCRIPTION_VALIDATE_PATH } from '../../apps/api/publication-description-derivation.js';
 import { publicationPeerTLS } from '../helpers/publication-peer-tls.js';
 import { descriptionCopyFixture } from '../helpers/description-copy.js';
 
 const secret = 'pubderive_' + 'a'.repeat(64);
 const config = overrides => loadConfig({ publicationDescriptionDerivationEnabled: true,
-  publicationDescriptionReadEnabled: true, publicationDescriptionDerivationIssuer: 'https://cats.example',
+  publicationDescriptionReadEnabled: true, publicationDescriptionValidationEnabled: true,
+  publicationDescriptionDerivationIssuer: 'https://cats.example',
   publicationDescriptionDerivationAudience: 'https://cloud.example', publicationDescriptionDerivationPeerSecret: secret,
   publicationDescriptionDerivationTrustedProxyAddresses: ['127.0.0.1'], publicationTasksEnabled: true, ...overrides });
 async function withServer(settings, store, run, tls = null) {
@@ -39,6 +41,33 @@ test('copy read has its own default-off gate in addition to derivation gate', as
       assert.equal((await request(port, {})).status, 404);
     });
   }
+});
+
+test('copy validation requires its own gate and returns no octets even with byte reads disabled', async () => {
+  assert.equal(loadConfig().publicationDescriptionDerivation.validationEnabled, false);
+  for (const overrides of [{ publicationDescriptionValidationEnabled: false }, { publicationDescriptionDerivationEnabled: false }]) {
+    await withServer(config(overrides), { getPublicationDescriptionDerivation() { throw Error('must not read'); } }, async port => {
+      assert.equal((await request(port, {}, { path: PUBLICATION_DESCRIPTION_VALIDATE_PATH })).status, 404);
+    });
+  }
+  const f = descriptionCopyFixture(), store = { async getPublicationDescriptionDerivation() { return f.row; },
+    async getPublicationDescriptionDerivationSource() { return f.source; } };
+  await withServer(config({ publicationDescriptionReadEnabled: false }), store, async port => {
+    assert.equal((await request(port, f.request)).status, 404);
+    const response = await request(port, f.request, { path: PUBLICATION_DESCRIPTION_VALIDATE_PATH });
+    assert.equal(response.status, 200, response.bytes.toString());
+    const result = JSON.parse(response.bytes);
+    assert.equal(result.applicationId, f.request.applicationId);
+    assert.deepEqual(result.receipt, f.request.expectedReceipt);
+    assert.equal(result.derivedBytes, f.request.derivedBytes);
+    assert.equal(result.validation.candidateHash, f.request.expectedReceipt.derivedCandidateHash);
+    assert.equal(result.validation.outcome, 'passed');
+    assert.equal(response.headers['content-type'], 'application/json; charset=utf-8');
+    assert.equal(response.headers['cache-control'], 'no-store');
+    assert.equal(response.bytes.includes('PRIVATE'), false);
+    assert.equal(response.bytes.includes('contentBase64'), false);
+    assert.equal(response.headers['access-control-allow-origin'], undefined);
+  });
 });
 
 test('HTTP recovery binds exact receipt, returns private octets and survives handler recreation', async () => {
@@ -70,6 +99,10 @@ test('real HTTPS peer recovery verifies TLS without trusting proxy headers', asy
       const response = await request(port, f.request, { tls, headers: { Host: 'localhost', 'X-Forwarded-Proto': undefined } });
       assert.equal(response.status, 200);
       assert.deepEqual(response.bytes, f.row.derived_raw_json);
+      const validated = await request(port, f.request, { path: PUBLICATION_DESCRIPTION_VALIDATE_PATH,
+        tls, headers: { Host: 'localhost', 'X-Forwarded-Proto': undefined } });
+      assert.equal(validated.status, 200);
+      assert.equal(JSON.parse(validated.bytes).validation.candidateHash, f.request.expectedReceipt.derivedCandidateHash);
     }, tls);
   } finally { await tls.close(); }
 });
@@ -89,6 +122,24 @@ test('read route rejects browser/auth/transport/schema failures before accessing
     }
     assert.equal((await request(port, f.request, { path: PUBLICATION_DESCRIPTION_READ_PATH + '?candidate=forged' })).status, 404);
     assert.equal((await request(port, f.request, { method: 'GET' })).status, 405);
+  });
+  assert.equal(touched, 0);
+});
+
+test('validation route rejects browser, malformed input and route aliases before storage', async () => {
+  const f = descriptionCopyFixture(); let touched = 0;
+  await withServer(config(), { getPublicationDescriptionDerivation() { touched++; throw Error('must not read'); } }, async port => {
+    const path = PUBLICATION_DESCRIPTION_VALIDATE_PATH;
+    for (const headers of [{ Authorization: 'Bearer bad' }, { Cookie: 'session=browser' },
+      { Origin: 'https://cats.example' }, { Host: 'wrong.example' }, { 'X-Forwarded-Proto': 'http' }]) {
+      assert.equal((await request(port, f.request, { path, headers })).status, 401);
+    }
+    for (const raw of ['{', '{"schemaVersion":1,"schemaVersion":1}',
+      JSON.stringify({ ...f.request, validation: {} }), ' '.repeat(32769)]) {
+      assert.equal((await request(port, null, { path, raw })).status, 400);
+    }
+    assert.equal((await request(port, f.request, { path: path + '?all=true' })).status, 404);
+    assert.equal((await request(port, f.request, { path, method: 'GET' })).status, 405);
   });
   assert.equal(touched, 0);
 });
@@ -114,7 +165,8 @@ test('timed-out SQL retains concurrency slots until actual work settles', async 
     async getPublicationDescriptionDerivation() { await gate; return f.row; },
     async getPublicationDescriptionDerivationSource() { return f.source; }
   }, async port => {
-    const responses = await Promise.all([request(port, f.request), request(port, f.request)]);
+    const responses = await Promise.all([request(port, f.request),
+      request(port, f.request, { path: PUBLICATION_DESCRIPTION_VALIDATE_PATH })]);
     assert.deepEqual(responses.map(r => r.status), [503, 503]);
     const busy = await request(port, f.request);
     assert.equal(JSON.parse(busy.bytes).error.code, 'skillhub.publication_description_derivation_busy');

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { runDerivePublicationDescription } from '../publication-tasks/description-derivation.js';
 import { exactProposal, proposalDigest, PublicationDescriptionDerivationError } from './store.js';
+import { delegatedValidationReport } from '../publication-delegation/validation-report.js';
 
 const sha = value => createHash('sha256').update(value).digest('hex');
 const digest = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
@@ -31,6 +32,22 @@ export function validDescriptionCopyRead(input) {
 // cancellation and Runtime source before AND after this network operation.
 // There is no fallback to a new capture, derivation retention or model call.
 export async function readPublicationDescriptionCopy(store, input, limits, options = {}) {
+  return (await inspectPublicationDescriptionCopy(store, input, limits, options)).bytes;
+}
+
+// Report-only view of the same retained copy. No caller-supplied package/report
+// is accepted, and no fresh publication task, copy or repair round is created.
+// A fresh report ID is expected; the future CatsCo continuation must durably
+// bind the accepted report at its own authority-checked state transition.
+export async function validatePublicationDescriptionCopy(store, input, limits, options = {}) {
+  const verified = await inspectPublicationDescriptionCopy(store, input, limits, options);
+  const validation = delegatedValidationReport(verified.result, verified.input.expectedReceipt.derivedCandidateHash);
+  if (validation.truncated || validation.limitsFingerprint !== verified.input.expectedReceipt.limitsFingerprint) fail('copy_changed');
+  return { schemaVersion: 1, applicationId: verified.input.applicationId, taskId: verified.input.taskId,
+    derivedBytes: verified.input.derivedBytes, receipt: verified.input.expectedReceipt, validation };
+}
+
+async function inspectPublicationDescriptionCopy(store, input, limits, options) {
   if (!validDescriptionCopyRead(input) || input.derivedBytes > limits.maxRequestBytes) fail('invalid', 400);
   input = structuredClone(input);
   const checkAbort = () => { if (options.signal?.aborted) fail('unavailable', 503); };
@@ -73,5 +90,5 @@ export async function readPublicationDescriptionCopy(store, input, limits, optio
   if (rechecked.status !== 200 || !isDeepStrictEqual(rechecked.derived.receipt, input.expectedReceipt)
     || !Buffer.from(rechecked.derived.rawJson).equals(bytes)) fail('copy_changed');
   await readSource();
-  return bytes;
+  return { bytes, input, result: rechecked };
 }
