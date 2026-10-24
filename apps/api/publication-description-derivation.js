@@ -6,10 +6,11 @@ import { runDerivePublicationDescription } from '../../packages/publication-task
 import { publicationTaskSettings } from '../../packages/publication-tasks/config.js';
 import { exactProposal, proposalDigest, PublicationDescriptionDerivationError } from '../../packages/publication-description-derivations/store.js';
 import { readRaw, withAbort } from './publish-validation.js';
-import { readPublicationDescriptionCopy } from '../../packages/publication-description-derivations/read.js';
+import { readPublicationDescriptionCopy, validatePublicationDescriptionCopy } from '../../packages/publication-description-derivations/read.js';
 
 export const PUBLICATION_DESCRIPTION_DERIVATION_PATH = '/api/skills/publication-descriptions/internal/derive';
 export const PUBLICATION_DESCRIPTION_READ_PATH = '/api/skills/publication-descriptions/internal/read';
+export const PUBLICATION_DESCRIPTION_VALIDATE_PATH = '/api/skills/publication-descriptions/internal/validate';
 const exact = (value, keys) => value && typeof value === 'object' && !Array.isArray(value)
   && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
 const hash = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
@@ -50,8 +51,10 @@ export function createPublicationDescriptionDerivationHandler(config, store, dep
   let active = 0;
   return async (req, res) => {
     if (!req.url?.startsWith(PUBLICATION_DESCRIPTION_DERIVATION_PATH)
-      && !req.url?.startsWith(PUBLICATION_DESCRIPTION_READ_PATH)) return false;
+      && !req.url?.startsWith(PUBLICATION_DESCRIPTION_READ_PATH)
+      && !req.url?.startsWith(PUBLICATION_DESCRIPTION_VALIDATE_PATH)) return false;
     const reading = req.url === PUBLICATION_DESCRIPTION_READ_PATH;
+    const validating = req.url === PUBLICATION_DESCRIPTION_VALIDATE_PATH;
     const reply = (status, body) => {
       if (res.destroyed || res.writableEnded) return;
       if (!req.complete) res.setHeader('Connection', 'close');
@@ -68,8 +71,9 @@ export function createPublicationDescriptionDerivationHandler(config, store, dep
       code: `skillhub.publication_description_derivation_${kind}`,
       message: 'Description derivation could not be completed.'
     } });
-    if (!enabled || (req.url !== PUBLICATION_DESCRIPTION_DERIVATION_PATH && !reading)
-      || (reading && settings.readEnabled !== true)) { fail(404, 'disabled'); return true; }
+    if (!enabled || (req.url !== PUBLICATION_DESCRIPTION_DERIVATION_PATH && !reading && !validating)
+      || (reading && settings.readEnabled !== true)
+      || (validating && settings.validationEnabled !== true)) { fail(404, 'disabled'); return true; }
     if (!secret) { fail(503, 'configuration'); return true; }
     if (req.method !== 'POST') { fail(405, 'invalid'); return true; }
     try {
@@ -97,10 +101,11 @@ export function createPublicationDescriptionDerivationHandler(config, store, dep
       let input;
       try { input = parseStrictJson(new TextDecoder('utf-8', { fatal: true }).decode(await readRaw(req, 32768, controller.signal)), { maxDepth: 8, maxNodes: 100 }); }
       catch { throw new PublicationDescriptionDerivationError(controller.signal.aborted ? 'unavailable' : 'invalid', controller.signal.aborted ? 503 : 400); }
-      if (reading) {
+      if (reading || validating) {
         const taskSettings = publicationTaskSettings(config);
         if (!taskSettings) throw new PublicationDescriptionDerivationError('configuration', 503);
-        return readPublicationDescriptionCopy(store, input, taskSettings.limits,
+        const inspect = validating ? validatePublicationDescriptionCopy : readPublicationDescriptionCopy;
+        return inspect(store, input, taskSettings.limits,
           { timeoutMs: Math.min(20000, budget), memoryMb: taskSettings.execution.workerMemoryMb, signal: controller.signal });
       }
       if (!exact(input, ['schemaVersion', 'applicationId', 'taskId', 'requestHash', 'candidateHash', 'proposal']) ||

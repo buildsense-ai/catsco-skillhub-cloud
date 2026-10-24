@@ -6,9 +6,9 @@ import pg from 'pg';
 import { loadConfig } from '../../packages/config/index.js';
 import { effectiveLimits } from '../../packages/publish-validation/index.js';
 import { createPublicationDescriptionDerivationStore } from '../../packages/publication-description-derivations/store.js';
-import { readPublicationDescriptionCopy } from '../../packages/publication-description-derivations/read.js';
+import { readPublicationDescriptionCopy, validatePublicationDescriptionCopy } from '../../packages/publication-description-derivations/read.js';
 import { createPublicationDescriptionDerivationHandler, PUBLICATION_DESCRIPTION_DERIVATION_PATH,
-  PUBLICATION_DESCRIPTION_READ_PATH } from '../../apps/api/publication-description-derivation.js';
+  PUBLICATION_DESCRIPTION_READ_PATH, PUBLICATION_DESCRIPTION_VALIDATE_PATH } from '../../apps/api/publication-description-derivation.js';
 import { descriptionCopyFixture } from '../helpers/description-copy.js';
 
 const databaseUrl = process.env.SKILLHUB_TEST_DATABASE_URL;
@@ -16,7 +16,8 @@ const options = { skip: !databaseUrl };
 const limits = effectiveLimits();
 const secret = 'pubderive_' + 'a'.repeat(64);
 const settings = loadConfig({ publicationTasksEnabled: true, publicationDescriptionDerivationEnabled: true,
-  publicationDescriptionReadEnabled: true, publicationDescriptionDerivationIssuer: 'https://cats.example',
+  publicationDescriptionReadEnabled: true, publicationDescriptionValidationEnabled: true,
+  publicationDescriptionDerivationIssuer: 'https://cats.example',
   publicationDescriptionDerivationAudience: 'https://cloud.example', publicationDescriptionDerivationPeerSecret: secret,
   publicationDescriptionDerivationTrustedProxyAddresses: ['127.0.0.1'] });
 
@@ -66,6 +67,15 @@ test('PostgreSQL retains on lost HTTP reply and recreated handlers recover the e
   await assert.rejects(httpCall(f.store, PUBLICATION_DESCRIPTION_DERIVATION_PATH, deriveInput, true), { code: 'ECONNRESET' });
   const count = async () => Number((await f.client.query('SELECT count(*) FROM publication_description_derivations WHERE task_id=$1', [f.request.taskId])).rows[0].count);
   assert.equal(await count(), 1);
+  const checked = await httpCall(f.recreate(), PUBLICATION_DESCRIPTION_VALIDATE_PATH, f.request);
+  assert.equal(checked.status, 200, checked.bytes.toString());
+  const report = JSON.parse(checked.bytes);
+  assert.equal(report.applicationId, f.request.applicationId);
+  assert.deepEqual(report.receipt, expectedReceipt);
+  assert.equal(report.validation.candidateHash, expectedReceipt.derivedCandidateHash);
+  assert.equal(report.validation.outcome, 'passed');
+  assert.equal(checked.bytes.includes('PRIVATE'), false);
+  assert.equal(await count(), 1);
   const metadata = await httpCall(f.recreate(), PUBLICATION_DESCRIPTION_DERIVATION_PATH, deriveInput);
   assert.equal(metadata.status, 200);
   const replay = JSON.parse(metadata.bytes);
@@ -102,9 +112,14 @@ test('PostgreSQL recovery rejects changed bindings, cancellation and expired ori
   await f.client.query("UPDATE publication_tasks SET expires_at=now()-interval '1 second' WHERE id=$1", [f.request.taskId]);
   await assert.rejects(readPublicationDescriptionCopy(f.recreate(), f.request, limits),
     { code: 'skillhub.publication_description_derivation_source_unavailable' });
+  await assert.rejects(validatePublicationDescriptionCopy(f.recreate(), f.request, limits),
+    { code: 'skillhub.publication_description_derivation_source_unavailable' });
   await f.client.query('ROLLBACK TO SAVEPOINT expiry_test');
   await f.client.query("UPDATE publication_tasks SET state='cancelled',delegated_cancelled_at=now(),candidate=NULL,candidate_bytes=0 WHERE id=$1", [f.request.taskId]);
   await assert.rejects(readPublicationDescriptionCopy(f.recreate(), f.request, limits),
     { code: 'skillhub.publication_description_derivation_source_unavailable' });
+  const cancelled = await httpCall(f.recreate(), PUBLICATION_DESCRIPTION_VALIDATE_PATH, f.request);
+  assert.equal(cancelled.status, 409);
+  assert.equal(cancelled.bytes.includes('PRIVATE'), false);
   assert.equal((await f.store.getPublicationDescriptionDerivation(f.request.applicationId)).derived_bytes, String(f.request.derivedBytes));
 });
