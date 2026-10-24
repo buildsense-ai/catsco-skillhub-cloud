@@ -78,7 +78,8 @@ export function createPublicationDescriptionDerivationStore({ query, tx }) {
     async getPublicationDescriptionDerivationSource(taskId) {
       if (!/^pubtask_[0-9a-f-]{36}$/.test(taskId)) return null;
       const result = await query(`SELECT id,authority_kind,request_hash,candidate_hash,candidate,
-        candidate_bytes,intake_result,validation_result,state,expires_at
+        candidate_bytes,intake_result,validation_result,state,expires_at,
+        EXISTS(SELECT 1 FROM publication_commits c WHERE c.task_id=publication_tasks.id) AS commit_started
         FROM publication_tasks WHERE id=$1 AND authority_kind='catsco'`, [taskId]);
       return result.rows[0] ?? null;
     }
