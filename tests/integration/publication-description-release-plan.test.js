@@ -8,6 +8,7 @@ import { loadConfig } from '../../packages/config/index.js';
 import { createStore, closePools } from '../../packages/database/store.js';
 import { delegatedFixture } from '../helpers/delegated-publication.js';
 import { descriptionCopyFixture } from '../helpers/description-copy.js';
+import { derivePublicationDescription } from '../../packages/publication-tasks/description-derivation.js';
 import { createPublicationDescriptionReleasePlanner, validDescriptionReleasePlanRequest } from '../../packages/publication-description-derivations/release-plan.js';
 import { createPublicationDescriptionDerivationHandler, PUBLICATION_DESCRIPTION_PLAN_PATH } from '../../apps/api/publication-description-derivation.js';
 
@@ -31,9 +32,18 @@ async function fixture(t) {
   const config = loadConfig({ databaseUrl: url.href, nodeEnv: 'test', publicationTasksEnabled: true, publicationPublishingEnabled: true });
   const store = createStore(config), copy = descriptionCopyFixture();
   const f = await delegatedFixture(store, config, { rawBody: Buffer.from(copy.original.rawJson) });
-  const request = { ...copy.request, taskId: f.receipt.taskId };
+  // Intake generates its own durable report identity. Derive from THAT exact
+  // report, not the independently generated report in descriptionCopyFixture.
+  const source = await store.getPublicationDescriptionDerivationSource(f.receipt.taskId);
+  const report = source.validation_result ?? source.intake_result;
+  const derived = derivePublicationDescription({ rawJson: copy.original.rawJson, requestHash: f.receipt.requestHash,
+    candidateHash: f.receipt.sourceSnapshotHash, validation: report.body.validation ?? report.body.error.validation,
+    proposal: copy.request.proposal });
+  assert.equal(derived.status, 200);
+  const request = { ...copy.request, taskId: f.receipt.taskId, expectedReceipt: derived.derived.receipt,
+    derivedBytes: Buffer.byteLength(derived.derived.rawJson) };
   await store.retainPublicationDescriptionDerivation({ applicationId: request.applicationId,
-    taskId: request.taskId, proposal: request.proposal, derived: copy.derived.derived });
+    taskId: request.taskId, proposal: request.proposal, derived: derived.derived });
   const input = { copy: request, publicationReceipt: f.receipt, confirmVersionPublish: false };
   const planner = extra => createPublicationDescriptionReleasePlanner({ enabled: true, config, store, issuer, audience, ...extra });
   const count = async table => Number((await store.query(`SELECT count(*) AS count FROM ${table}`)).rows[0].count);
