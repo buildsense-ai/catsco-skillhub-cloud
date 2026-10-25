@@ -1,0 +1,62 @@
+name: Description release plan paired contract
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  description-plan-paired:
+    name: Real Cloud PostgreSQL and CatsCo description plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: plan
+          POSTGRES_PASSWORD: plan_test
+          POSTGRES_DB: plan_contract
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U plan -d plan_contract"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      SKILLHUB_TEST_DATABASE_URL: postgres://plan:plan_test@127.0.0.1:5432/plan_contract
+    steps:
+      # Keep private repository credentials out of public CatsCo PR jobs.
+      # Both sides are immutable; the runner rejects missing PG or skipped cases.
+      - name: Checkout pinned Cloud planner
+        uses: actions/checkout@v4
+        with:
+          ref: 18e99516806a04002dff067c6e7372ba4a97935f
+          path: skillhub
+      - name: Checkout paired CatsCo consumer
+        uses: actions/checkout@v4
+        with:
+          repository: buildsense-ai/cats-company
+          ref: 711eafd1d9288ab467b711b8fd567df85c708202
+          path: cats-company
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: skillhub/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: cats-company/go.mod
+          cache-dependency-path: cats-company/go.sum
+      - name: Install pinned Cloud dependencies
+        working-directory: skillhub
+        run: npm ci --ignore-scripts --prefer-offline --no-audit --fund=false
+      - name: Require all real PostgreSQL peer cases
+        working-directory: cats-company
+        env:
+          SKILLHUB_REPO: ../skillhub
+        run: node scripts/test-publication-description-plan-paired.mjs
