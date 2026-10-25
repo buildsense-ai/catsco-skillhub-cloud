@@ -7,10 +7,12 @@ import { publicationTaskSettings } from '../../packages/publication-tasks/config
 import { exactProposal, proposalDigest, PublicationDescriptionDerivationError } from '../../packages/publication-description-derivations/store.js';
 import { readRaw, withAbort } from './publish-validation.js';
 import { readPublicationDescriptionCopy, validatePublicationDescriptionCopy } from '../../packages/publication-description-derivations/read.js';
+import { createPublicationDescriptionReleasePlanner } from '../../packages/publication-description-derivations/release-plan.js';
 
 export const PUBLICATION_DESCRIPTION_DERIVATION_PATH = '/api/skills/publication-descriptions/internal/derive';
 export const PUBLICATION_DESCRIPTION_READ_PATH = '/api/skills/publication-descriptions/internal/read';
 export const PUBLICATION_DESCRIPTION_VALIDATE_PATH = '/api/skills/publication-descriptions/internal/validate';
+export const PUBLICATION_DESCRIPTION_PLAN_PATH = '/api/skills/publication-descriptions/internal/plan';
 const exact = (value, keys) => value && typeof value === 'object' && !Array.isArray(value)
   && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
 const hash = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
@@ -35,7 +37,7 @@ export function createPublicationDescriptionDerivationHandler(config, store, dep
   const enabled = settings.enabled === true;
   const limiter = new RateLimiter({ limit: 60, windowMs: 60000, maxBuckets: 1 });
   const budget = dependencies.timeoutMs ?? settings.timeoutMs ?? 30000;
-  let secret, hosts, proxies;
+  let secret, hosts, proxies, planner;
   try {
     if (enabled) {
       if (!Number.isInteger(budget) || budget < 1000 || budget > 60000 ||
@@ -46,15 +48,19 @@ export function createPublicationDescriptionDerivationHandler(config, store, dep
       hosts = new Set([audience.host, ...(!audience.port ? [audience.hostname + ':443'] : [])]);
       proxies = new Set(settings.trustedProxyAddresses);
       secret = Buffer.from(`Bearer ${settings.peerSecret}`);
+      if (settings.planEnabled === true) planner = createPublicationDescriptionReleasePlanner({ enabled: true, config, store,
+        issuer: settings.issuer, audience: settings.audience });
     }
   } catch { secret = null; }
   let active = 0;
   return async (req, res) => {
     if (!req.url?.startsWith(PUBLICATION_DESCRIPTION_DERIVATION_PATH)
       && !req.url?.startsWith(PUBLICATION_DESCRIPTION_READ_PATH)
-      && !req.url?.startsWith(PUBLICATION_DESCRIPTION_VALIDATE_PATH)) return false;
+      && !req.url?.startsWith(PUBLICATION_DESCRIPTION_VALIDATE_PATH)
+      && !req.url?.startsWith(PUBLICATION_DESCRIPTION_PLAN_PATH)) return false;
     const reading = req.url === PUBLICATION_DESCRIPTION_READ_PATH;
     const validating = req.url === PUBLICATION_DESCRIPTION_VALIDATE_PATH;
+    const planning = req.url === PUBLICATION_DESCRIPTION_PLAN_PATH;
     const reply = (status, body) => {
       if (res.destroyed || res.writableEnded) return;
       if (!req.complete) res.setHeader('Connection', 'close');
@@ -71,9 +77,10 @@ export function createPublicationDescriptionDerivationHandler(config, store, dep
       code: `skillhub.publication_description_derivation_${kind}`,
       message: 'Description derivation could not be completed.'
     } });
-    if (!enabled || (req.url !== PUBLICATION_DESCRIPTION_DERIVATION_PATH && !reading && !validating)
+    if (!enabled || (req.url !== PUBLICATION_DESCRIPTION_DERIVATION_PATH && !reading && !validating && !planning)
       || (reading && settings.readEnabled !== true)
-      || (validating && settings.validationEnabled !== true)) { fail(404, 'disabled'); return true; }
+      || (validating && settings.validationEnabled !== true)
+      || (planning && settings.planEnabled !== true)) { fail(404, 'disabled'); return true; }
     if (!secret) { fail(503, 'configuration'); return true; }
     if (req.method !== 'POST') { fail(405, 'invalid'); return true; }
     try {
@@ -99,8 +106,12 @@ export function createPublicationDescriptionDerivationHandler(config, store, dep
         !/^application\/json(?:;\s*charset=utf-8)?$/i.test(header(req, 'content-type') ?? '') ||
         (length !== undefined && (!/^\d{1,6}$/.test(length) || Number(length) > 32768))) throw new PublicationDescriptionDerivationError('invalid', 400);
       let input;
-      try { input = parseStrictJson(new TextDecoder('utf-8', { fatal: true }).decode(await readRaw(req, 32768, controller.signal)), { maxDepth: 8, maxNodes: 100 }); }
+      try { input = parseStrictJson(new TextDecoder('utf-8', { fatal: true }).decode(await readRaw(req, 32768, controller.signal)), { maxDepth: 8, maxNodes: 150 }); }
       catch { throw new PublicationDescriptionDerivationError(controller.signal.aborted ? 'unavailable' : 'invalid', controller.signal.aborted ? 503 : 400); }
+      if (planning) {
+        if (!planner) throw new PublicationDescriptionDerivationError('configuration', 503);
+        return planner.plan(input, { signal: controller.signal });
+      }
       if (reading || validating) {
         const taskSettings = publicationTaskSettings(config);
         if (!taskSettings) throw new PublicationDescriptionDerivationError('configuration', 503);

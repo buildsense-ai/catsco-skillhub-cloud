@@ -127,3 +127,51 @@ own state transition. A report ID/hash or a `passed` result alone cannot resume
 publish. General private-candidate ancestry and round-2/3 derivation remain
 follow-up work; this view only validates copies supported by the current
 deterministic description derivation. No production switch is enabled here.
+
+## Independent derived-candidate release plan
+
+`POST /api/skills/publication-descriptions/internal/plan` additionally requires
+`SKILLHUB_PUBLICATION_DESCRIPTION_PLAN_ENABLED=true` (default false), publication
+tasks/publishing configuration, and the same service credential and transport
+restrictions. Enabling the private read or validation routes is not required.
+
+The request has exactly `copy` (the complete read request above),
+`publicationReceipt` (the unchanged original delegated upload receipt), and
+`confirmVersionPublish` (a boolean). The original task/request/candidate in both
+references must match. The boolean is a version-policy input, never evidence of
+human confirmation or permission to publish.
+
+The planner verifies current Cloud publisher/profile/namespace authority, proves
+the retained bytes by bounded deterministic rederivation, and runs the existing
+draft/preparation worker against the DERIVED candidate. No package code runs.
+It then locks and rechecks the original live task, publisher and exact copy,
+reserves a public version, and retains one immutable manifest/identity/target in
+`publication_description_release_plans`. Metadata counts toward the existing
+global and per-owner task storage limits; quota errors roll back the version
+reservation and plan together. No SQL lock spans worker execution.
+
+The response has exactly `schemaVersion: 1`, `applicationId`, `taskId`,
+`publicationReceipt`, `receipt` (the full derivation receipt), `derivedBytes`, and
+`target` (the existing commit-target shape). The target's candidate hash is the
+DERIVED hash; the original upload receipt retains the ORIGINAL hash. Neither
+private bytes/proposal text nor manifest/identity internals are returned.
+
+Same-input retries, including a committed plan whose HTTP reply was lost,
+recover the same target/version after fresh integrity/authority/expiry checks.
+Changed confirmation inputs or copy/receipt bindings fail closed. The task lock
+and database guards exclude competing original-candidate plans in both orders.
+Historical plans cannot be updated or deleted; expired/cancelled sources cannot
+recover a currently usable plan. Migration 021 adds no backfill or feature flag.
+
+This is planning only: no permit, commit record, job, model call, task/round
+transition, original candidate rewrite or three-round budget reset. The old
+commit coordinator still accepts ONLY the original candidate. A future CatsCo
+consumer must bind this exact response to its durable application/acceptance,
+current human/Bot/Owner/body/round/cancellation and live original Runtime source,
+then obtain a distinct candidate-bound publication authorization. Do not pass a
+derived hash through the old receipt/commit path. No production switch is enabled.
+
+The required PostgreSQL suite covers concurrent planners/reconstruction,
+immutable history and old-plan exclusion, cancellation/publisher changes during
+verification, quota rollback, version confirmation, expiry and lost HTTP replies.
+Local runs without a PostgreSQL DSN skip those cases rather than proving them.
