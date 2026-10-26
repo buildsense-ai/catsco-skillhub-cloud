@@ -10,12 +10,20 @@ import { delegatedFixture } from '../helpers/delegated-publication.js';
 import { descriptionCopyFixture } from '../helpers/description-copy.js';
 import { derivePublicationDescription } from '../../packages/publication-tasks/description-derivation.js';
 import { createPublicationDescriptionReleasePlanner, validDescriptionReleasePlanRequest } from '../../packages/publication-description-derivations/release-plan.js';
-import { createPublicationDescriptionDerivationHandler, PUBLICATION_DESCRIPTION_PLAN_PATH } from '../../apps/api/publication-description-derivation.js';
+import { createPublicationDescriptionDerivationHandler, PUBLICATION_DESCRIPTION_PLAN_PATH,
+  PUBLICATION_DESCRIPTION_AUTHORIZE_PATH } from '../../apps/api/publication-description-derivation.js';
+import { createDelegatedPublicationControlStore } from '../../packages/publication-delegation/control-store.js';
+import { PublicationDescriptionReleasePermitError } from '../../packages/publication-description-derivations/release-permit-client.js';
 
 const databaseUrl = process.env.SKILLHUB_TEST_DATABASE_URL, pgOnly = { skip: !databaseUrl };
 const issuer = 'https://commit.invalid', audience = 'https://cloud.invalid';
 const code = kind => ({ code: 'skillhub.publication_description_derivation_' + kind });
 const secret = 'pubderive_' + 'a'.repeat(64);
+
+function permitFor(request) {
+  return { schemaVersion: 1, entryId: request.entryId, applicationId: request.applicationId, target: structuredClone(request.target),
+    intentHash: 'a'.repeat(64), permitId: 'pubdescpermit_' + 'b'.repeat(32), authorizedAt: '2026-10-26T06:00:00.123456Z' };
+}
 
 async function fixture(t) {
   const admin = new pg.Client({ connectionString: databaseUrl });
@@ -158,6 +166,23 @@ async function httpPlan(config, store, input, { drop = false, auth = secret } = 
   } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
 }
 
+async function httpAuthorize(config, store, input, { auth = secret, releasePermitClient } = {}) {
+  const handler = createPublicationDescriptionDerivationHandler(config, store, { releasePermitClient });
+  const server = http.createServer((req, res) => { void handler(req, res); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    return await new Promise((resolve, reject) => {
+      const req = http.request({ host: '127.0.0.1', port: server.address().port, path: PUBLICATION_DESCRIPTION_AUTHORIZE_PATH,
+        method: 'POST', headers: { Host: 'cloud.invalid', 'X-Forwarded-Proto': 'https', Authorization: 'Bearer ' + auth,
+          'Content-Type': 'application/json' } }, res => {
+        const chunks = []; res.on('data', chunk => chunks.push(chunk)); res.on('error', reject);
+        res.on('end', () => resolve({ status: res.statusCode, body: JSON.parse(Buffer.concat(chunks)) }));
+      });
+      req.on('error', reject); req.end(JSON.stringify(input));
+    });
+  } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+}
+
 test('PostgreSQL HTTP planning is separately gated and committed-response loss recovers one exact target', pgOnly, async t => {
   const { config, store, input, count } = await fixture(t);
   const base = { ...config, publicationDescriptionDerivation: { ...config.publicationDescriptionDerivation,
@@ -172,4 +197,206 @@ test('PostgreSQL HTTP planning is separately gated and committed-response loss r
   assert.equal(first.status, 200); assert.deepEqual(first, replay);
   assert.equal(await count('publication_version_reservations'), 1);
   assert.equal(await count('publication_commits'), 0);
+});
+
+test('PostgreSQL derived release permit creates a durable cancellation fence before peer I/O and recovers lost replies', pgOnly, async t => {
+  const { config, store, f, input, planner, count } = await fixture(t);
+  const plan = await planner().plan(input);
+  const activeConfig = { ...config, publicationDescriptionDerivation: { ...config.publicationDescriptionDerivation,
+    enabled: true, planEnabled: true, issuer, audience, peerSecret: secret, trustedProxyAddresses: ['127.0.0.1'],
+    releasePermit: { enabled: true, issuer, audience, peerSecret: 'c'.repeat(64) } } };
+  const authorizeInput = { schemaVersion: 1, applicationId: plan.applicationId, publicationReceipt: plan.publicationReceipt };
+  const requestFor = () => ({ schemaVersion: 1, entryId: plan.publicationReceipt.entryRequestId,
+    applicationId: plan.applicationId, target: plan.target });
+  let calls = 0, release;
+  const waiting = new Promise(resolve => { release = resolve; });
+  const permitClient = { async authorize(request) {
+    calls++;
+    assert.deepEqual(request, requestFor());
+    if (calls === 1) { await waiting; throw new PublicationDescriptionReleasePermitError('unavailable'); }
+    return permitFor(request);
+  } };
+  const consumer = planner({ config: activeConfig, releasePermitEnabled: true, permitClient });
+  const authorizing = consumer.authorize(authorizeInput);
+  for (let index = 0; index < 100; index++) {
+    if (await count('publication_description_release_authorizations')) break;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.equal(await count('publication_description_release_authorizations'), 1);
+  const pending = (await store.query('SELECT state,proof FROM publication_description_release_authorizations WHERE application_id=$1', [plan.applicationId])).rows[0];
+  assert.equal(pending.state, 'pending'); assert.equal(pending.proof, null);
+  const control = createDelegatedPublicationControlStore({ enabled: true, store, issuer, audience });
+  await assert.rejects(control.cancel(f.receipt), { code: 'skillhub.publication_control_conflict' });
+  release();
+  await assert.rejects(authorizing, code('unavailable'));
+  assert.equal((await store.query('SELECT state FROM publication_description_release_authorizations WHERE application_id=$1', [plan.applicationId])).rows[0].state, 'pending');
+  await assert.rejects(control.cancel(f.receipt), { code: 'skillhub.publication_control_conflict' });
+  await store.query(`UPDATE publication_description_release_authorizations
+    SET attempt_lease_until=clock_timestamp()-interval '1 second' WHERE application_id=$1`, [plan.applicationId]);
+  const recovered = await consumer.authorize(authorizeInput);
+  assert.equal(recovered.replayed, false); assert.deepEqual(recovered.permit, permitFor(requestFor()));
+  assert.equal(calls, 2);
+  assert.deepEqual(await consumer.authorize(authorizeInput), { ...recovered, replayed: true });
+  assert.equal(calls, 2);
+  assert.equal((await store.query('SELECT state,proof FROM publication_description_release_authorizations WHERE application_id=$1', [plan.applicationId])).rows[0].state, 'permitted');
+  assert.equal(await count('publication_commits'), 0);
+  assert.equal(await count('publication_delegated_permits'), 0);
+  await assert.rejects(control.cancel(f.receipt), { code: 'skillhub.publication_control_conflict' });
+  for (const sql of ['UPDATE publication_description_release_authorizations SET proof=proof', 'DELETE FROM publication_description_release_authorizations']) {
+    await assert.rejects(store.query(sql + ' WHERE application_id=$1', [plan.applicationId]), { code: '23514' });
+  }
+  await assert.rejects(store.query(`UPDATE publication_tasks SET state='cancelled',delegated_cancelled_at=now(),candidate=NULL,candidate_bytes=0 WHERE id=$1`,
+    [f.receipt.taskId]), { code: '23514' });
+});
+
+for (const kind of ['denied', 'cancelled', 'conflict']) test(`PostgreSQL terminal ${kind} releases the Cloud cancellation fence without publishing`, pgOnly, async t => {
+  const { config, store, f, input, planner, count } = await fixture(t);
+  const plan = await planner().plan(input);
+  const activeConfig = { ...config, publicationDescriptionDerivation: { ...config.publicationDescriptionDerivation, planEnabled: true } };
+  const permitClient = { async authorize() { throw new PublicationDescriptionReleasePermitError(kind); } };
+  const consumer = planner({ config: activeConfig, releasePermitEnabled: true, permitClient });
+  const authorizeInput = { schemaVersion: 1, applicationId: plan.applicationId, publicationReceipt: plan.publicationReceipt };
+  await assert.rejects(consumer.authorize(authorizeInput), code(kind));
+  const terminal = (await store.query('SELECT state,terminal_code FROM publication_description_release_authorizations WHERE application_id=$1', [plan.applicationId])).rows[0];
+  assert.deepEqual(terminal, { state: 'denied', terminal_code: kind });
+  const control = createDelegatedPublicationControlStore({ enabled: true, store, issuer, audience });
+  assert.equal((await control.cancel(f.receipt)).executionState, 'cancelled');
+  assert.equal(await count('publication_commits'), 0);
+  assert.equal(await count('publication_delegated_permits'), 0);
+});
+
+test('PostgreSQL concurrent authorize retries retain one exact permit and keep cancellation fenced', pgOnly, async t => {
+  const { config, store, f, input, planner, count } = await fixture(t);
+  const plan = await planner().plan(input);
+  const request = { schemaVersion: 1, entryId: plan.publicationReceipt.entryRequestId,
+    applicationId: plan.applicationId, target: plan.target };
+  let calls = 0, release, start;
+  const pending = new Promise(resolve => { release = resolve; });
+  const started = new Promise(resolve => { start = resolve; });
+  const consumer = planner({ config: { ...config, publicationDescriptionDerivation: {
+    ...config.publicationDescriptionDerivation, planEnabled: true } }, releasePermitEnabled: true,
+  permitClient: { async authorize(value) { calls++; assert.deepEqual(value, request); start(); await pending; return permitFor(value); } } });
+  const body = { schemaVersion: 1, applicationId: plan.applicationId, publicationReceipt: plan.publicationReceipt };
+  const firstRequest = consumer.authorize(body);
+  await started;
+  await assert.rejects(consumer.authorize(body), code('busy'));
+  release();
+  const first = await firstRequest;
+  const second = await consumer.authorize(body);
+  assert.deepEqual(first.permit, permitFor(request));
+  assert.deepEqual(second.permit, first.permit);
+  assert.equal(first.replayed, false);
+  assert.equal(second.replayed, true);
+  assert.equal(calls, 1);
+  assert.equal((await store.query('SELECT state FROM publication_description_release_authorizations WHERE application_id=$1', [plan.applicationId])).rows[0].state, 'permitted');
+  const control = createDelegatedPublicationControlStore({ enabled: true, store, issuer, audience });
+  await assert.rejects(control.cancel(f.receipt), { code: 'skillhub.publication_control_conflict' });
+  assert.equal(await count('publication_description_release_authorizations'), 1);
+  assert.equal(await count('publication_commits'), 0);
+  assert.equal(await count('publication_delegated_permits'), 0);
+});
+
+test('PostgreSQL expired permit-attempt lease fences a late response from the previous claimant', pgOnly, async t => {
+  const { config, store, input, planner, count } = await fixture(t);
+  const plan = await planner().plan(input);
+  const activeConfig = { ...config, publicationDescriptionDerivation: { ...config.publicationDescriptionDerivation,
+    planEnabled: true } };
+  const body = { schemaVersion: 1, applicationId: plan.applicationId, publicationReceipt: plan.publicationReceipt };
+  const gates = [], started = [], calls = [];
+  const makeConsumer = () => {
+    let open, begin;
+    const gate = new Promise(resolve => { open = resolve; });
+    const began = new Promise(resolve => { begin = resolve; });
+    gates.push(open); started.push(began);
+    return { consumer: planner({ config: activeConfig, releasePermitEnabled: true, permitClient: {
+      async authorize(request) { calls.push(request); begin(); await gate; return permitFor(request); }
+    } }), started: began };
+  };
+  const first = makeConsumer(), firstRequest = first.consumer.authorize(body);
+  await first.started;
+  for (let index = 0; index < 100; index++) {
+    if (await count('publication_description_release_authorizations')) break;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.equal(await count('publication_description_release_authorizations'), 1);
+  await store.query(`UPDATE publication_description_release_authorizations
+    SET attempt_lease_until=clock_timestamp()-interval '1 second' WHERE application_id=$1`, [plan.applicationId]);
+  const second = makeConsumer(), secondRequest = second.consumer.authorize(body);
+  await second.started;
+  assert.equal(calls.length, 2);
+  gates[0]();
+  await assert.rejects(firstRequest, code('conflict'));
+  assert.equal((await store.query('SELECT state,attempt_lease_until>clock_timestamp() AS leased FROM publication_description_release_authorizations WHERE application_id=$1',
+    [plan.applicationId])).rows[0].leased, true);
+  gates[1]();
+  const result = await secondRequest;
+  assert.equal(result.replayed, false);
+  assert.deepEqual(result.permit, permitFor(calls[1]));
+  assert.equal((await store.query('SELECT state FROM publication_description_release_authorizations WHERE application_id=$1', [plan.applicationId])).rows[0].state, 'permitted');
+  assert.equal(await count('publication_commits'), 0);
+});
+
+test('PostgreSQL direct cancellation serializes behind a pending permit fence', pgOnly, async t => {
+  const { store, f, input, planner, count } = await fixture(t);
+  const plan = await planner().plan(input);
+  let unlock, acquired;
+  const gate = new Promise(resolve => { unlock = resolve; });
+  let failedAcquire;
+  const locked = new Promise((resolve, reject) => { acquired = resolve; failedAcquire = reject; });
+  const authorizing = store.tx(async c => {
+    try {
+      await c.query('SELECT id FROM publication_tasks WHERE id=$1 FOR UPDATE', [f.receipt.taskId]);
+      await c.query(`INSERT INTO publication_description_release_authorizations
+        (application_id,task_id,state,attempt_token,attempt_lease_until)
+        VALUES($1,$2,'pending',$3,clock_timestamp()+interval '15 seconds')`,
+      [plan.applicationId, f.receipt.taskId, `pubdescattempt_${randomUUID()}`]);
+      acquired();
+      await gate;
+    } catch (error) {
+      failedAcquire(error);
+      throw error;
+    }
+  });
+  let cancellation;
+  try {
+    await locked;
+    cancellation = store.query(`UPDATE publication_tasks SET state='cancelled',delegated_cancelled_at=clock_timestamp(),
+      candidate=NULL,candidate_bytes=0,error_code=NULL,updated_at=clock_timestamp() WHERE id=$1`, [f.receipt.taskId]);
+    await new Promise(resolve => setTimeout(resolve, 50));
+  } finally {
+    unlock();
+    await authorizing.catch(() => {});
+  }
+  await assert.rejects(cancellation, { code: '23514' });
+  assert.equal((await store.query('SELECT state FROM publication_tasks WHERE id=$1', [f.receipt.taskId])).rows[0].state, 'delegated_pending');
+  assert.equal((await store.query('SELECT state FROM publication_description_release_authorizations WHERE application_id=$1', [plan.applicationId])).rows[0].state, 'pending');
+  assert.equal(await count('publication_commits'), 0);
+});
+
+test('description authorize route is independently gated and uses only stored plan target', pgOnly, async t => {
+  const { config, store, input, planner, count } = await fixture(t);
+  const plan = await planner().plan(input);
+  const body = { schemaVersion: 1, applicationId: plan.applicationId, publicationReceipt: plan.publicationReceipt };
+  const base = { ...config, publicationDescriptionDerivation: { ...config.publicationDescriptionDerivation,
+    enabled: true, planEnabled: true, issuer, audience, peerSecret: secret, trustedProxyAddresses: ['127.0.0.1'],
+    releasePermit: { enabled: false } } };
+  assert.equal((await httpAuthorize(base, store, body)).status, 404);
+  const active = { ...base, publicationDescriptionDerivation: { ...base.publicationDescriptionDerivation,
+    releasePermit: { enabled: true, issuer, audience, peerSecret: 'c'.repeat(64) } } };
+  assert.equal((await httpAuthorize(active, store, body, { auth: 'wrong' })).status, 401);
+  const calls = [];
+  const releasePermitClient = { async authorize(request) { calls.push(request); return permitFor(request); } };
+  assert.equal((await httpAuthorize(active, store, { ...body, target: plan.target }, { releasePermitClient })).status, 400);
+  assert.equal((await httpAuthorize(active, store, { ...body, applicationId: 'pubdesc_' + 'f'.repeat(64) }, { releasePermitClient })).status, 409);
+  assert.equal(calls.length, 0);
+  const result = await httpAuthorize(active, store, body, { releasePermitClient: { async authorize(request) {
+    calls.push(request); return permitFor(request);
+  } } });
+  assert.equal(result.status, 200);
+  assert.deepEqual(calls, [{ schemaVersion: 1, entryId: plan.publicationReceipt.entryRequestId,
+    applicationId: plan.applicationId, target: plan.target }]);
+  assert.deepEqual(result.body, { schemaVersion: 1, applicationId: plan.applicationId, permit: permitFor(calls[0]), replayed: false });
+  assert.equal(await count('publication_commits'), 0);
+  assert.equal(await count('publication_delegated_permits'), 0);
+  assert.equal(await count('publication_description_release_authorizations'), 1);
 });

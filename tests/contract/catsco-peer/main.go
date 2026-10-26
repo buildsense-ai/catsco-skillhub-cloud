@@ -23,12 +23,33 @@ import (
 
 type fixtureStore struct {
 	store.Store
+	store.SkillHubPublicationDescriptionReleasePermitStore
 	issuer       string
 	epoch        atomic.Int64
 	mu           sync.Mutex
 	receipt      *store.SkillHubPublicationCloudReceipt
 	receiptCalls int
 	cancelled    bool
+}
+
+// Exact permit projection test double. The real CatsCo handler still performs
+// HTTPS, strict JSON, host, credential, route-gate and error mapping checks;
+// durable human intent and PostgreSQL issuance are covered by CatsCo's own
+// required PostgreSQL contract.
+func (s *fixtureStore) AuthorizeSkillHubPublicationDescriptionRelease(ctx context.Context, entryID, applicationID string, target store.SkillHubPublicationCommitTarget) (*store.SkillHubPublicationDescriptionReleasePermit, error) {
+	if _, ok := ctx.Deadline(); !ok || entryID != "pubentry_"+strings.Repeat("8", 32) ||
+		applicationID != "pubdesc_"+strings.Repeat("9", 64) || target.Validate() != nil {
+		return nil, store.ErrSkillHubPublicationConflict
+	}
+	intent := store.SkillHubPublicationDescriptionReleaseIntent{EntryID: entryID, ActorUID: 7, ApplicationID: applicationID,
+		AcceptanceIdentityHash: strings.Repeat("a", 64), Target: target, RequestedAt: time.Date(2026, 10, 26, 0, 0, 1, 0, time.UTC)}
+	var err error
+	intent.IdentityHash, err = intent.Digest()
+	if err != nil {
+		return nil, err
+	}
+	return &store.SkillHubPublicationDescriptionReleasePermit{Intent: intent,
+		ID: "pubdescpermit_" + strings.Repeat("b", 32), AuthorizedAt: intent.RequestedAt.Add(time.Second)}, nil
 }
 
 // Discard the response without stripping the real connection's read-deadline
@@ -109,6 +130,7 @@ func main() {
 	defer tls.Close()
 	os.Setenv("CATSCO_SKILLHUB_PUBLICATION_INTROSPECTION_ENABLED", "true")
 	os.Setenv("CATSCO_SKILLHUB_PUBLICATION_CLOUD_RECEIPTS_ENABLED", "true")
+	os.Setenv("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_RELEASE_PERMITS_ENABLED", "true")
 	os.Setenv("CATSCO_SKILLHUB_PUBLICATION_ISSUER", tls.URL)
 	os.Setenv("CATSCO_SKILLHUB_PUBLICATION_CLOUD_AUDIENCE", "https://hub.example")
 	os.Setenv("CATSCO_SKILLHUB_PUBLICATION_CLOUD_PEER_SECRET", strings.Repeat("1", 64))

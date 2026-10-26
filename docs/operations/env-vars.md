@@ -97,6 +97,31 @@ Cloud origin；两者必须不同。生产启用还必须满足 CatsCo 的
 TLS/密钥配置。关闭该开关只停止新投递，不删除 Cloud 端已保留的任务或
 outbox 证据，重启后可按 lease 继续恢复。
 
+## Derived description release authorization (default off)
+
+This peer boundary only retains CatsCo's exact authorization for a derived
+description target. It does not start the legacy worker or publish a package.
+Keep it disabled until the matching CatsCo peer and a later reviewed Cloud
+consumer are deployed together:
+
+```env
+SKILLHUB_PUBLICATION_DESCRIPTION_DERIVATION_ENABLED=false
+SKILLHUB_PUBLICATION_DESCRIPTION_PLAN_ENABLED=false
+SKILLHUB_PUBLICATION_DESCRIPTION_RELEASE_PERMIT_ENABLED=false
+SKILLHUB_PUBLICATION_DESCRIPTION_RELEASE_PERMIT_ISSUER=https://app.catsco.cc
+SKILLHUB_PUBLICATION_DESCRIPTION_RELEASE_PERMIT_AUDIENCE=https://skillhub.catsco.fun:19990
+SKILLHUB_PUBLICATION_DESCRIPTION_RELEASE_PERMIT_PEER_SECRET=独立的64位十六进制服务间密钥
+```
+
+`ISSUER` is the fixed CatsCo HTTPS origin, `AUDIENCE` is the Cloud origin, and
+they must differ. The release-permit secret is separate from the description
+derivation peer secret. A pending authorization deliberately blocks Cloud-side
+cancellation when the HTTPS outcome is ambiguous; retry the same application
+and receipt to recover. A definitive denial/cancellation/conflict is retained
+as terminal evidence and releases the cancellation fence. Enabling this flag
+does not enable publication, create a commit, or make the legacy commit path
+accept a derived candidate.
+
 ## 签名
 
 ```env

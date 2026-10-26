@@ -175,3 +175,30 @@ The required PostgreSQL suite covers concurrent planners/reconstruction,
 immutable history and old-plan exclusion, cancellation/publisher changes during
 verification, quota rollback, version confirmation, expiry and lost HTTP replies.
 Local runs without a PostgreSQL DSN skip those cases rather than proving them.
+
+## Independent derived-candidate release authorization (not publication)
+
+`POST /api/skills/publication-descriptions/internal/authorize` is a separate
+CatsCo-to-Cloud peer operation. It additionally requires
+`SKILLHUB_PUBLICATION_DESCRIPTION_RELEASE_PERMIT_ENABLED=true` (default false),
+the plan and derivation lanes enabled, and its own HTTPS peer credential. Its
+exact JSON request contains only `schemaVersion`, `applicationId`, and the
+unchanged `publicationReceipt`; Cloud obtains the target from its immutable
+retained plan rather than trusting a caller-supplied target.
+
+Before peer I/O, Cloud verifies the retained derived bytes and prepared target,
+then durably writes a `pending` authorization row under the original task lock.
+That pending row fences both the application cancellation adapter and direct
+database cancellation. Cloud calls the fixed CatsCo HTTPS origin with the exact
+entry, application and full retained target. A successful exact permit is
+retained immutably and returned for recovery; retries after lost replies reuse
+the same target and CatsCo's idempotent permit. Definitive denied/cancelled/
+conflict replies become a terminal denied record; transport or storage failures
+remain pending and retryable because the remote outcome may be unknown.
+
+The route and its independent switch default off. It is service-only, rejects
+browser credentials and untrusted transport, and makes no model call. This
+authorization is still NOT a Cloud commit permit: no commit row, job, worker,
+upload, public package, task completion or original-candidate mutation is
+created. A later separately reviewed step must consume this exact derived
+target, recheck authority/source, and atomically connect permit to publication.
