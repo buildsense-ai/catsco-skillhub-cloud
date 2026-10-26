@@ -63,8 +63,16 @@ export function createDelegatedPublicationControlStore({ enabled = false, store,
           throw new PublicationControlError('conflict');
         }
         if (cancel) {
-          const release = await c.query(`SELECT 1 FROM publication_description_release_authorizations
-            WHERE task_id=$1 AND state IN ('pending','permitted')`, [r.taskId]);
+          // Keep the older cancellation migration usable while the optional
+          // derived-description release fence is not installed yet.
+          let release;
+          try {
+            release = await c.query(`SELECT 1 FROM publication_description_release_authorizations
+              WHERE task_id=$1 AND state IN ('pending','permitted')`, [r.taskId]);
+          } catch (error) {
+            if (error?.code !== '42P01') throw error;
+            release = { rowCount: 0 };
+          }
           if (release.rowCount) throw new PublicationControlError('conflict');
         }
         if (cancel && row.state !== 'cancelled') {
