@@ -225,9 +225,8 @@ export function createPublicationDescriptionReleasePlanner({ enabled = false, re
           if (!validDescriptionReleasePermit(current.authorization_proof, {
             schemaVersion: 1, entryId: input.publicationReceipt.entryRequestId, applicationId: input.applicationId, target: current.target
           })) fail('conflict');
-          // A recovered/previously stored permit is admitted to the isolated
-          // derived-release lane exactly once. This is not a publication commit.
-          await admitRelease(c, current, input);
+          // Historical proof recovery is read-only, including permits retained
+          // before admission markers existed. It is not fresh execution.
           return current;
         }
         if (current.authorization_state === 'pending') {
@@ -274,7 +273,6 @@ export function createPublicationDescriptionReleasePlanner({ enabled = false, re
           return { ...current, authorization_state: 'pending', authorization_attempt_token: attemptToken };
         });
         if (row.authorization_state === 'permitted') {
-          await admitRelease(c, row, input);
           return { schemaVersion: 1, applicationId: input.applicationId, permit: structuredClone(row.authorization_proof), replayed: true };
         }
         if (row.authorization_state === 'denied') fail(row.terminal_code ?? 'conflict', row.terminal_code === 'denied' ? 403 : 409);

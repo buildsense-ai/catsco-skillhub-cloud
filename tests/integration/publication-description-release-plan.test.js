@@ -25,7 +25,7 @@ function permitFor(request) {
     intentHash: 'a'.repeat(64), permitId: 'pubdescpermit_' + 'b'.repeat(32), authorizedAt: '2026-10-26T06:00:00.123456Z' };
 }
 
-async function fixture(t) {
+async function fixture(t, { beforeAdmissionMigration = false } = {}) {
   const admin = new pg.Client({ connectionString: databaseUrl });
   await admin.connect();
   const schema = 'description_plan_' + randomUUID().replaceAll('-', '');
@@ -34,6 +34,7 @@ async function fixture(t) {
   await admin.query(`SET search_path TO "${schema}"`);
   const folder = new URL('../../infra/migrations/', import.meta.url);
   for (const name of (await fs.readdir(folder)).filter(f => /^\d+_.+\.sql$/.test(f)).sort()) {
+    if (beforeAdmissionMigration && name.startsWith('023_')) continue;
     await admin.query(await fs.readFile(new URL(name, folder), 'utf8'));
   }
   const url = new URL(databaseUrl); url.searchParams.set('options', '-c search_path=' + schema);
@@ -378,6 +379,74 @@ test('PostgreSQL direct cancellation serializes behind a pending permit fence', 
   await assert.rejects(cancellation, { code: '23514' });
   assert.equal((await store.query('SELECT state FROM publication_tasks WHERE id=$1', [f.receipt.taskId])).rows[0].state, 'delegated_pending');
   assert.equal((await store.query('SELECT state FROM publication_description_release_authorizations WHERE application_id=$1', [plan.applicationId])).rows[0].state, 'pending');
+  assert.equal(await count('publication_commits'), 0);
+});
+
+test('PostgreSQL late derived permit is retained after expiry and historical replay never recharges quota', pgOnly, async t => {
+  const { config, store, f, input, planner, count } = await fixture(t);
+  const plan = await planner().plan(input);
+  const activeConfig = { ...config, publicationDescriptionDerivation: { ...config.publicationDescriptionDerivation, planEnabled: true } };
+  let calls = 0;
+  const permitClient = { async authorize(request) {
+    calls++;
+    await store.query("UPDATE publication_tasks SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1", [f.receipt.taskId]);
+    await store.query("UPDATE publisher_profiles SET status='suspended' WHERE id=$1", [f.profile.id]);
+    return permitFor(request);
+  } };
+  const body = { schemaVersion: 1, applicationId: plan.applicationId, publicationReceipt: plan.publicationReceipt };
+  const first = await planner({ config: activeConfig, releasePermitEnabled: true, permitClient }).authorize(body);
+  assert.equal(first.replayed, false);
+  assert.equal(await count('publication_description_release_admissions'), 1);
+  const before = (await store.query('SELECT commit_bytes FROM publication_tasks WHERE id=$1', [f.receipt.taskId])).rows[0].commit_bytes;
+  const full = { ...activeConfig, publicationTasks: { ...config.publicationTasks, maxStoredBytes: 1 } };
+  assert.deepEqual(await planner({ config: full, releasePermitEnabled: true, permitClient }).authorize(body), { ...first, replayed: true });
+  assert.equal((await store.query('SELECT commit_bytes FROM publication_tasks WHERE id=$1', [f.receipt.taskId])).rows[0].commit_bytes, before);
+  assert.equal(calls, 1);
+  assert.equal(await count('publication_commits'), 0);
+});
+
+test('PostgreSQL migration preserves pre-admission permits without backfill or fresh execution checks', pgOnly, async t => {
+  const { config, store, f, input, planner, count } = await fixture(t, { beforeAdmissionMigration: true });
+  const plan = await planner().plan(input);
+  const proof = permitFor({ entryId: f.receipt.entryRequestId, applicationId: plan.applicationId, target: plan.target });
+  await store.query(`INSERT INTO publication_description_release_authorizations
+    (application_id,task_id,state,attempt_token,attempt_lease_until)
+    VALUES($1,$2,'pending',$3,clock_timestamp()+interval '15 seconds')`,
+  [plan.applicationId, f.receipt.taskId, 'pubdescattempt_' + randomUUID()]);
+  await store.query(`UPDATE publication_description_release_authorizations
+    SET state='permitted',proof=$2,attempt_token=NULL,attempt_lease_until=NULL WHERE application_id=$1`,
+  [plan.applicationId, JSON.stringify(proof)]);
+  await store.query(await fs.readFile(new URL('../../infra/migrations/023_publication_description_release_admissions.sql', import.meta.url), 'utf8'));
+  await store.query("UPDATE publication_tasks SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1", [f.receipt.taskId]);
+  const activeConfig = { ...config, publicationTasks: { ...config.publicationTasks, maxStoredBytes: 1 },
+    publicationDescriptionDerivation: { ...config.publicationDescriptionDerivation, planEnabled: true } };
+  const permitClient = { async authorize() { assert.fail('historical replay must not request a new permit'); } };
+  const result = await planner({ config: activeConfig, releasePermitEnabled: true, permitClient }).authorize({
+    schemaVersion: 1, applicationId: plan.applicationId, publicationReceipt: plan.publicationReceipt });
+  assert.deepEqual(result, { schemaVersion: 1, applicationId: plan.applicationId, permit: proof, replayed: true });
+  assert.equal(await count('publication_description_release_admissions'), 0);
+  assert.equal(await count('publication_commits'), 0);
+});
+
+test('PostgreSQL admission quota failure rolls back local permit and marker then recovers the exact remote outcome', pgOnly, async t => {
+  const { config, store, input, planner, count } = await fixture(t);
+  const plan = await planner().plan(input);
+  const activeConfig = { ...config, publicationDescriptionDerivation: { ...config.publicationDescriptionDerivation, planEnabled: true } };
+  const body = { schemaVersion: 1, applicationId: plan.applicationId, publicationReceipt: plan.publicationReceipt };
+  const permitClient = { async authorize(request) { return permitFor(request); } };
+  // Use an independent low-budget consumer to recover a pending attempt.
+  await assert.rejects(planner({ config: activeConfig, releasePermitEnabled: true,
+    permitClient: { async authorize() { throw new PublicationDescriptionReleasePermitError('unavailable'); } } }).authorize(body), code('unavailable'));
+  await store.query("UPDATE publication_description_release_authorizations SET attempt_lease_until=clock_timestamp()-interval '1 second' WHERE application_id=$1", [plan.applicationId]);
+  const small = { ...activeConfig, publicationTasks: { ...config.publicationTasks, maxStoredBytes: 1 } };
+  await assert.rejects(planner({ config: small, releasePermitEnabled: true, permitClient }).authorize(body), code('storage_limit'));
+  assert.equal((await store.query('SELECT state FROM publication_description_release_authorizations WHERE application_id=$1', [plan.applicationId])).rows[0].state, 'pending');
+  assert.equal(await count('publication_description_release_admissions'), 0);
+  await store.query("UPDATE publication_description_release_authorizations SET attempt_lease_until=clock_timestamp()-interval '1 second' WHERE application_id=$1", [plan.applicationId]);
+  const recovered = await planner({ config: activeConfig, releasePermitEnabled: true,
+    permitClient: { async authorize(request) { return permitFor(request); } } }).authorize(body);
+  assert.equal(recovered.replayed, false);
+  assert.equal(await count('publication_description_release_admissions'), 1);
   assert.equal(await count('publication_commits'), 0);
 });
 

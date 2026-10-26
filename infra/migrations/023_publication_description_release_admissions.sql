@@ -23,11 +23,10 @@ BEGIN
     OR NEW.proof->>'applicationId' IS DISTINCT FROM NEW.application_id
     OR NEW.proof->>'entryId' IS DISTINCT FROM p.receipt->>'entryRequestId'
     OR NOT COALESCE((NEW.proof->>'intentHash') ~ '^[a-f0-9]{64}$',false)
-    OR t.id IS NULL OR t.authority_kind IS DISTINCT FROM 'catsco' OR t.state IS DISTINCT FROM 'delegated_pending'
-    OR t.candidate IS NULL OR t.expires_at<=clock_timestamp()
+    OR t.id IS NULL OR t.authority_kind IS DISTINCT FROM 'catsco'
     OR EXISTS(SELECT 1 FROM publication_commits WHERE task_id=NEW.task_id)
     OR EXISTS(SELECT 1 FROM publication_delegated_plans WHERE task_id=NEW.task_id)
-  THEN RAISE EXCEPTION 'Derived release admission does not match an active permit' USING ERRCODE='23514'; END IF;
+  THEN RAISE EXCEPTION 'Derived release admission does not match a retained permit' USING ERRCODE='23514'; END IF;
   RETURN NEW;
 END;
 $$;

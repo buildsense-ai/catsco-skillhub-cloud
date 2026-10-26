@@ -203,12 +203,17 @@ upload, public package, task completion or original-candidate mutation is
 created. A later separately reviewed step must consume this exact derived
 target, recheck authority/source, and atomically connect permit to publication.
 
-After the permit has been validated and retained, Cloud records one immutable
+In the same transaction that first retains a valid permit, Cloud records one immutable
 `publication_description_release_admissions` row bound to the exact plan, task,
 and permit proof. This is an isolated durable admission marker for the future
 derived-candidate lane; it is deliberately not `publication_commits`, does not
-change task state, and does not enqueue a job or start a worker. Retries recover
-the same row. Direct updates/deletes and legacy original-candidate admission
+change task state, and does not enqueue a job or start a worker. This marker is
+historical proof, not evidence that the source is currently live or executable:
+a late peer response must still be retained after source expiry, without losing
+the remote outcome. A future worker must independently recheck current authority,
+source and eligibility. Permit retries are read-only, including older permits
+retained before this migration; there is no implicit admission backfill or quota
+charge on historical reads. Direct updates/deletes and legacy original-candidate admission
 remain rejected. The row is included in task storage quota. Cancellation remains
 fenced while permit resolution is pending or permitted; a later worker/terminal
 protocol must define the safe release of this fence before cancellation can be
