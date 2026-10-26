@@ -66,7 +66,9 @@ async function workerFixture(t) {
   const { config, store, input, planner } = fixtureResult;
   const plan = await planner().plan(input);
   const permitClient = { async authorize(request) { return permitFor(request); } };
-  const authorized = await planner({ releasePermitEnabled: true, permitClient }).authorize({
+  const activeConfig = { ...config, publicationDescriptionDerivation: {
+    ...config.publicationDescriptionDerivation, planEnabled: true } };
+  const authorized = await planner({ config: activeConfig, releasePermitEnabled: true, permitClient }).authorize({
     schemaVersion: 1, applicationId: plan.applicationId, publicationReceipt: plan.publicationReceipt });
   const admitted = await createPublicationDescriptionCommitAdmission({ enabled: true, store }).admit({
     schemaVersion: 1, applicationId: plan.applicationId, permitId: authorized.permit.permitId });
