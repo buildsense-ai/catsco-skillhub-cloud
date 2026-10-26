@@ -15,6 +15,7 @@ import { createStore, closePools } from '../../packages/database/store.js';
 import { loadConfig } from '../../packages/config/index.js';
 import { createPublicationReceiptClient } from '../../packages/publication-delegation/receipt-client.js';
 import { createPublicationReceiptDispatcher } from '../../packages/publication-delegation/receipt-worker.js';
+import { createPublicationDescriptionReleasePermitClient } from '../../packages/publication-description-derivations/release-permit-client.js';
 
 async function fixture(t) {
   assert.ok(process.env.CATSCO_CONTRACT_ROOT, 'CATSCO_CONTRACT_ROOT is required; missing counterpart is not a skip');
@@ -98,6 +99,14 @@ test('Cloud client and pinned CatsCo peer handler exchange actual HTTPS with str
     idempotencyKey:input.idempotencyKey,taskId:'pubtask_'+randomUUID(),eventId:'pubevent_'+randomUUID()};
   const receipts=createPublicationReceiptClient(config,transport);
   assert.equal((await receipts.deliver(receipt)).commitAllowed,false);
+  const releaseRequest={schemaVersion:1,entryId:'pubentry_'+'8'.repeat(32),applicationId:'pubdesc_'+'9'.repeat(64),
+    target:{candidateHash:'c'.repeat(64),manifestHash:'d'.repeat(64),publisherUserId:'usr_test',publisherProfileId:'profile_test',
+      namespace:'author',skillId:'author/test',version:'1.0.1',uploadId:'upl_test',releaseAt:'2026-10-26T00:00:00.000Z',confirmVersionPublish:false}};
+  const releasePermit=await createPublicationDescriptionReleasePermitClient(config,transport).authorize(releaseRequest);
+  assert.deepEqual(releasePermit,{...releaseRequest,intentHash:releasePermit.intentHash,permitId:'pubdescpermit_'+'b'.repeat(32),
+    authorizedAt:'2026-10-26T00:00:02Z'});
+  assert.match(releasePermit.intentHash,/^[a-f0-9]{64}$/);
+  assert.ok(!JSON.stringify(releasePermit).includes(config.peerSecret));
   await command('lose-ack');
   await assert.rejects(receipts.deliver(receipt),{code:'skillhub.publication_receipt_unavailable'});
   assert.equal((await command('receipt')).calls,2,'fault injection drops an ACK only after actual handler acceptance');

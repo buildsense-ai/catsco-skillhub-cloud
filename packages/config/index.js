@@ -55,6 +55,12 @@ export function loadConfig(overrides = {}) {
       readEnabled: overrides.publicationDescriptionReadEnabled ?? readBool("SKILLHUB_PUBLICATION_DESCRIPTION_READ_ENABLED", false),
       validationEnabled: overrides.publicationDescriptionValidationEnabled ?? readBool("SKILLHUB_PUBLICATION_DESCRIPTION_VALIDATION_ENABLED", false),
       planEnabled: overrides.publicationDescriptionPlanEnabled ?? readBool("SKILLHUB_PUBLICATION_DESCRIPTION_PLAN_ENABLED", false),
+      releasePermit: {
+        enabled: overrides.publicationDescriptionReleasePermitEnabled ?? readBool("SKILLHUB_PUBLICATION_DESCRIPTION_RELEASE_PERMIT_ENABLED", false),
+        issuer: overrides.publicationDescriptionReleasePermitIssuer ?? process.env.SKILLHUB_PUBLICATION_DESCRIPTION_RELEASE_PERMIT_ISSUER ?? "",
+        audience: overrides.publicationDescriptionReleasePermitAudience ?? process.env.SKILLHUB_PUBLICATION_DESCRIPTION_RELEASE_PERMIT_AUDIENCE ?? "",
+        peerSecret: overrides.publicationDescriptionReleasePermitPeerSecret ?? process.env.SKILLHUB_PUBLICATION_DESCRIPTION_RELEASE_PERMIT_PEER_SECRET ?? ""
+      },
       issuer: overrides.publicationDescriptionDerivationIssuer ?? process.env.SKILLHUB_PUBLICATION_DESCRIPTION_DERIVATION_ISSUER ?? "",
       audience: overrides.publicationDescriptionDerivationAudience ?? process.env.SKILLHUB_PUBLICATION_DESCRIPTION_DERIVATION_AUDIENCE ?? "",
       peerSecret: overrides.publicationDescriptionDerivationPeerSecret ?? process.env.SKILLHUB_PUBLICATION_DESCRIPTION_DERIVATION_PEER_SECRET ?? "",

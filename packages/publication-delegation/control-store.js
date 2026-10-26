@@ -62,6 +62,11 @@ export function createDelegatedPublicationControlStore({ enabled = false, store,
         if (commits.rowCount || !['delegated_pending', 'cancelled'].includes(row.state)) {
           throw new PublicationControlError('conflict');
         }
+        if (cancel) {
+          const release = await c.query(`SELECT 1 FROM publication_description_release_authorizations
+            WHERE task_id=$1 AND state IN ('pending','permitted')`, [r.taskId]);
+          if (release.rowCount) throw new PublicationControlError('conflict');
+        }
         if (cancel && row.state !== 'cancelled') {
           const saved = (await c.query(`UPDATE publication_tasks SET state='cancelled',
             delegated_cancelled_at=clock_timestamp(),candidate=NULL,candidate_bytes=0,

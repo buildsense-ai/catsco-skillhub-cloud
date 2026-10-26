@@ -8,11 +8,13 @@ import { exactProposal, proposalDigest, PublicationDescriptionDerivationError } 
 import { readRaw, withAbort } from './publish-validation.js';
 import { readPublicationDescriptionCopy, validatePublicationDescriptionCopy } from '../../packages/publication-description-derivations/read.js';
 import { createPublicationDescriptionReleasePlanner } from '../../packages/publication-description-derivations/release-plan.js';
+import { createPublicationDescriptionReleasePermitClient } from '../../packages/publication-description-derivations/release-permit-client.js';
 
 export const PUBLICATION_DESCRIPTION_DERIVATION_PATH = '/api/skills/publication-descriptions/internal/derive';
 export const PUBLICATION_DESCRIPTION_READ_PATH = '/api/skills/publication-descriptions/internal/read';
 export const PUBLICATION_DESCRIPTION_VALIDATE_PATH = '/api/skills/publication-descriptions/internal/validate';
 export const PUBLICATION_DESCRIPTION_PLAN_PATH = '/api/skills/publication-descriptions/internal/plan';
+export const PUBLICATION_DESCRIPTION_AUTHORIZE_PATH = '/api/skills/publication-descriptions/internal/authorize';
 const exact = (value, keys) => value && typeof value === 'object' && !Array.isArray(value)
   && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
 const hash = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
@@ -37,7 +39,7 @@ export function createPublicationDescriptionDerivationHandler(config, store, dep
   const enabled = settings.enabled === true;
   const limiter = new RateLimiter({ limit: 60, windowMs: 60000, maxBuckets: 1 });
   const budget = dependencies.timeoutMs ?? settings.timeoutMs ?? 30000;
-  let secret, hosts, proxies, planner;
+  let secret, hosts, proxies, planner, releaseAuthorizer, releasePermitConfigurationError = false;
   try {
     if (enabled) {
       if (!Number.isInteger(budget) || budget < 1000 || budget > 60000 ||
@@ -52,15 +54,26 @@ export function createPublicationDescriptionDerivationHandler(config, store, dep
         issuer: settings.issuer, audience: settings.audience });
     }
   } catch { secret = null; }
+  if (enabled && settings.releasePermit?.enabled === true) {
+    try {
+      if (settings.planEnabled !== true) throw Error();
+      const peer = dependencies.releasePermitClient
+        ?? createPublicationDescriptionReleasePermitClient({ ...settings.releasePermit, enabled: true });
+      releaseAuthorizer = createPublicationDescriptionReleasePlanner({ enabled: true, releasePermitEnabled: true, config, store,
+        issuer: settings.issuer, audience: settings.audience, permitClient: peer });
+    } catch { releasePermitConfigurationError = true; }
+  }
   let active = 0;
   return async (req, res) => {
     if (!req.url?.startsWith(PUBLICATION_DESCRIPTION_DERIVATION_PATH)
       && !req.url?.startsWith(PUBLICATION_DESCRIPTION_READ_PATH)
       && !req.url?.startsWith(PUBLICATION_DESCRIPTION_VALIDATE_PATH)
-      && !req.url?.startsWith(PUBLICATION_DESCRIPTION_PLAN_PATH)) return false;
+      && !req.url?.startsWith(PUBLICATION_DESCRIPTION_PLAN_PATH)
+      && !req.url?.startsWith(PUBLICATION_DESCRIPTION_AUTHORIZE_PATH)) return false;
     const reading = req.url === PUBLICATION_DESCRIPTION_READ_PATH;
     const validating = req.url === PUBLICATION_DESCRIPTION_VALIDATE_PATH;
     const planning = req.url === PUBLICATION_DESCRIPTION_PLAN_PATH;
+    const authorizing = req.url === PUBLICATION_DESCRIPTION_AUTHORIZE_PATH;
     const reply = (status, body) => {
       if (res.destroyed || res.writableEnded) return;
       if (!req.complete) res.setHeader('Connection', 'close');
@@ -77,11 +90,13 @@ export function createPublicationDescriptionDerivationHandler(config, store, dep
       code: `skillhub.publication_description_derivation_${kind}`,
       message: 'Description derivation could not be completed.'
     } });
-    if (!enabled || (req.url !== PUBLICATION_DESCRIPTION_DERIVATION_PATH && !reading && !validating && !planning)
+    if (!enabled || (req.url !== PUBLICATION_DESCRIPTION_DERIVATION_PATH && !reading && !validating && !planning && !authorizing)
       || (reading && settings.readEnabled !== true)
       || (validating && settings.validationEnabled !== true)
-      || (planning && settings.planEnabled !== true)) { fail(404, 'disabled'); return true; }
+      || (planning && settings.planEnabled !== true)
+      || (authorizing && settings.releasePermit?.enabled !== true)) { fail(404, 'disabled'); return true; }
     if (!secret) { fail(503, 'configuration'); return true; }
+    if (authorizing && (!releaseAuthorizer || releasePermitConfigurationError)) { fail(503, 'configuration'); return true; }
     if (req.method !== 'POST') { fail(405, 'invalid'); return true; }
     try {
       const proxy = proxies.has(req.socket.remoteAddress) && header(req, 'x-forwarded-proto') === 'https';
@@ -112,6 +127,7 @@ export function createPublicationDescriptionDerivationHandler(config, store, dep
         if (!planner) throw new PublicationDescriptionDerivationError('configuration', 503);
         return planner.plan(input, { signal: controller.signal });
       }
+      if (authorizing) return releaseAuthorizer.authorize(input, { signal: controller.signal });
       if (reading || validating) {
         const taskSettings = publicationTaskSettings(config);
         if (!taskSettings) throw new PublicationDescriptionDerivationError('configuration', 503);

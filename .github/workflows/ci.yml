@@ -80,8 +80,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: buildsense-ai/cats-company
-          # PR659 merge: authenticated introspection and historical receipts.
-          ref: a82f91f0e3ca6d3f9480b7682b1a7ef567fbc5ae
+          # PR759 merge: independent derived-description release permit peer.
+          ref: 4143c9d107452e49119587926dcf71ec4a64e172
           path: cats-company
       - uses: actions/setup-node@v4
         with:
@@ -100,7 +100,7 @@ jobs:
         working-directory: skillhub
         env:
           CATSCO_CONTRACT_ROOT: ../cats-company
-          CATSCO_CONTRACT_REVISION: a82f91f0e3ca6d3f9480b7682b1a7ef567fbc5ae
+          CATSCO_CONTRACT_REVISION: 4143c9d107452e49119587926dcf71ec4a64e172
         run: |
           npm run db:migrate
           npm run test:publication-peer-contract
