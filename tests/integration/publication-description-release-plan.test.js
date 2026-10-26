@@ -34,7 +34,7 @@ async function fixture(t, { beforeAdmissionMigration = false } = {}) {
   await admin.query(`SET search_path TO "${schema}"`);
   const folder = new URL('../../infra/migrations/', import.meta.url);
   for (const name of (await fs.readdir(folder)).filter(f => /^\d+_.+\.sql$/.test(f)).sort()) {
-    if (beforeAdmissionMigration && name.startsWith('023_')) continue;
+    if (beforeAdmissionMigration && (name.startsWith('023_') || name.startsWith('024_'))) continue;
     await admin.query(await fs.readFile(new URL(name, folder), 'utf8'));
   }
   const url = new URL(databaseUrl); url.searchParams.set('options', '-c search_path=' + schema);

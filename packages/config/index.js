@@ -55,6 +55,7 @@ export function loadConfig(overrides = {}) {
       readEnabled: overrides.publicationDescriptionReadEnabled ?? readBool("SKILLHUB_PUBLICATION_DESCRIPTION_READ_ENABLED", false),
       validationEnabled: overrides.publicationDescriptionValidationEnabled ?? readBool("SKILLHUB_PUBLICATION_DESCRIPTION_VALIDATION_ENABLED", false),
       planEnabled: overrides.publicationDescriptionPlanEnabled ?? readBool("SKILLHUB_PUBLICATION_DESCRIPTION_PLAN_ENABLED", false),
+      commitAdmissionEnabled: overrides.publicationDescriptionCommitAdmissionEnabled ?? readBool("SKILLHUB_PUBLICATION_DESCRIPTION_COMMIT_ADMISSION_ENABLED", false),
       releasePermit: {
         enabled: overrides.publicationDescriptionReleasePermitEnabled ?? readBool("SKILLHUB_PUBLICATION_DESCRIPTION_RELEASE_PERMIT_ENABLED", false),
         issuer: overrides.publicationDescriptionReleasePermitIssuer ?? process.env.SKILLHUB_PUBLICATION_DESCRIPTION_RELEASE_PERMIT_ISSUER ?? "",

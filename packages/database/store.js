@@ -5,6 +5,7 @@ import { createPresentationStore, ensurePresentationSchema } from "../presentati
 import { createPresentationAssetStore } from "../presentations/asset-store.js";
 import { createPublicationTaskStore } from "../publication-tasks/store.js";
 import { createPublicationDescriptionDerivationStore } from "../publication-description-derivations/store.js";
+import { createPublicationDescriptionCommitAdmission } from "../publication-description-derivations/commit-admission.js";
 import { requireCatsCoIssuer, assertCatsCoIssuerMatches } from '../publication-delegation/identity.js';
 import { createPublicationCommitStore, lockPublicationCompletion, finishPublicationCompletion } from '../publication-tasks/commit-store.js';
 import { createPublicVersionStore, adoptPublicVersion, comparePublicVersions } from "../publication-tasks/versions.js";
@@ -144,6 +145,7 @@ export function createStore(config) {
     ...createPresentationAssetStore({ query, tx }),
     ...createPublicationTaskStore({ query, tx }),
     ...createPublicationDescriptionDerivationStore({ query, tx }),
+    ...createPublicationDescriptionCommitAdmission({ enabled: config.publicationDescriptionDerivation?.commitAdmissionEnabled === true, store: { query, tx } }),
     ...createPublicationCommitStore({ query, tx, config }),
     ...createPublicVersionStore({ tx }),
     async listCatalogueVersions({ viewerUserId = null, viewerCatsCoUid = null, includeAll = false } = {}) {
