@@ -64,15 +64,16 @@ export function createDelegatedPublicationControlStore({ enabled = false, store,
         }
         if (cancel) {
           // Keep the older cancellation migration usable while the optional
-          // derived-description release fence is not installed yet.
-          let release;
-          try {
-            release = await c.query(`SELECT 1 FROM publication_description_release_authorizations
-              WHERE task_id=$1 AND state IN ('pending','permitted')`, [r.taskId]);
-          } catch (error) {
-            if (error?.code !== '42P01') throw error;
-            release = { rowCount: 0 };
-          }
+          // derived-description release fence is not installed yet. Use
+          // to_regclass instead of probing a missing relation directly: a
+          // PostgreSQL relation error aborts the surrounding transaction.
+          const releaseTable = (await c.query(
+            `SELECT to_regclass('publication_description_release_authorizations') AS table_name`
+          )).rows[0]?.table_name;
+          const release = releaseTable
+            ? await c.query(`SELECT 1 FROM publication_description_release_authorizations
+                WHERE task_id=$1 AND state IN ('pending','permitted')`, [r.taskId])
+            : { rowCount: 0 };
           if (release.rowCount) throw new PublicationControlError('conflict');
         }
         if (cancel && row.state !== 'cancelled') {
