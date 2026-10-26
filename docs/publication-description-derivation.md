@@ -202,3 +202,15 @@ authorization is still NOT a Cloud commit permit: no commit row, job, worker,
 upload, public package, task completion or original-candidate mutation is
 created. A later separately reviewed step must consume this exact derived
 target, recheck authority/source, and atomically connect permit to publication.
+
+After the permit has been validated and retained, Cloud records one immutable
+`publication_description_release_admissions` row bound to the exact plan, task,
+and permit proof. This is an isolated durable admission marker for the future
+derived-candidate lane; it is deliberately not `publication_commits`, does not
+change task state, and does not enqueue a job or start a worker. Retries recover
+the same row. Direct updates/deletes and legacy original-candidate admission
+remain rejected. The row is included in task storage quota. Cancellation remains
+fenced while permit resolution is pending or permitted; a later worker/terminal
+protocol must define the safe release of this fence before cancellation can be
+allowed. This PR adds no public API or production wiring, and all switches stay
+default-off.

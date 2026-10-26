@@ -239,6 +239,10 @@ test('PostgreSQL derived release permit creates a durable cancellation fence bef
   assert.deepEqual(await consumer.authorize(authorizeInput), { ...recovered, replayed: true });
   assert.equal(calls, 2);
   assert.equal((await store.query('SELECT state,proof FROM publication_description_release_authorizations WHERE application_id=$1', [plan.applicationId])).rows[0].state, 'permitted');
+  assert.equal(await count('publication_description_release_admissions'), 1);
+  const admission = (await store.query('SELECT * FROM publication_description_release_admissions WHERE application_id=$1', [plan.applicationId])).rows[0];
+  assert.equal(admission.task_id, f.receipt.taskId); assert.equal(admission.permit_id, recovered.permit.permitId);
+  assert.deepEqual(admission.proof, recovered.permit);
   assert.equal(await count('publication_commits'), 0);
   assert.equal(await count('publication_delegated_permits'), 0);
   await assert.rejects(control.cancel(f.receipt), { code: 'skillhub.publication_control_conflict' });
@@ -247,6 +251,10 @@ test('PostgreSQL derived release permit creates a durable cancellation fence bef
   }
   await assert.rejects(store.query(`UPDATE publication_tasks SET state='cancelled',delegated_cancelled_at=now(),candidate=NULL,candidate_bytes=0 WHERE id=$1`,
     [f.receipt.taskId]), { code: '23514' });
+  for (const sql of ['UPDATE publication_description_release_admissions SET proof=proof',
+    'DELETE FROM publication_description_release_admissions']) {
+    await assert.rejects(store.query(sql + ' WHERE application_id=$1', [plan.applicationId]), { code: '23514' });
+  }
 });
 
 for (const kind of ['denied', 'cancelled', 'conflict']) test(`PostgreSQL terminal ${kind} releases the Cloud cancellation fence without publishing`, pgOnly, async t => {
@@ -399,4 +407,5 @@ test('description authorize route is independently gated and uses only stored pl
   assert.equal(await count('publication_commits'), 0);
   assert.equal(await count('publication_delegated_permits'), 0);
   assert.equal(await count('publication_description_release_authorizations'), 1);
+  assert.equal(await count('publication_description_release_admissions'), 1);
 });

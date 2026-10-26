@@ -112,10 +112,23 @@ export function createPublicationDescriptionReleasePlanner({ enabled = false, re
     await c.query("SELECT pg_advisory_xact_lock(hashtext('skillhub-publication-task-intake')::bigint)");
     await c.query(`UPDATE publication_tasks SET commit_bytes=
       COALESCE((SELECT octet_length(to_jsonb(p)::text) FROM publication_description_release_plans p WHERE p.task_id=$1),0)
+      +COALESCE((SELECT octet_length(to_jsonb(a)::text) FROM publication_description_release_admissions a WHERE a.task_id=$1),0)
       +16384 WHERE id=$1`, [id]);
     const usage = (await c.query(`SELECT COALESCE(sum(candidate_bytes+commit_bytes),0)::bigint AS total,
       COALESCE(sum(candidate_bytes+commit_bytes) FILTER (WHERE owner_user_id=$1),0)::bigint AS owned FROM publication_tasks`, [owner])).rows[0];
     if (BigInt(usage.total) > BigInt(settings.maxStoredBytes) || BigInt(usage.owned) > BigInt(settings.maxStoredBytesPerOwner)) fail('storage_limit', 429);
+  };
+  const admitRelease = async (c, row, input) => {
+    const proof = row.authorization_proof;
+    if (!validDescriptionReleasePermit(proof, { schemaVersion: 1, entryId: input.publicationReceipt.entryRequestId,
+      applicationId: input.applicationId, target: row.target })) fail('conflict');
+    await c.query(`INSERT INTO publication_description_release_admissions(application_id,task_id,permit_id,proof)
+      VALUES($1,$2,$3,$4) ON CONFLICT(application_id) DO NOTHING`,
+    [input.applicationId, row.id, proof.permitId, JSON.stringify(proof)]);
+    const admitted = (await c.query(`SELECT task_id,permit_id,proof FROM publication_description_release_admissions
+      WHERE application_id=$1`, [input.applicationId])).rows[0];
+    if (!admitted || admitted.task_id !== row.id || admitted.permit_id !== proof.permitId || !equal(admitted.proof, proof)) fail('conflict');
+    await chargeAuthorization(c, row.id, row.owner_user_id);
   };
   const authorizationFailure = error => {
     const kind = error instanceof PublicationDescriptionReleasePermitError
@@ -212,6 +225,9 @@ export function createPublicationDescriptionReleasePlanner({ enabled = false, re
           if (!validDescriptionReleasePermit(current.authorization_proof, {
             schemaVersion: 1, entryId: input.publicationReceipt.entryRequestId, applicationId: input.applicationId, target: current.target
           })) fail('conflict');
+          // A recovered/previously stored permit is admitted to the isolated
+          // derived-release lane exactly once. This is not a publication commit.
+          await admitRelease(c, current, input);
           return current;
         }
         if (current.authorization_state === 'pending') {
@@ -258,6 +274,7 @@ export function createPublicationDescriptionReleasePlanner({ enabled = false, re
           return { ...current, authorization_state: 'pending', authorization_attempt_token: attemptToken };
         });
         if (row.authorization_state === 'permitted') {
+          await admitRelease(c, row, input);
           return { schemaVersion: 1, applicationId: input.applicationId, permit: structuredClone(row.authorization_proof), replayed: true };
         }
         if (row.authorization_state === 'denied') fail(row.terminal_code ?? 'conflict', row.terminal_code === 'denied' ? 403 : 409);
@@ -299,7 +316,7 @@ export function createPublicationDescriptionReleasePlanner({ enabled = false, re
         [input.applicationId, JSON.stringify(proof), attemptToken]);
         if (saved.rowCount !== 1) fail('conflict');
         stored = true;
-        await chargeAuthorization(c, current.id, current.owner_user_id);
+        await admitRelease(c, { ...current, authorization_proof: proof }, input);
         return { ...current, authorization_state: 'permitted', authorization_proof: proof };
       });
       return { schemaVersion: 1, applicationId: input.applicationId, permit: structuredClone(row.authorization_proof), replayed: !stored };
