@@ -23,11 +23,20 @@ export function createPublicationDescriptionReleaseWorker({ enabled = false, con
   });
   return Object.freeze({
     async once({ signal } = {}) {
-      if (active) return null;
+      if (active || signal?.aborted) return null;
       active = true;
       const token = `pubdesclease_${randomUUID()}`;
       try {
         const task = await tx(async client => {
+          // A crash on the final attempt must become terminal after its lease
+          // expires instead of leaving the row stuck in publishing forever.
+          await client.query(`WITH exhausted AS (
+            SELECT application_id FROM publication_description_release_commits
+            WHERE state='publishing' AND attempts>=3 AND lease_until<=clock_timestamp()
+            ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1)
+            UPDATE publication_description_release_commits c
+            SET state='publish_failed',lease_token=NULL,lease_until=NULL,error_code='unavailable'
+            FROM exhausted e WHERE c.application_id=e.application_id`);
           const row = (await client.query(`SELECT c.application_id,c.task_id,c.permit_id,c.target,c.manifest,c.identity,
               c.state,c.attempts,c.lease_token,c.lease_until,d.derived_raw_json,d.derived_request_hash,
               d.derived_candidate_hash
@@ -39,24 +48,39 @@ export function createPublicationDescriptionReleaseWorker({ enabled = false, con
           if (!row) return null;
           const claimed = await client.query(`UPDATE publication_description_release_commits
             SET state='publishing',attempts=attempts+1,lease_token=$2,
-              lease_until=clock_timestamp()+interval '30 seconds',error_code=NULL
+              lease_until=clock_timestamp()+($3::bigint*interval '1 millisecond'),error_code=NULL
             WHERE application_id=$1 AND state IN ('queued','publishing')
-              AND attempts<3 RETURNING *`, [row.application_id, token]);
-          return claimed.rows[0] ?? null;
+              AND attempts<3 RETURNING *`, [row.application_id, token, settings.leaseMs]);
+          if (!claimed.rows[0]) return null;
+          // The claim UPDATE only returns columns from the commit table. Carry
+          // the immutable retained bytes/hashes from the joined derivation
+          // row through the lease boundary so preparation validates the exact
+          // bytes that were admitted, without widening the commit table.
+          return { ...claimed.rows[0],
+            derived_raw_json: row.derived_raw_json,
+            derived_request_hash: row.derived_request_hash,
+            derived_candidate_hash: row.derived_candidate_hash };
         });
         if (!task) return null;
         if (signal?.aborted) { await failClaim(task, 'unavailable'); return null; }
         if (!Buffer.isBuffer(task.derived_raw_json) || hash(task.derived_raw_json) !== task.derived_request_hash
           || task.target.candidateHash !== task.derived_candidate_hash) { await failClaim(task, 'copy_changed'); return null; }
-        const prepared = await runPreparePublication({ rawJson: task.derived_raw_json,
-          requestHash: task.derived_request_hash, candidateHash: task.derived_candidate_hash,
-          manifest: task.manifest, identity: task.identity }, settings.limits,
-        { timeoutMs: settings.execution.workerTimeoutMs, memoryMb: settings.execution.workerMemoryMb, signal });
+        let prepared;
+        try {
+          prepared = await runPreparePublication({ rawJson: task.derived_raw_json,
+            requestHash: task.derived_request_hash, candidateHash: task.derived_candidate_hash,
+            manifest: task.manifest, identity: task.identity }, settings.limits,
+          { timeoutMs: settings.execution.workerTimeoutMs, memoryMb: settings.execution.workerMemoryMb, signal });
+        } catch {
+          await failClaim(task, 'unavailable');
+          return null;
+        }
         if (prepared.status !== 200) { await failClaim(task, prepared.status >= 500 ? 'unavailable' : 'rejected'); return null; }
         const completed = await tx(async client => {
           const updated = await client.query(`UPDATE publication_description_release_commits
             SET state='committing',receipt=$2,lease_until=NULL,lease_token=NULL,error_code=NULL
-            WHERE application_id=$1 AND state='publishing' AND lease_token=$3 RETURNING application_id,task_id,permit_id,state,target`,
+            WHERE application_id=$1 AND state='publishing' AND lease_token=$3
+              AND lease_until>clock_timestamp() RETURNING application_id,task_id,permit_id,state,target`,
           [task.application_id, JSON.stringify(prepared.prepared.receipt), token]);
           return updated.rows[0] ?? null;
         });
@@ -69,6 +93,7 @@ export function createPublicationDescriptionReleaseWorker({ enabled = false, con
     await tx(client => client.query(`UPDATE publication_description_release_commits
       SET state=CASE WHEN attempts<3 THEN 'queued' ELSE 'publish_failed' END,
         lease_token=NULL,lease_until=NULL,error_code=$2
-      WHERE application_id=$1 AND state='publishing' AND lease_token=$3`, [task.application_id, errorCode, task.lease_token]));
+      WHERE application_id=$1 AND state='publishing' AND lease_token=$3
+        AND lease_until>clock_timestamp()`, [task.application_id, errorCode, task.lease_token]));
   }
 }
