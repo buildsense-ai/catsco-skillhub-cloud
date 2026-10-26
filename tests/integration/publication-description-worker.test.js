@@ -43,6 +43,7 @@ test('derived release worker carries retained bytes across the commit-table clai
     query: async () => ({ rows: [] }),
     tx: async fn => fn({ query: async (sql) => {
       if (sql.startsWith('SET LOCAL')) return { rows: [] };
+      if (sql.startsWith('WITH exhausted')) return { rows: [] };
       if (sql.includes('SELECT c.application_id')) return { rows: [{ ...commitRow,
         state: 'queued', attempts: 0, lease_token: null, lease_until: null,
         derived_raw_json: rawBytes, derived_request_hash: sha(rawBytes),

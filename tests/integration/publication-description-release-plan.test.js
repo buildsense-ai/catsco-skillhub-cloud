@@ -14,6 +14,8 @@ import { createPublicationDescriptionDerivationHandler, PUBLICATION_DESCRIPTION_
   PUBLICATION_DESCRIPTION_AUTHORIZE_PATH } from '../../apps/api/publication-description-derivation.js';
 import { createDelegatedPublicationControlStore } from '../../packages/publication-delegation/control-store.js';
 import { PublicationDescriptionReleasePermitError } from '../../packages/publication-description-derivations/release-permit-client.js';
+import { createPublicationDescriptionCommitAdmission } from '../../packages/publication-description-derivations/commit-admission.js';
+import { createPublicationDescriptionReleaseWorker } from '../../packages/publication-description-derivations/worker.js';
 
 const databaseUrl = process.env.SKILLHUB_TEST_DATABASE_URL, pgOnly = { skip: !databaseUrl };
 const issuer = 'https://commit.invalid', audience = 'https://cloud.invalid';
@@ -58,6 +60,84 @@ async function fixture(t, { beforeAdmissionMigration = false } = {}) {
   const count = async table => Number((await store.query(`SELECT count(*) AS count FROM ${table}`)).rows[0].count);
   return { config, store, f, input, planner, count };
 }
+
+async function workerFixture(t) {
+  const fixtureResult = await fixture(t);
+  const { config, store, input, planner } = fixtureResult;
+  const plan = await planner().plan(input);
+  const permitClient = { async authorize(request) { return permitFor(request); } };
+  const authorized = await planner({ releasePermitEnabled: true, permitClient }).authorize({
+    schemaVersion: 1, applicationId: plan.applicationId, publicationReceipt: plan.publicationReceipt });
+  const admitted = await createPublicationDescriptionCommitAdmission({ enabled: true, store }).admit({
+    schemaVersion: 1, applicationId: plan.applicationId, permitId: authorized.permit.permitId });
+  assert.equal(admitted.state, 'queued');
+  const worker = (extra = {}) => createPublicationDescriptionReleaseWorker({ enabled: true, config, store, ...extra });
+  const row = async () => (await store.query('SELECT * FROM publication_description_release_commits WHERE application_id=$1',
+    [plan.applicationId])).rows[0];
+  return { ...fixtureResult, plan, admitted, worker, row };
+}
+
+test('PostgreSQL derived worker prepares exact retained bytes once across independent workers', pgOnly, async t => {
+  const { store, f, plan, input, worker, row, count } = await workerFixture(t);
+  const results = await Promise.all([worker().once(), worker().once()]);
+  assert.equal(results.filter(Boolean).length, 1);
+  const saved = await row();
+  assert.equal(saved.state, 'committing');
+  assert.equal(saved.attempts, 1);
+  assert.equal(saved.lease_token, null);
+  assert.equal(saved.lease_until, null);
+  assert.equal(saved.receipt.candidateHash, input.copy.expectedReceipt.derivedCandidateHash);
+  assert.equal(saved.receipt.requestHash, input.copy.expectedReceipt.derivedRequestHash);
+  assert.match(saved.receipt.materialHash, /^[a-f0-9]{64}$/);
+  assert.deepEqual(saved.receipt.identity, saved.identity);
+  assert.equal(saved.publication_result, null);
+  assert.equal(await worker().once(), null);
+  assert.equal(await count('publication_commits'), 0);
+  assert.equal(await count('jobs'), 0);
+  assert.equal(await count('skill_versions'), 0);
+  const original = (await store.query('SELECT candidate,state,attempts FROM publication_tasks WHERE id=$1', [f.receipt.taskId])).rows[0];
+  assert.deepEqual(original.candidate, f.input.rawBody);
+  assert.equal(original.state, 'delegated_pending');
+  assert.equal(original.attempts, 0);
+});
+
+test('PostgreSQL derived worker fences an expired completion and reclaims the same target', pgOnly, async t => {
+  const { store, plan, worker, row } = await workerFixture(t);
+  let expire = true;
+  const wrapped = { ...store, tx: fn => store.tx(client => fn({ query: async (sql, args) => {
+    if (expire && sql.includes("SET state='committing'")) {
+      expire = false;
+      await client.query("UPDATE publication_description_release_commits SET lease_until=clock_timestamp()-interval '1 second' WHERE application_id=$1", [plan.applicationId]);
+    }
+    return client.query(sql, args);
+  } })) };
+  assert.equal(await worker({ store: wrapped }).once(), null);
+  const expired = await row();
+  assert.equal(expired.state, 'publishing');
+  assert.equal(expired.receipt, null);
+  const recovered = await worker().once();
+  assert.equal(recovered.state, 'committing');
+  assert.deepEqual(recovered.target, plan.target);
+  assert.equal((await row()).attempts, 2);
+});
+
+test('PostgreSQL derived worker exhausts a crashed third attempt without creating publication work', pgOnly, async t => {
+  const { store, plan, worker, row, count } = await workerFixture(t);
+  await store.query(`UPDATE publication_description_release_commits
+    SET state='publishing',attempts=3,lease_token='crashed-third-attempt',lease_until=clock_timestamp()-interval '1 second'
+    WHERE application_id=$1`, [plan.applicationId]);
+  assert.equal(await worker().once(), null);
+  const exhausted = await row();
+  assert.equal(exhausted.state, 'publish_failed');
+  assert.equal(exhausted.attempts, 3);
+  assert.equal(exhausted.error_code, 'unavailable');
+  assert.equal(exhausted.lease_token, null);
+  assert.equal(exhausted.lease_until, null);
+  assert.equal(exhausted.receipt, null);
+  assert.equal(await worker().once(), null);
+  assert.equal(await count('publication_commits'), 0);
+  assert.equal(await count('jobs'), 0);
+});
 
 test('description release planner is default-off and rejects malformed/cross-candidate references', async () => {
   for (const enabled of [undefined, false, 'true']) {
