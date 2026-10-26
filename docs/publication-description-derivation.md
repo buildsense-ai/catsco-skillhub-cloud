@@ -219,3 +219,19 @@ fenced while permit resolution is pending or permitted; a later worker/terminal
 protocol must define the safe release of this fence before cancellation can be
 allowed. This PR adds no public API or production wiring, and all switches stay
 default-off.
+
+## Isolated derived commit admission
+
+The next boundary is `publication_description_release_commits` (migration 024).
+It is a durable, default-off queue record for a permit that has already been
+retained in `publication_description_release_admissions`. The row copies only
+the exact retained target, manifest and identity; its trigger rechecks the
+application, derived candidate hash, admission proof and absence of any legacy
+`publication_commits` or original delegated plan. It can never be created from
+the original upload receipt alone and cannot be deleted or rewritten into an
+account/legacy commit.
+
+This slice is admission only. It does not enqueue a public job, call a model,
+write a package, or run a worker. A later worker slice must claim these rows
+with a lease, read the immutable retained derived bytes, and publish through a
+separate completion path with the same target and permit fences.
