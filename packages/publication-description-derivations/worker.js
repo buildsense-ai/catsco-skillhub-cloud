@@ -42,7 +42,15 @@ export function createPublicationDescriptionReleaseWorker({ enabled = false, con
               lease_until=clock_timestamp()+interval '30 seconds',error_code=NULL
             WHERE application_id=$1 AND state IN ('queued','publishing')
               AND attempts<3 RETURNING *`, [row.application_id, token]);
-          return claimed.rows[0] ?? null;
+          if (!claimed.rows[0]) return null;
+          // The claim UPDATE only returns columns from the commit table. Carry
+          // the immutable retained bytes/hashes from the joined derivation
+          // row through the lease boundary so preparation validates the exact
+          // bytes that were admitted, without widening the commit table.
+          return { ...claimed.rows[0],
+            derived_raw_json: row.derived_raw_json,
+            derived_request_hash: row.derived_request_hash,
+            derived_candidate_hash: row.derived_candidate_hash };
         });
         if (!task) return null;
         if (signal?.aborted) { await failClaim(task, 'unavailable'); return null; }
