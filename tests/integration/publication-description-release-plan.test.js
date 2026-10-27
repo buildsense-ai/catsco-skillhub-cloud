@@ -203,7 +203,7 @@ test('PostgreSQL concurrent derived commit admission recovers one exact durable 
   assert.equal(saved.state, 'queued');
 });
 
-test('PostgreSQL derived commit admission fences cancellation and admits the exact permit once', pgOnly, async t => {
+test('PostgreSQL derived commit admission rejects altered permits and fences cancellation', pgOnly, async t => {
   const { config, store, f, input, planner, count } = await fixture(t);
   const plan = await planner().plan(input);
   const permitClient = { async authorize(request) { return permitFor(request); } };
@@ -216,14 +216,13 @@ test('PostgreSQL derived commit admission fences cancellation and admits the exa
     permitId: 'pubdescpermit_' + 'f'.repeat(32) }), { code: 'skillhub.publication_description_release_commit_conflict' });
   await assert.rejects(store.query(`UPDATE publication_tasks SET state='cancelled',delegated_cancelled_at=clock_timestamp(),
     candidate=NULL,candidate_bytes=0 WHERE id=$1`, [f.receipt.taskId]), { code: '23514' });
-  await assert.rejects(admit.admit({ schemaVersion: 1, applicationId: plan.applicationId,
-    permitId: authorized.permit.permitId }), { code: 'skillhub.publication_description_release_commit_conflict' });
   const retained = (await store.query(`SELECT task_id,target,manifest,identity FROM publication_description_release_plans
     WHERE application_id=$1`, [plan.applicationId])).rows[0];
   await assert.rejects(store.query(`INSERT INTO publication_description_release_commits
     (application_id,task_id,permit_id,target,manifest,identity,state)
     VALUES($1,$2,$3,$4,$5,$6,'queued')`, [plan.applicationId, retained.task_id, authorized.permit.permitId,
-    JSON.stringify(retained.target), JSON.stringify(retained.manifest), JSON.stringify(retained.identity)]), { code: '23514' });
+    JSON.stringify(retained.target), JSON.stringify({ ...retained.manifest, altered: true }),
+    JSON.stringify(retained.identity)]), { code: '23514' });
   const request = { schemaVersion: 1, applicationId: plan.applicationId, permitId: authorized.permit.permitId };
   const admitted = await admit.admit(request);
   assert.equal(admitted.replayed, false);
@@ -231,6 +230,9 @@ test('PostgreSQL derived commit admission fences cancellation and admits the exa
   assert.deepEqual(await admit.admit(request), { ...admitted, replayed: true });
   assert.equal(await count('publication_description_release_commits'), 1);
   assert.equal(await count('publication_delegated_permits'), 0);
+  await assert.rejects(admit.admit({ ...request, permitId: 'pubdescpermit_' + 'f'.repeat(32) }),
+    { code: 'skillhub.publication_description_release_commit_conflict' });
+  assert.equal(await count('publication_description_release_commits'), 1);
   assert.equal(await count('publication_commits'), 0);
 });
 
