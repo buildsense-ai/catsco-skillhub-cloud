@@ -9,12 +9,14 @@ import { readRaw, withAbort } from './publish-validation.js';
 import { readPublicationDescriptionCopy, validatePublicationDescriptionCopy } from '../../packages/publication-description-derivations/read.js';
 import { createPublicationDescriptionReleasePlanner } from '../../packages/publication-description-derivations/release-plan.js';
 import { createPublicationDescriptionReleasePermitClient } from '../../packages/publication-description-derivations/release-permit-client.js';
+import { validRequest as validCommitAdmissionRequest, PublicationDescriptionCommitAdmissionError } from '../../packages/publication-description-derivations/commit-admission.js';
 
 export const PUBLICATION_DESCRIPTION_DERIVATION_PATH = '/api/skills/publication-descriptions/internal/derive';
 export const PUBLICATION_DESCRIPTION_READ_PATH = '/api/skills/publication-descriptions/internal/read';
 export const PUBLICATION_DESCRIPTION_VALIDATE_PATH = '/api/skills/publication-descriptions/internal/validate';
 export const PUBLICATION_DESCRIPTION_PLAN_PATH = '/api/skills/publication-descriptions/internal/plan';
 export const PUBLICATION_DESCRIPTION_AUTHORIZE_PATH = '/api/skills/publication-descriptions/internal/authorize';
+export const PUBLICATION_DESCRIPTION_COMMIT_PATH = '/api/skills/publication-descriptions/internal/commit';
 const exact = (value, keys) => value && typeof value === 'object' && !Array.isArray(value)
   && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
 const hash = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
@@ -69,11 +71,13 @@ export function createPublicationDescriptionDerivationHandler(config, store, dep
       && !req.url?.startsWith(PUBLICATION_DESCRIPTION_READ_PATH)
       && !req.url?.startsWith(PUBLICATION_DESCRIPTION_VALIDATE_PATH)
       && !req.url?.startsWith(PUBLICATION_DESCRIPTION_PLAN_PATH)
-      && !req.url?.startsWith(PUBLICATION_DESCRIPTION_AUTHORIZE_PATH)) return false;
+      && !req.url?.startsWith(PUBLICATION_DESCRIPTION_AUTHORIZE_PATH)
+      && !req.url?.startsWith(PUBLICATION_DESCRIPTION_COMMIT_PATH)) return false;
     const reading = req.url === PUBLICATION_DESCRIPTION_READ_PATH;
     const validating = req.url === PUBLICATION_DESCRIPTION_VALIDATE_PATH;
     const planning = req.url === PUBLICATION_DESCRIPTION_PLAN_PATH;
     const authorizing = req.url === PUBLICATION_DESCRIPTION_AUTHORIZE_PATH;
+    const committing = req.url === PUBLICATION_DESCRIPTION_COMMIT_PATH;
     const reply = (status, body) => {
       if (res.destroyed || res.writableEnded) return;
       if (!req.complete) res.setHeader('Connection', 'close');
@@ -90,11 +94,12 @@ export function createPublicationDescriptionDerivationHandler(config, store, dep
       code: `skillhub.publication_description_derivation_${kind}`,
       message: 'Description derivation could not be completed.'
     } });
-    if (!enabled || (req.url !== PUBLICATION_DESCRIPTION_DERIVATION_PATH && !reading && !validating && !planning && !authorizing)
+    if (!enabled || (req.url !== PUBLICATION_DESCRIPTION_DERIVATION_PATH && !reading && !validating && !planning && !authorizing && !committing)
       || (reading && settings.readEnabled !== true)
       || (validating && settings.validationEnabled !== true)
       || (planning && settings.planEnabled !== true)
-      || (authorizing && settings.releasePermit?.enabled !== true)) { fail(404, 'disabled'); return true; }
+      || (authorizing && settings.releasePermit?.enabled !== true)
+      || (committing && settings.commitAdmissionEnabled !== true)) { fail(404, 'disabled'); return true; }
     if (!secret) { fail(503, 'configuration'); return true; }
     if (authorizing && (!releaseAuthorizer || releasePermitConfigurationError)) { fail(503, 'configuration'); return true; }
     if (req.method !== 'POST') { fail(405, 'invalid'); return true; }
@@ -123,6 +128,24 @@ export function createPublicationDescriptionDerivationHandler(config, store, dep
       let input;
       try { input = parseStrictJson(new TextDecoder('utf-8', { fatal: true }).decode(await readRaw(req, 32768, controller.signal)), { maxDepth: 8, maxNodes: 150 }); }
       catch { throw new PublicationDescriptionDerivationError(controller.signal.aborted ? 'unavailable' : 'invalid', controller.signal.aborted ? 503 : 400); }
+      if (committing) {
+        if (typeof store.admit !== 'function') throw new PublicationDescriptionDerivationError('configuration', 503);
+        if (!validCommitAdmissionRequest(input)) throw new PublicationDescriptionDerivationError('invalid', 400);
+        let admitted;
+        try { admitted = await store.admit(input); }
+        catch (error) {
+          if (!(error instanceof PublicationDescriptionCommitAdmissionError)) throw error;
+          const kind = error.code.replace('skillhub.publication_description_release_commit_', '');
+          throw new PublicationDescriptionDerivationError(kind, ({ invalid: 400, conflict: 409, storage_limit: 429,
+            disabled: 404, busy: 503, unavailable: 503, configuration: 503 }[kind] ?? 503));
+        }
+        if (!admitted || !task(admitted.task_id) || !/^pubdescpermit_[a-f0-9]{32}$/.test(admitted.permit_id) ||
+          !['queued', 'publishing', 'committing', 'published', 'publish_failed'].includes(admitted.state)) {
+          throw new PublicationDescriptionDerivationError('conflict', 409);
+        }
+        return { schemaVersion: 1, applicationId: input.applicationId, taskId: admitted.task_id,
+          permitId: admitted.permit_id, state: admitted.state, replayed: admitted.replayed === true };
+      }
       if (planning) {
         if (!planner) throw new PublicationDescriptionDerivationError('configuration', 503);
         return planner.plan(input, { signal: controller.signal });
