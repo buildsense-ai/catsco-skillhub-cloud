@@ -8,6 +8,7 @@ import { processPublicationCommit } from '../../packages/publication-tasks/commi
 import { publicationTaskSettings } from "../../packages/publication-tasks/config.js";
 import { createDelegatedPublicationScheduler } from '../../packages/publication-delegation/commit-scheduler.js';
 import { createPublicationReceiptDispatcher } from '../../packages/publication-delegation/receipt-worker.js';
+import { createPublicationDescriptionReleaseScheduler } from '../../packages/publication-description-derivations/commit-scheduler.js';
 
 // A Cloud acceptance receipt is historical evidence only. This lane never
 // grants a commit permit and never changes publication state by itself.
@@ -27,6 +28,7 @@ export async function startWorker(config = loadConfig(), { once = false } = {}) 
   const taskStore = createStore(config);
   const delegated = createDelegatedPublicationScheduler(config, {store: taskStore});
   const receiptDelivery = createPublicationReceiptDelivery(config, taskStore);
+  const descriptionRelease = createPublicationDescriptionReleaseScheduler(config, { store: taskStore });
   if (once) await receiptDelivery.runOnce();
   else receiptDelivery.start();
   let tasksEnabled = false;
@@ -54,17 +56,20 @@ export async function startWorker(config = loadConfig(), { once = false } = {}) 
     stopped = true;
     void delegated.stop().catch(()=>{}); // also stop admission while legacy IO settles
     void receiptDelivery.stop().catch(()=>{});
+    void descriptionRelease.stop().catch(()=>{});
   };
   process.once("SIGTERM", stop);
   process.once("SIGINT", stop);
   // Run independently: a slow permitted Git/package operation never blocks
   // the legacy lane. Its own SQL lease/retry limits survive process restarts.
   const delegatedRun=delegated.run({once});
+  const descriptionReleaseRun=descriptionRelease.run({once});
   try {
     if (once) {
       const results = await processJobs(config);
       while (!stopped && await tickTasks()) { /* due work only; retries have backoff */ }
       await delegatedRun;
+      await descriptionReleaseRun;
       console.log(JSON.stringify({ processed: results.length, results: results.map((item) => ({ jobId: item.job.id, type: item.job.type, status: item.status })) }, null, 2));
       return results;
     }
@@ -78,6 +83,7 @@ export async function startWorker(config = loadConfig(), { once = false } = {}) 
   } finally {
     await delegated.stop();
     await receiptDelivery.stop();
+    await descriptionRelease.stop();
     process.removeListener('SIGTERM',stop);
     process.removeListener('SIGINT',stop);
   }
