@@ -235,3 +235,10 @@ This slice is admission only. It does not enqueue a public job, call a model,
 write a package, or run a worker. A later worker slice must claim these rows
 with a lease, read the immutable retained derived bytes, and publish through a
 separate completion path with the same target and permit fences.
+
+Commit admission locks the retained plan and source task, requires the original
+delegated task to remain active, and recovers concurrent same-permit requests as
+an exact replay of the one immutable row. Different permits conflict. Migration
+026 repeats the active-source fence in the admission and commit triggers so a
+direct database write cannot enqueue a cancelled source. The endpoint remains
+default-off, and admission still does not mean publication has started.
