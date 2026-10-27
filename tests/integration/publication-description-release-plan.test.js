@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import http from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
 import { test } from 'node:test';
 import pg from 'pg';
 import { loadConfig } from '../../packages/config/index.js';
@@ -16,6 +18,9 @@ import { createDelegatedPublicationControlStore } from '../../packages/publicati
 import { PublicationDescriptionReleasePermitError } from '../../packages/publication-description-derivations/release-permit-client.js';
 import { createPublicationDescriptionCommitAdmission } from '../../packages/publication-description-derivations/commit-admission.js';
 import { createPublicationDescriptionReleaseWorker } from '../../packages/publication-description-derivations/worker.js';
+import { createPublicationDescriptionReleaseCommitWorker } from '../../packages/publication-description-derivations/commit-worker.js';
+import { createPublicationDescriptionReleaseCommitStore } from '../../packages/publication-description-derivations/commit-store.js';
+import { canonicalJson } from '../../packages/signing/index.js';
 
 const databaseUrl = process.env.SKILLHUB_TEST_DATABASE_URL, pgOnly = { skip: !databaseUrl };
 const issuer = 'https://commit.invalid', audience = 'https://cloud.invalid';
@@ -79,6 +84,77 @@ async function workerFixture(t) {
   return { ...fixtureResult, plan, admitted, worker, row };
 }
 
+const sha256 = value => createHash('sha256').update(value).digest('hex');
+
+// Keep Git, scanning, and package storage deterministic while exercising the
+// completion worker against the real PostgreSQL lease and commit protocol.
+async function completionFixture(t, { releaseStore: releaseStoreOverride, holdPreparation = false } = {}) {
+  const prepared = await workerFixture(t);
+  const preparedRow = await prepared.worker().once();
+  assert.equal(preparedRow.state, 'committing');
+  const task = await prepared.row();
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'skillhub-derived-completion-'));
+  t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));
+  const tempConfig = loadConfig({
+    ...prepared.config,
+    root: tempRoot,
+    storageRoot: path.join(tempRoot, 'storage'),
+    sharedRoot: path.join(tempRoot, 'shared'),
+    nodeEnv: 'test',
+    publicationTasksEnabled: true,
+    publicationPublishingEnabled: true
+  });
+  const files = [{ path: 'SKILL.md', content: '# Derived completion fixture\n' }];
+  let preparationStartedResolve;
+  let releasePreparationResolve;
+  const preparationStarted = new Promise(resolve => { preparationStartedResolve = resolve; });
+  const preparationGate = new Promise(resolve => { releasePreparationResolve = resolve; });
+  const runPreparePublication = async input => ({ status: 200,
+    prepared: { manifest: input.manifest, files, receipt: task.receipt } });
+  const gatedPreparePublication = async input => {
+    preparationStartedResolve();
+    if (holdPreparation) await preparationGate;
+    return runPreparePublication(input);
+  };
+  const commitGitVersion = async () => ({ repositoryId: `git_${'a'.repeat(32)}`,
+    commitSha: 'a'.repeat(40), treeSha: 'b'.repeat(40), tag: 'v1' });
+  const assertGitVersion = async () => undefined;
+  const runPublishValidation = async () => ({ status: 200,
+    report: { status: 'passed', riskLevel: 'low', summary: {}, findings: [], inventory: [] } });
+  const buildPublishedPackage = async ({ submission, scanRun, sourceVersion, releaseAt }) => {
+    const manifest = task.manifest;
+    const payload = { manifest, files };
+    const bytes = Buffer.from(`${canonicalJson({ payload })}\n`, 'utf8');
+    const artifactSha256 = sha256(bytes);
+    const artifactPath = path.join(tempConfig.paths.artifacts, artifactSha256.slice(0, 2), `${artifactSha256}.skillpkg`);
+    await fs.mkdir(path.dirname(artifactPath), { recursive: true });
+    await fs.writeFile(artifactPath, bytes);
+    return {
+      id: `pkg_${randomUUID()}`, skillId: manifest.id, skillName: manifest.name,
+      displayName: manifest.displayName, version: manifest.version, status: 'published',
+      packagePath: artifactPath, packageFile: `${artifactSha256}.skillpkg`,
+      packageUrl: `http://skillhub.invalid/packages/${artifactSha256}`, packageSize: bytes.length,
+      checksumSha256: artifactSha256, payloadSha256: sha256(Buffer.from(canonicalJson(payload))),
+      manifest, submissionId: submission.id, scanRunId: scanRun.id,
+      publishedAt: new Date(releaseAt).toISOString(), storageBackend: 'git-v1',
+      gitRepositoryId: sourceVersion.repositoryId, gitCommitSha: sourceVersion.commitSha,
+      gitTreeSha: sourceVersion.treeSha, gitTag: sourceVersion.tag, artifactSha256
+    };
+  };
+  const baseReleaseStore = createPublicationDescriptionReleaseCommitStore(prepared.store);
+  const makeWorker = (extra = {}) => createPublicationDescriptionReleaseCommitWorker({
+    enabled: true, config: tempConfig, store: prepared.store,
+    dependencies: {
+      runPreparePublication: gatedPreparePublication, commitGitVersion, assertGitVersion,
+      runPublishValidation, buildPublishedPackage,
+      releaseStore: releaseStoreOverride ?? baseReleaseStore,
+      ...extra
+    }
+  });
+  return { ...prepared, task, makeWorker, tempConfig, preparationStarted,
+    releasePreparation: () => releasePreparationResolve() };
+}
+
 test('PostgreSQL derived worker prepares exact retained bytes once across independent workers', pgOnly, async t => {
   const { store, f, plan, input, worker, row, count } = await workerFixture(t);
   const results = await Promise.all([worker().once(), worker().once()]);
@@ -139,6 +215,104 @@ test('PostgreSQL derived worker exhausts a crashed third attempt without creatin
   assert.equal(await worker().once(), null);
   assert.equal(await count('publication_commits'), 0);
   assert.equal(await count('jobs'), 0);
+});
+
+test('PostgreSQL completion claims once and writes one isolated published version', pgOnly, async t => {
+  const { store, makeWorker, row, count, preparationStarted, releasePreparation } =
+    await completionFixture(t, { holdPreparation: true });
+  const firstPromise = makeWorker().once();
+  await preparationStarted;
+  assert.equal(await makeWorker().once(), null);
+  releasePreparation();
+  assert.ok(await firstPromise);
+  const saved = await row();
+  assert.equal(saved.state, 'published');
+  assert.equal(saved.attempts, 2);
+  assert.equal(saved.lease_token, null);
+  assert.ok(saved.publication_result);
+  assert.equal(await count('skill_versions'), 1);
+  assert.equal(await count('skill_scans'), 1);
+  assert.equal(await count('publication_commits'), 0);
+  assert.equal(await count('jobs'), 0);
+  const version = (await store.query('SELECT skill_id,version,storage_backend FROM skill_versions')).rows[0];
+  assert.equal(version.storage_backend, 'git-v1');
+});
+
+test('PostgreSQL completion resumes from a durable checkpoint after a worker crash', pgOnly, async t => {
+  const { store, makeWorker, row, count } = await completionFixture(t);
+  const base = createPublicationDescriptionReleaseCommitStore(store);
+  let crashed = true;
+  const releaseStore = {
+    ...base,
+    async complete(...args) {
+      if (crashed) { crashed = false; throw new Error('simulated worker crash'); }
+      return base.complete(...args);
+    }
+  };
+  assert.equal(await makeWorker({ releaseStore }).once(), null);
+  const checkpointed = await row();
+  assert.equal(checkpointed.state, 'committing');
+  assert.ok(checkpointed.checkpoint);
+  assert.equal(checkpointed.attempts, 2);
+  assert.equal(await count('skill_versions'), 0);
+  assert.equal((await makeWorker().once()).state, 'published');
+  assert.equal((await row()).attempts, 3);
+  assert.equal(await count('skill_versions'), 1);
+  assert.equal(await count('publication_commits'), 0);
+});
+
+test('PostgreSQL completion fences a lease lost after checkpoint and allows a new claimant', pgOnly, async t => {
+  const { store, makeWorker, row, count } = await completionFixture(t);
+  const base = createPublicationDescriptionReleaseCommitStore(store);
+  let expire = true;
+  const releaseStore = {
+    ...base,
+    async saveCheckpoint(...args) {
+      const saved = await base.saveCheckpoint(...args);
+      if (expire) {
+        expire = false;
+        await store.query("UPDATE publication_description_release_commits SET lease_until=clock_timestamp()-interval '1 second' WHERE application_id=$1",
+          [args[0].application_id]);
+      }
+      return saved;
+    }
+  };
+  assert.equal(await makeWorker({ releaseStore }).once(), null);
+  const fenced = await row();
+  assert.equal(fenced.state, 'committing');
+  assert.ok(fenced.checkpoint);
+  assert.ok(fenced.lease_token);
+  assert.equal(await count('skill_versions'), 0);
+  assert.equal((await makeWorker().once()).state, 'published');
+  assert.equal(await count('skill_versions'), 1);
+});
+
+test('PostgreSQL completion rejects owner changes terminally without legacy publication', pgOnly, async t => {
+  const { store, f, makeWorker, row, count } = await completionFixture(t);
+  await store.query("UPDATE users SET status='suspended' WHERE id=$1", [f.owner]);
+  assert.equal(await makeWorker().once(), null);
+  const rejected = await row();
+  assert.equal(rejected.state, 'publish_failed');
+  assert.equal(rejected.error_code, 'skillhub.publication_description_release_commit_publisher_changed');
+  assert.equal(await count('skill_versions'), 0);
+  assert.equal(await count('skill_scans'), 0);
+  assert.equal(await count('publication_commits'), 0);
+  assert.equal(await count('jobs'), 0);
+});
+
+test('PostgreSQL completion marks the third expired attempt failed and never requeues it', pgOnly, async t => {
+  const { store, makeWorker, row, count } = await completionFixture(t);
+  await store.query(`UPDATE publication_description_release_commits
+    SET attempts=3,lease_token='crashed-third-attempt',lease_until=clock_timestamp()-interval '1 second'
+    WHERE application_id=$1`, [(await row()).application_id]);
+  assert.equal(await makeWorker().once(), null);
+  const exhausted = await row();
+  assert.equal(exhausted.state, 'publish_failed');
+  assert.equal(exhausted.attempts, 3);
+  assert.equal(exhausted.error_code, 'unavailable');
+  assert.equal(await makeWorker().once(), null);
+  assert.equal(await count('skill_versions'), 0);
+  assert.equal(await count('publication_commits'), 0);
 });
 
 test('description release planner is default-off and rejects malformed/cross-candidate references', async () => {
