@@ -35,13 +35,14 @@ export function createPublicationDescriptionCommitAdmission({ enabled = false, s
           await client.query("SET LOCAL lock_timeout='5s'");
           await client.query("SET LOCAL statement_timeout='10s'");
           const row = (await client.query(`SELECT p.application_id,p.task_id,p.target,p.manifest,p.identity,
-              a.permit_id,a.proof,d.derived_candidate_hash,t.authority_kind
+              a.permit_id,a.proof,d.derived_candidate_hash,t.authority_kind,t.state,t.delegated_cancelled_at
             FROM publication_description_release_plans p
             JOIN publication_description_release_admissions a USING(application_id,task_id)
             JOIN publication_description_derivations d USING(application_id)
             JOIN publication_tasks t ON t.id=p.task_id
             WHERE p.application_id=$1 AND a.permit_id=$2 AND a.proof->>'applicationId'=$1
-              AND t.authority_kind='catsco'`, [input.applicationId, input.permitId])).rows[0];
+              AND t.authority_kind='catsco' AND t.state='delegated_pending' AND t.delegated_cancelled_at IS NULL
+            FOR UPDATE OF p,t`, [input.applicationId, input.permitId])).rows[0];
           if (!row || row.target.candidateHash !== row.derived_candidate_hash) fail('conflict');
           const existing = (await client.query(`SELECT application_id,task_id,permit_id,target,manifest,identity,state
             FROM publication_description_release_commits WHERE application_id=$1`, [input.applicationId])).rows[0];
@@ -54,9 +55,17 @@ export function createPublicationDescriptionCommitAdmission({ enabled = false, s
           const inserted = await client.query(`INSERT INTO publication_description_release_commits
             (application_id,task_id,permit_id,target,manifest,identity,state)
             VALUES($1,$2,$3,$4,$5,$6,'queued')
+            ON CONFLICT (application_id) DO NOTHING
             RETURNING application_id,task_id,permit_id,target,manifest,identity,state`,
           [row.application_id,row.task_id,row.permit_id,JSON.stringify(row.target),JSON.stringify(row.manifest),JSON.stringify(row.identity)]);
-          return { ...inserted.rows[0], replayed: false };
+          if (inserted.rows[0]) return { ...inserted.rows[0], replayed: false };
+          const concurrent = (await client.query(`SELECT application_id,task_id,permit_id,target,manifest,identity,state
+            FROM publication_description_release_commits WHERE application_id=$1`, [input.applicationId])).rows[0];
+          if (!concurrent || concurrent.permit_id !== input.permitId ||
+            canonicalJson(concurrent.target) !== canonicalJson(row.target) ||
+            canonicalJson(concurrent.manifest) !== canonicalJson(row.manifest) ||
+            canonicalJson(concurrent.identity) !== canonicalJson(row.identity)) fail('conflict');
+          return { ...concurrent, replayed: true };
         });
       } catch (error) {
         if (error instanceof PublicationDescriptionCommitAdmissionError) throw error;

@@ -41,7 +41,7 @@ async function fixture(t, { beforeAdmissionMigration = false } = {}) {
   await admin.query(`SET search_path TO "${schema}"`);
   const folder = new URL('../../infra/migrations/', import.meta.url);
   for (const name of (await fs.readdir(folder)).filter(f => /^\d+_.+\.sql$/.test(f)).sort()) {
-    if (beforeAdmissionMigration && (name.startsWith('023_') || name.startsWith('024_') || name.startsWith('025_'))) continue;
+    if (beforeAdmissionMigration && (name.startsWith('023_') || name.startsWith('024_') || name.startsWith('025_') || name.startsWith('026_'))) continue;
     await admin.query(await fs.readFile(new URL(name, folder), 'utf8'));
   }
   const url = new URL(databaseUrl); url.searchParams.set('options', '-c search_path=' + schema);
@@ -177,6 +177,63 @@ test('PostgreSQL derived worker prepares exact retained bytes once across indepe
   assert.deepEqual(original.candidate, f.input.rawBody);
   assert.equal(original.state, 'delegated_pending');
   assert.equal(original.attempts, 0);
+});
+
+test('PostgreSQL concurrent derived commit admission recovers one exact durable row', pgOnly, async t => {
+  const { config, store, input, planner, count } = await fixture(t);
+  const plan = await planner().plan(input);
+  const permitClient = { async authorize(request) { return permitFor(request); } };
+  const activeConfig = { ...config, publicationDescriptionDerivation: {
+    ...config.publicationDescriptionDerivation, planEnabled: true, releasePermit: { enabled: true } } };
+  const authorized = await planner({ config: activeConfig, releasePermitEnabled: true, permitClient }).authorize({
+    schemaVersion: 1, applicationId: plan.applicationId, publicationReceipt: plan.publicationReceipt });
+  const admit = createPublicationDescriptionCommitAdmission({ enabled: true, store });
+  const request = { schemaVersion: 1, applicationId: plan.applicationId, permitId: authorized.permit.permitId };
+  const results = await Promise.all([admit.admit(request), admit.admit(request)]);
+  assert.equal(results.filter(result => result.replayed === false).length, 1);
+  assert.equal(results.filter(result => result.replayed === true).length, 1);
+  assert.deepEqual(results[0].target, plan.target);
+  assert.deepEqual(results[1].target, plan.target);
+  assert.equal(await count('publication_description_release_commits'), 1);
+  assert.equal(await count('publication_commits'), 0);
+  assert.equal(await count('jobs'), 0);
+  const saved = (await store.query('SELECT application_id,task_id,permit_id,target,state FROM publication_description_release_commits WHERE application_id=$1',
+    [plan.applicationId])).rows[0];
+  assert.equal(saved.permit_id, authorized.permit.permitId);
+  assert.equal(saved.state, 'queued');
+});
+
+test('PostgreSQL derived commit admission rejects altered permits and fences cancellation', pgOnly, async t => {
+  const { config, store, f, input, planner, count } = await fixture(t);
+  const plan = await planner().plan(input);
+  const permitClient = { async authorize(request) { return permitFor(request); } };
+  const activeConfig = { ...config, publicationDescriptionDerivation: {
+    ...config.publicationDescriptionDerivation, planEnabled: true, releasePermit: { enabled: true } } };
+  const authorized = await planner({ config: activeConfig, releasePermitEnabled: true, permitClient }).authorize({
+    schemaVersion: 1, applicationId: plan.applicationId, publicationReceipt: plan.publicationReceipt });
+  const admit = createPublicationDescriptionCommitAdmission({ enabled: true, store });
+  await assert.rejects(admit.admit({ schemaVersion: 1, applicationId: plan.applicationId,
+    permitId: 'pubdescpermit_' + 'f'.repeat(32) }), { code: 'skillhub.publication_description_release_commit_conflict' });
+  await assert.rejects(store.query(`UPDATE publication_tasks SET state='cancelled',delegated_cancelled_at=clock_timestamp(),
+    candidate=NULL,candidate_bytes=0 WHERE id=$1`, [f.receipt.taskId]), { code: '23514' });
+  const retained = (await store.query(`SELECT task_id,target,manifest,identity FROM publication_description_release_plans
+    WHERE application_id=$1`, [plan.applicationId])).rows[0];
+  await assert.rejects(store.query(`INSERT INTO publication_description_release_commits
+    (application_id,task_id,permit_id,target,manifest,identity,state)
+    VALUES($1,$2,$3,$4,$5,$6,'queued')`, [plan.applicationId, retained.task_id, authorized.permit.permitId,
+    JSON.stringify(retained.target), JSON.stringify({ ...retained.manifest, altered: true }),
+    JSON.stringify(retained.identity)]), { code: '23514' });
+  const request = { schemaVersion: 1, applicationId: plan.applicationId, permitId: authorized.permit.permitId };
+  const admitted = await admit.admit(request);
+  assert.equal(admitted.replayed, false);
+  assert.equal(admitted.state, 'queued');
+  assert.deepEqual(await admit.admit(request), { ...admitted, replayed: true });
+  assert.equal(await count('publication_description_release_commits'), 1);
+  assert.equal(await count('publication_delegated_permits'), 0);
+  await assert.rejects(admit.admit({ ...request, permitId: 'pubdescpermit_' + 'f'.repeat(32) }),
+    { code: 'skillhub.publication_description_release_commit_conflict' });
+  assert.equal(await count('publication_description_release_commits'), 1);
+  assert.equal(await count('publication_commits'), 0);
 });
 
 test('PostgreSQL derived worker fences an expired completion and reclaims the same target', pgOnly, async t => {
