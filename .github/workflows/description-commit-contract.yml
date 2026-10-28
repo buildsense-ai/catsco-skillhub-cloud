@@ -40,7 +40,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: buildsense-ai/cats-company
-          ref: f90baab73b62c8692545ac623239cc17c8a290c3
+          ref: 13edd314557e476a24967fc5e24c75c7c70431dc
           path: cats-company
       - uses: actions/setup-node@v4
         with:
