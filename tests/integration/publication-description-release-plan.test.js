@@ -21,6 +21,7 @@ import { createPublicationDescriptionReleaseWorker } from '../../packages/public
 import { createPublicationDescriptionReleaseCommitWorker } from '../../packages/publication-description-derivations/commit-worker.js';
 import { createPublicationDescriptionReleaseCommitStore } from '../../packages/publication-description-derivations/commit-store.js';
 import { canonicalJson } from '../../packages/signing/index.js';
+import { createPublicationDescriptionReleaseStatusReader } from '../../packages/publication-description-derivations/release-status.js';
 
 const databaseUrl = process.env.SKILLHUB_TEST_DATABASE_URL, pgOnly = { skip: !databaseUrl };
 const issuer = 'https://commit.invalid', audience = 'https://cloud.invalid';
@@ -83,6 +84,57 @@ async function workerFixture(t) {
     [plan.applicationId])).rows[0];
   return { ...fixtureResult, plan, admitted, worker, row };
 }
+
+test('PostgreSQL derived status reads queue and failure without admission or quota changes', pgOnly, async t => {
+  const { store, plan, admitted, f, count, row } = await workerFixture(t);
+  const request = { schemaVersion: 1, applicationId: plan.applicationId, permitId: admitted.permit_id, publicationReceipt: f.receipt };
+  const read = createPublicationDescriptionReleaseStatusReader({ enabled: true, store, issuer, audience });
+  const before = await row();
+  const quota = (await store.query('SELECT commit_bytes FROM publication_tasks WHERE id=$1', [f.receipt.taskId])).rows[0].commit_bytes;
+  assert.equal((await read.read(request)).state, 'queued');
+  assert.deepEqual(await row(), before);
+  for (const change of [
+    { applicationId: 'pubdesc_' + 'f'.repeat(64) }, { permitId: 'pubdescpermit_' + 'f'.repeat(32) },
+    { publicationReceipt: { ...f.receipt, requestHash: 'f'.repeat(64) } },
+    { publicationReceipt: { ...f.receipt, acceptanceEpoch: f.receipt.acceptanceEpoch === 1 ? 2 : 1 } },
+    { publicationReceipt: { ...f.receipt, eventId: 'pubevent_' + randomUUID() } }
+  ]) await assert.rejects(read.read({ ...request, ...change }), code('not_found'));
+  await assert.rejects(createPublicationDescriptionReleaseStatusReader({ enabled: true, store,
+    issuer: 'https://other.invalid', audience }).read(request), code('not_found'));
+  await assert.rejects(createPublicationDescriptionReleaseStatusReader({ enabled: true, store,
+    issuer, audience: 'https://other.invalid' }).read(request), code('not_found'));
+  await store.query(`UPDATE publication_description_release_commits SET state='publish_failed',error_code=$2 WHERE application_id=$1`,
+    [plan.applicationId, 'private sql /root/password']);
+  const failed = await read.read(request);
+  assert.equal(failed.result, null);
+  assert.equal(failed.errorCode, 'skillhub.publication_description_release_commit_unavailable');
+  assert.equal((await store.query('SELECT commit_bytes FROM publication_tasks WHERE id=$1', [f.receipt.taskId])).rows[0].commit_bytes, quota);
+  assert.equal(await count('publication_description_release_commits'), 1);
+  assert.equal(await count('publication_commits'), 0);
+  assert.equal(await count('jobs'), 0);
+});
+
+test('PostgreSQL derived published status survives expiry and does not expose private completion data', pgOnly, async t => {
+  const { store, plan, admitted, f, makeWorker, row, count } = await completionFixture(t);
+  const request = { schemaVersion: 1, applicationId: plan.applicationId, permitId: admitted.permit_id, publicationReceipt: f.receipt };
+  const read = createPublicationDescriptionReleaseStatusReader({ enabled: true, store, issuer, audience });
+  assert.equal((await read.read(request)).state, 'committing');
+  assert.equal((await makeWorker().once()).state, 'published');
+  await store.query("UPDATE publication_tasks SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1", [f.receipt.taskId]);
+  const before = await row();
+  const result = await read.read(request);
+  assert.equal(result.state, 'published');
+  assert.deepEqual(result.target, plan.target);
+  assert.deepEqual(result.result, before.publication_result);
+  assert.deepEqual(await read.read(request), result);
+  assert.deepEqual(await row(), before);
+  for (const key of ['checkpoint', 'manifest', 'identity', 'proof', 'packagePath', 'derived_raw_json', 'lease_token']) {
+    assert.equal(Object.hasOwn(result, key), false);
+  }
+  assert.equal(await count('skill_versions'), 1);
+  assert.equal(await count('publication_commits'), 0);
+  assert.equal(await count('jobs'), 0);
+});
 
 const sha256 = value => createHash('sha256').update(value).digest('hex');
 
