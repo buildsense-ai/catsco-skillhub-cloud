@@ -10,6 +10,7 @@ import { readPublicationDescriptionCopy, validatePublicationDescriptionCopy } fr
 import { createPublicationDescriptionReleasePlanner } from '../../packages/publication-description-derivations/release-plan.js';
 import { createPublicationDescriptionReleasePermitClient } from '../../packages/publication-description-derivations/release-permit-client.js';
 import { validRequest as validCommitAdmissionRequest, PublicationDescriptionCommitAdmissionError } from '../../packages/publication-description-derivations/commit-admission.js';
+import { createPublicationDescriptionReleaseStatusReader } from '../../packages/publication-description-derivations/release-status.js';
 
 export const PUBLICATION_DESCRIPTION_DERIVATION_PATH = '/api/skills/publication-descriptions/internal/derive';
 export const PUBLICATION_DESCRIPTION_READ_PATH = '/api/skills/publication-descriptions/internal/read';
@@ -17,6 +18,7 @@ export const PUBLICATION_DESCRIPTION_VALIDATE_PATH = '/api/skills/publication-de
 export const PUBLICATION_DESCRIPTION_PLAN_PATH = '/api/skills/publication-descriptions/internal/plan';
 export const PUBLICATION_DESCRIPTION_AUTHORIZE_PATH = '/api/skills/publication-descriptions/internal/authorize';
 export const PUBLICATION_DESCRIPTION_COMMIT_PATH = '/api/skills/publication-descriptions/internal/commit';
+export const PUBLICATION_DESCRIPTION_RELEASE_STATUS_PATH = '/api/skills/publication-descriptions/internal/release-status';
 const exact = (value, keys) => value && typeof value === 'object' && !Array.isArray(value)
   && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
 const hash = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
@@ -39,6 +41,8 @@ const header = (req, name) => {
 export function createPublicationDescriptionDerivationHandler(config, store, dependencies = {}) {
   const settings = config.publicationDescriptionDerivation ?? {};
   const enabled = settings.enabled === true;
+  const releaseStatus = createPublicationDescriptionReleaseStatusReader({ enabled: enabled && settings.releaseStatusEnabled === true,
+    store, issuer: settings.issuer, audience: settings.audience });
   const limiter = new RateLimiter({ limit: 60, windowMs: 60000, maxBuckets: 1 });
   const budget = dependencies.timeoutMs ?? settings.timeoutMs ?? 30000;
   let secret, hosts, proxies, planner, releaseAuthorizer, releasePermitConfigurationError = false;
@@ -72,12 +76,14 @@ export function createPublicationDescriptionDerivationHandler(config, store, dep
       && !req.url?.startsWith(PUBLICATION_DESCRIPTION_VALIDATE_PATH)
       && !req.url?.startsWith(PUBLICATION_DESCRIPTION_PLAN_PATH)
       && !req.url?.startsWith(PUBLICATION_DESCRIPTION_AUTHORIZE_PATH)
-      && !req.url?.startsWith(PUBLICATION_DESCRIPTION_COMMIT_PATH)) return false;
+      && !req.url?.startsWith(PUBLICATION_DESCRIPTION_COMMIT_PATH)
+      && !req.url?.startsWith(PUBLICATION_DESCRIPTION_RELEASE_STATUS_PATH)) return false;
     const reading = req.url === PUBLICATION_DESCRIPTION_READ_PATH;
     const validating = req.url === PUBLICATION_DESCRIPTION_VALIDATE_PATH;
     const planning = req.url === PUBLICATION_DESCRIPTION_PLAN_PATH;
     const authorizing = req.url === PUBLICATION_DESCRIPTION_AUTHORIZE_PATH;
     const committing = req.url === PUBLICATION_DESCRIPTION_COMMIT_PATH;
+    const readingReleaseStatus = req.url === PUBLICATION_DESCRIPTION_RELEASE_STATUS_PATH;
     const reply = (status, body) => {
       if (res.destroyed || res.writableEnded) return;
       if (!req.complete) res.setHeader('Connection', 'close');
@@ -94,12 +100,13 @@ export function createPublicationDescriptionDerivationHandler(config, store, dep
       code: `skillhub.publication_description_derivation_${kind}`,
       message: 'Description derivation could not be completed.'
     } });
-    if (!enabled || (req.url !== PUBLICATION_DESCRIPTION_DERIVATION_PATH && !reading && !validating && !planning && !authorizing && !committing)
+    if (!enabled || (req.url !== PUBLICATION_DESCRIPTION_DERIVATION_PATH && !reading && !validating && !planning && !authorizing && !committing && !readingReleaseStatus)
       || (reading && settings.readEnabled !== true)
       || (validating && settings.validationEnabled !== true)
       || (planning && settings.planEnabled !== true)
       || (authorizing && settings.releasePermit?.enabled !== true)
-      || (committing && settings.commitAdmissionEnabled !== true)) { fail(404, 'disabled'); return true; }
+      || (committing && settings.commitAdmissionEnabled !== true)
+      || (readingReleaseStatus && settings.releaseStatusEnabled !== true)) { fail(404, 'disabled'); return true; }
     if (!secret) { fail(503, 'configuration'); return true; }
     if (authorizing && (!releaseAuthorizer || releasePermitConfigurationError)) { fail(503, 'configuration'); return true; }
     if (req.method !== 'POST') { fail(405, 'invalid'); return true; }
@@ -128,6 +135,7 @@ export function createPublicationDescriptionDerivationHandler(config, store, dep
       let input;
       try { input = parseStrictJson(new TextDecoder('utf-8', { fatal: true }).decode(await readRaw(req, 32768, controller.signal)), { maxDepth: 8, maxNodes: 150 }); }
       catch { throw new PublicationDescriptionDerivationError(controller.signal.aborted ? 'unavailable' : 'invalid', controller.signal.aborted ? 503 : 400); }
+      if (readingReleaseStatus) return releaseStatus.read(input);
       if (committing) {
         if (typeof store.admit !== 'function') throw new PublicationDescriptionDerivationError('configuration', 503);
         if (!validCommitAdmissionRequest(input)) throw new PublicationDescriptionDerivationError('invalid', 400);

@@ -242,3 +242,38 @@ an exact replay of the one immutable row. Different permits conflict. Migration
 026 repeats the active-source fence in the admission and commit triggers so a
 direct database write cannot enqueue a cancelled source. The endpoint remains
 default-off, and admission still does not mean publication has started.
+
+## Read-only derived release status
+
+`POST /api/skills/publication-descriptions/internal/release-status` is a private
+CatsCo peer operation. Both the base derivation gate and the independent
+`SKILLHUB_PUBLICATION_DESCRIPTION_RELEASE_STATUS_ENABLED` gate must be true;
+the new gate defaults false. The existing pinned HTTPS/Host, peer credential,
+browser Origin/Cookie rejection, strict JSON, rate/concurrency and timeout
+controls apply. Enabling reads does not enable admission, permit issuance or workers.
+
+The exact request is `{schemaVersion:1, applicationId, permitId, publicationReceipt}`.
+The receipt is the original complete upload receipt, not a receipt with its
+candidate hash rewritten to the derived hash. A single read-only transaction
+binds every receipt field to the original delegation/outbox and binds the
+application, admission permit/proof, retained plan and derived candidate.
+Missing or mismatched references return 404 without creating admission or work.
+
+The exact success response contains `schemaVersion`, `applicationId`, `taskId`,
+`permitId`, `publicationReceipt`, `state`, `target`, `result` and `errorCode`.
+`state` is one of queued/publishing/committing/published/publish_failed.
+Only published results contain the whitelisted skillId/version/packageId/
+checksumSha256/publishedAt fields, checked against both the exact target and
+the registered package. All other results are null. Terminal failure codes
+come from a static allowlist; unknown internal errors become unavailable.
+Transient worker errors are hidden while the task remains in progress.
+Responses are no-store and omit private bytes, paths, manifests, checkpoints,
+leases and permit proof. Publisher references are included only in the exact
+retained target needed by the trusted CatsCo consumer.
+
+This is historical outcome evidence, not current execution authorization.
+An expired original upload does not hide its completed publication result.
+The reader neither refreshes live source/ownership authority nor clears any
+cancellation fence. The CatsCo consumer must authenticate its current actor
+before exposing this response; no browser route, UI wiring, production gate
+activation or automatic retry is introduced by this change.
