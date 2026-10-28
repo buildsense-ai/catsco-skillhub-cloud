@@ -54,6 +54,9 @@ jobs:
       - name: Install pinned Cloud dependencies
         working-directory: skillhub
         run: npm ci --ignore-scripts --prefer-offline --no-audit --fund=false
+      - name: Apply database migrations
+        working-directory: skillhub
+        run: npm run db:migrate
       - name: Require the real commit admission contract
         working-directory: cats-company
         env:
