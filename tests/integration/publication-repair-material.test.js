@@ -280,19 +280,27 @@ test('PostgreSQL repair material matches every receipt field and issuer/audience
 });
 
 test('PostgreSQL repair material denies changed current publisher, expiry and cancellation unlike historical report reads', pg, async () => {
-  for (const change of ['user', 'profile', 'namespace', 'actor', 'issuer', 'expired', 'cancelled']) {
+  for (const change of ['user', 'profile', 'namespace', 'expired', 'cancelled']) {
     const f = await fixture();
     if (change === 'user') await store.query("UPDATE users SET status='disabled' WHERE id=$1", [f.owner]);
     if (change === 'profile') await store.query("UPDATE publisher_profiles SET status='disabled' WHERE user_id=$1", [f.owner]);
     if (change === 'namespace') await store.query("UPDATE publisher_profiles SET namespace=namespace||'-new' WHERE user_id=$1", [f.owner]);
-    if (change === 'actor') await store.query("UPDATE publisher_profiles SET catsco_uid=catsco_uid||'1' WHERE user_id=$1", [f.owner]);
-    if (change === 'issuer') await store.query("UPDATE publisher_profiles SET catsco_issuer='https://other.invalid' WHERE user_id=$1", [f.owner]);
     if (change === 'expired') await store.query("UPDATE publication_tasks SET expires_at=now()-interval '1 second' WHERE id=$1", [f.receipt.taskId]);
     if (change === 'cancelled') await createDelegatedPublicationControlStore({ enabled: true, store, issuer, audience }).cancel(f.receipt);
     const before = await task(f);
     await assert.rejects(reader(store).read(f.receipt), code('not_found'), change);
     assert.deepEqual(await task(f), before);
   }
+});
+
+test('PostgreSQL immutable publisher UID and issuer cannot be rebound to acquire material', pg, async () => {
+  const f = await fixture(), before = await task(f);
+  for (const sql of ["UPDATE publisher_profiles SET catsco_uid=catsco_uid||'1' WHERE user_id=$1",
+    "UPDATE publisher_profiles SET catsco_issuer='https://other.invalid' WHERE user_id=$1"]) {
+    await assert.rejects(store.query(sql, [f.owner]), { code: '23514' });
+  }
+  assert.deepEqual(await reader(store).read(f.receipt), raw);
+  assert.deepEqual(await task(f), before);
 });
 
 test('PostgreSQL repair material task lock serializes with cancellation in either order', pg, async () => {
