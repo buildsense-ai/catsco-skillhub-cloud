@@ -54,6 +54,7 @@ import { createPublicationControlHandler } from "./publication-control.js";
 import { createPublicationCommitHandler } from "./publication-commit.js";
 import { createPublicationUploadHandler } from "./publication-upload.js";
 import { createPublicationDescriptionDerivationHandler } from "./publication-description-derivation.js";
+import { createPublicationRepairMaterialHandler } from "./publication-repair-material.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const adminIndexPath = path.resolve(here, "../admin/public/index-v2.html");
@@ -77,10 +78,12 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
   const handlePublicationCommit = createPublicationCommitHandler(config, store);
   const handlePublicationUpload = createPublicationUploadHandler(config, store);
   const handlePublicationDescriptionDerivation = createPublicationDescriptionDerivationHandler(config, store);
+  const handlePublicationRepairMaterial = createPublicationRepairMaterialHandler(config, store);
 
   return http.createServer(async (req, res) => {
     res.setHeader("X-Request-Id", randomId());
     if (await handlePublicationUpload(req, res)) return;
+    if (await handlePublicationRepairMaterial(req, res)) return;
     if (await handlePublicationDescriptionDerivation(req, res)) return;
     if (await handlePublicationCommit(req, res)) return;
     if (await handlePublicationControl(req, res)) return;

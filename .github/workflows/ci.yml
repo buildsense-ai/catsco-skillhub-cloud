@@ -52,6 +52,13 @@ jobs:
       - name: Run integration tests
         run: npm run test:ci
 
+      - name: Verify private repair material with real PostgreSQL and TLS
+        env:
+          SKILLHUB_REQUIRE_REPAIR_MATERIAL_CONTRACT: '1'
+        run: |
+          test -n "$SKILLHUB_TEST_DATABASE_URL"
+          node --test tests/integration/publication-repair-material.test.js
+
   publication-peer-contract:
     name: Cloud and CatsCo publication peer HTTPS contract
     runs-on: ubuntu-latest

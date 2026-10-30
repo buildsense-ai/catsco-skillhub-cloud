@@ -50,6 +50,13 @@ export function loadConfig(overrides = {}) {
       peerSecret: overrides.publicationCommitServicePeerSecret ?? process.env.SKILLHUB_PUBLICATION_COMMIT_SERVICE_PEER_SECRET ?? "",
       trustedProxyAddresses: overrides.publicationCommitServiceTrustedProxyAddresses ?? splitList(process.env.SKILLHUB_PUBLICATION_COMMIT_SERVICE_TRUSTED_PROXY_ADDRESSES)
     },
+    publicationRepairMaterial: {
+      enabled: overrides.publicationRepairMaterialEnabled ?? readBool("SKILLHUB_PUBLICATION_REPAIR_MATERIAL_ENABLED", false),
+      issuer: overrides.publicationRepairMaterialIssuer ?? process.env.SKILLHUB_PUBLICATION_REPAIR_MATERIAL_ISSUER ?? "",
+      audience: overrides.publicationRepairMaterialAudience ?? process.env.SKILLHUB_PUBLICATION_REPAIR_MATERIAL_AUDIENCE ?? "",
+      peerSecret: overrides.publicationRepairMaterialPeerSecret ?? process.env.SKILLHUB_PUBLICATION_REPAIR_MATERIAL_PEER_SECRET ?? "",
+      trustedProxyAddresses: overrides.publicationRepairMaterialTrustedProxyAddresses ?? splitList(process.env.SKILLHUB_PUBLICATION_REPAIR_MATERIAL_TRUSTED_PROXY_ADDRESSES)
+    },
     publicationDescriptionDerivation: {
       enabled: overrides.publicationDescriptionDerivationEnabled ?? readBool("SKILLHUB_PUBLICATION_DESCRIPTION_DERIVATION_ENABLED", false),
       readEnabled: overrides.publicationDescriptionReadEnabled ?? readBool("SKILLHUB_PUBLICATION_DESCRIPTION_READ_ENABLED", false),
