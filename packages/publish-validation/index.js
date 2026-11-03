@@ -285,7 +285,7 @@ function frontmatter(file, entryIndex, limits, issues) {
     return;
   }
   if (typeof data.name !== "string" || !data.name.trim()) issues.push(issue("metadata.name_invalid", "入口 name 必须是非空文本。", {location: {...location, field: "name"}}));
-  else if (data.name !== data.name.trim()) issues.push(issue("metadata.name_whitespace", "入口 name 不能包含首尾空白。", {location: {...location, field: "name"}}));
+  else if (data.name !== data.name.trim()) issues.push(issue("metadata.name_whitespace", "入口 name 不能包含首尾空白。", {repairPolicy: "automatic", location: {...location, field: "name"}}));
   if (data.description === undefined || data.description === null || (typeof data.description === "string" && !data.description.trim())) {
     issues.push(issue("metadata.description_missing", "入口缺少 description；可生成草稿，但确认后才能写入发布副本。", {repairPolicy: "confirmation_required", location: {...location, field: "description"}}));
   } else if (typeof data.description !== "string") issues.push(issue("metadata.description_type", "入口 description 必须是文本，不能自动转换类型。", {location: {...location, field: "description"}}));

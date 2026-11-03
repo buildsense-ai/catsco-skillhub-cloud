@@ -81,13 +81,30 @@ test("PostgreSQL-backed current share flow works", { skip: !databaseUrl }, async
   await register(`developer-${suffix}@example.com`, "developer-pass-123");
   await login(`developer-${suffix}@example.com`, "developer-pass-123");
 
+  const reservationsBeforeReject = await store.query("SELECT count(*)::int AS count FROM publication_version_reservations");
+  const rejected = await fetch(`${baseUrl}/api/skills/share`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: cookies },
+    body: JSON.stringify({
+      manifest: { displayName: `Rejected Skill ${suffix}` },
+      source: { type: "files", files: [{ path: "SKILL.md", content: "# Missing required frontmatter\n" }] }
+    })
+  });
+  const rejectedBody = await rejected.json();
+  assert.equal(rejected.status, 422);
+  assert.equal(rejectedBody.error.code, "skillhub.publish_validation_failed");
+  assert.equal(rejectedBody.error.validation.outcome, "rejected");
+  assert.ok(rejectedBody.error.validation.issues.some(issue => issue.code === "frontmatter.missing"));
+  const reservationsAfterReject = await store.query("SELECT count(*)::int AS count FROM publication_version_reservations");
+  assert.equal(reservationsAfterReject.rows[0].count, reservationsBeforeReject.rows[0].count);
+
   const shared = await postJson("/api/skills/share", {
     source: {
       type: "files",
       files: [
         {
           path: "SKILL.md",
-          content: `# Contract Review Assistant ${suffix}\n\nReviews contract clauses and highlights risks requiring human confirmation.\n`
+          content: `---\nname: contract-review-assistant-${suffix}\ndescription: Reviews contract clauses and highlights risks requiring human confirmation.\n---\n# Contract Review Assistant ${suffix}\n\nReviews contract clauses and highlights risks requiring human confirmation.\n`
         },
         {
           path: "README.md",
@@ -186,7 +203,7 @@ test("PostgreSQL-backed current share flow works", { skip: !databaseUrl }, async
       type: "files",
       files: [{
         path: "SKILL.md",
-        content: `# Contract Review Assistant ${suffix} v${nextVersion}\n\nUpdated test release.\n`
+        content: `---\nname: contract-review-assistant-${suffix}\ndescription: Reviews contract clauses and highlights risks requiring human confirmation.\n---\n# Contract Review Assistant ${suffix} v${nextVersion}\n\nUpdated test release.\n`
       }]
     },
     manifest: {

@@ -48,12 +48,14 @@ import {
 } from "../../packages/signing/index.js";
 import { createExaWebAnswerService } from "../../packages/web-answer/index.js";
 import { handlePresentationRequest } from "./presentations.js";
-import { createPublishValidationHandler } from "./publish-validation.js";
+import { createPublishValidationHandler, readRaw } from "./publish-validation.js";
 import { createPublicationTasksHandler } from "./publication-tasks.js";
 import { createPublicationControlHandler } from "./publication-control.js";
 import { createPublicationCommitHandler } from "./publication-commit.js";
 import { createPublicationUploadHandler } from "./publication-upload.js";
 import { createPublicationDescriptionDerivationHandler } from "./publication-description-derivation.js";
+import { effectiveLimits, parseStrictJson } from "../../packages/publish-validation/index.js";
+import { runPublishValidation } from "../../packages/publish-validation/runner.js";
 import { createPublicationRepairMaterialHandler } from "./publication-repair-material.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -73,6 +75,13 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
   let activePrivateUploads = 0;
   const exaWebAnswer = createExaWebAnswerService();
   const handlePublishValidation = createPublishValidationHandler(config, store);
+  let activeQuickShareValidations = 0;
+  const quickShareValidationLimiter = new RateLimiter({
+    windowMs: 60_000,
+    limit: Number.isSafeInteger(config.publishValidation?.requestsPerMinute) && config.publishValidation.requestsPerMinute > 0
+      ? config.publishValidation.requestsPerMinute : 1,
+    maxBuckets: 20_000
+  });
   const handlePublicationTasks = createPublicationTasksHandler(config, store);
   const handlePublicationControl = createPublicationControlHandler(config, store);
   const handlePublicationCommit = createPublicationCommitHandler(config, store);
@@ -910,7 +919,69 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
           'Publication publishing requires publication tasks to be enabled.', 'skillhub.publication_task_configuration_invalid', 503);
         if (config.publicationPublishing?.enabled) throw new ValidationError(
           'Use the validated publication task workflow; upgrade this publisher client.', 'skillhub.publication_task_required', 409);
-        const body = await readJson(req, config.limits.uploadMaxBytes * 2);
+        const validationSettings = config.publishValidation;
+        let validationLimits;
+        try {
+          validationLimits = effectiveLimits({ ...config.limits, ...validationSettings.limits });
+        } catch {
+          throw new ValidationError('Publication validation is unavailable.', 'skillhub.publish_validation_unavailable', 503);
+        }
+        if (!Number.isSafeInteger(validationSettings.maxConcurrent) || validationSettings.maxConcurrent <= 0
+          || !Number.isSafeInteger(validationSettings.requestsPerMinute) || validationSettings.requestsPerMinute <= 0
+          || !Number.isSafeInteger(validationSettings.readTimeoutMs) || validationSettings.readTimeoutMs <= 0
+          || !Number.isSafeInteger(validationSettings.workerTimeoutMs) || validationSettings.workerTimeoutMs <= 0
+          || !Number.isSafeInteger(validationSettings.workerMemoryMb) || validationSettings.workerMemoryMb <= 0) {
+          throw new ValidationError('Publication validation is unavailable.', 'skillhub.publish_validation_unavailable', 503);
+        }
+        if (activeQuickShareValidations >= validationSettings.maxConcurrent) throw new ValidationError(
+          'Publication validation is busy. Please retry.', 'skillhub.publish_validation_busy', 503);
+        if (!quickShareValidationLimiter.check(actor.userId || actor.id)) throw new ValidationError(
+          'Publication requests are too frequent.', 'rate_limited', 429);
+        activeQuickShareValidations++;
+        const validationAbort = new AbortController();
+        const validationTimeout = setTimeout(
+          () => validationAbort.abort(), validationSettings.readTimeoutMs + validationSettings.workerTimeoutMs
+        );
+        let body;
+        try {
+          if (!/^application\/json(?:\s*;|$)/i.test(req.headers["content-type"] ?? "")) throw new ValidationError(
+            'Content-Type must be application/json.', 'skillhub.publish_validation_invalid_request', 400);
+          const raw = await readRaw(req, validationLimits.maxRequestBytes, validationAbort.signal);
+          let parsed;
+          try {
+            parsed = parseStrictJson(new TextDecoder('utf-8', { fatal: true }).decode(raw), validationLimits);
+          } catch {
+            throw new ValidationError('Invalid publication request.', 'skillhub.publish_validation_invalid_request', 400);
+          }
+          const allowed = new Set(['source', 'manifest', 'form', 'quickShare', 'notes', 'confirmVersionPublish', 'runJobsInline']);
+          if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || Object.keys(parsed).some(key => !allowed.has(key))) {
+            throw new ValidationError('Invalid publication request.', 'skillhub.publish_validation_invalid_request', 400);
+          }
+          if ((Object.hasOwn(parsed, 'quickShare') && typeof parsed.quickShare !== 'boolean')
+            || (Object.hasOwn(parsed, 'confirmVersionPublish') && typeof parsed.confirmVersionPublish !== 'boolean')
+            || (Object.hasOwn(parsed, 'runJobsInline') && typeof parsed.runJobsInline !== 'boolean')
+            || (Object.hasOwn(parsed, 'notes') && (typeof parsed.notes !== 'string' || parsed.notes.length > 2000))) {
+            throw new ValidationError('Invalid publication request.', 'skillhub.publish_validation_invalid_request', 400);
+          }
+          const candidate = {
+            source: parsed.source,
+            ...(Object.hasOwn(parsed, 'manifest') ? { manifest: parsed.manifest } : {}),
+            ...(Object.hasOwn(parsed, 'form') ? { form: parsed.form } : {})
+          };
+          const validation = await runPublishValidation(JSON.stringify(candidate), validationLimits, {
+            timeoutMs: validationSettings.workerTimeoutMs,
+            memoryMb: validationSettings.workerMemoryMb,
+            signal: validationAbort.signal
+          });
+          if (validation.status !== 200) {
+            sendJson(res, validation.status, validation.body);
+            return;
+          }
+          body = parsed;
+        } finally {
+          clearTimeout(validationTimeout);
+          activeQuickShareValidations--;
+        }
         const files = filesFromSubmissionBody(body, config.limits);
         let manifest = namespaceQuickShareManifest(buildManifestDraft({ form: body.manifest ?? body.form ?? {}, files }), actor);
         let normalizedFiles = upsertManifestFile(files, manifest);
