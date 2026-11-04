@@ -19,7 +19,7 @@ export function delegatedValidationReport(result,candidateHash) {
     if(!exact(issue,['code','category','blocking','location','message','repairPolicy']) ||
       !matches(issue.code,/^[a-z][a-z0-9_]{0,47}\.[a-z][a-z0-9_]{0,63}$/) ||
       !['format','package_safety','compatibility'].includes(issue.category) || typeof issue.blocking!=='boolean' ||
-      !['manual','confirmation_required','none'].includes(issue.repairPolicy) ||
+      !['automatic','manual','confirmation_required','none'].includes(issue.repairPolicy) ||
       (issue.code==='metadata.description_missing' && issue.repairPolicy!=='confirmation_required') ||
       typeof issue.message!=='string' || !issue.message || !issue.message.isWellFormed() ||
       Buffer.byteLength(issue.message)>1024 || /[\x00-\x1f\x7f]/.test(issue.message))throw Error('invalid issue');
@@ -28,6 +28,8 @@ export function delegatedValidationReport(result,candidateHash) {
       (Object.hasOwn(loc,'entryIndex') && (!Number.isSafeInteger(loc.entryIndex) || loc.entryIndex<0)) ||
       (Object.hasOwn(loc,'relativePath') && !['SKILL.md','skill.json','README.md'].includes(loc.relativePath)) ||
       (Object.hasOwn(loc,'field') && !fields.has(loc.field)))throw Error('invalid location');
+    if(issue.repairPolicy==='automatic' &&
+      (issue.code!=='metadata.name_whitespace' || issue.category!=='format' || !issue.blocking || loc.field!=='name'))throw Error('invalid automatic repair policy');
   }
   const blocking=report.issues.some(i=>i.blocking);
   if((report.outcome==='passed' && blocking) || (report.outcome==='rejected' && !blocking && !report.truncated) ||
