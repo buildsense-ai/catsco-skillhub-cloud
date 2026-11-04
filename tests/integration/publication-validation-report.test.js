@@ -15,6 +15,26 @@ test('report preserves original rule IDs, candidate digest and description confi
   const passed=validatePublishRequest(source('---\nname: valid\ndescription: Valid fixture\n---\n'));
   assert.equal(delegatedValidationReport(passed,passed.body.validation.candidateHash).outcome,'passed');
 });
+test('report allows only the implemented automatic name-whitespace repair policy',()=>{
+  const result=validatePublishRequest(source('---\nname: " private-name "\ndescription: Valid fixture\n---\nPrivate source text'));
+  assert.equal(result.status,422);
+  const report=result.body.error.validation;
+  const projected=delegatedValidationReport(result,report.candidateHash);
+  assert.deepEqual(projected.issues.map(({code,category,blocking,location,repairPolicy})=>({code,category,blocking,location,repairPolicy})),[
+    {code:'metadata.name_whitespace',category:'format',blocking:true,location:{entryIndex:0,relativePath:'SKILL.md',field:'name'},repairPolicy:'automatic'}
+  ]);
+  assert.ok(!JSON.stringify(projected).includes('private-name'));
+  for(const mutate of [
+    r=>{r.body.error.validation.issues[0].code='metadata.name_invalid';},
+    r=>{r.body.error.validation.issues[0].category='compatibility';},
+    r=>{r.body.error.validation.issues[0].blocking=false;},
+    r=>{r.body.error.validation.issues[0].location.field='description';},
+  ]) {
+    const invalid=validatePublishRequest(source('---\nname: " private-name "\ndescription: Valid fixture\n---\n'));
+    const hash=invalid.body.error.validation.candidateHash;mutate(invalid);
+    assert.throws(()=>delegatedValidationReport(invalid,hash));
+  }
+});
 test('report projection fails closed on corrupt, cross-candidate, over-budget and private fields',()=>{
   for(const mutate of [
     r=>r.body.error.validation.candidateHash='a'.repeat(64),
