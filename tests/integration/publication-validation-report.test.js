@@ -35,6 +35,18 @@ test('report allows only the implemented automatic name-whitespace repair policy
     assert.throws(()=>delegatedValidationReport(invalid,hash));
   }
 });
+test('report allows automatic repair guidance only for a missing name field',()=>{
+  const result=validatePublishRequest(source('---\ndescription: Valid fixture\n---\n'));
+  const report=result.body.error.validation;
+  const projected=delegatedValidationReport(result,report.candidateHash);
+  assert.deepEqual(projected.issues.map(({code,category,blocking,location,repairPolicy})=>({code,category,blocking,location,repairPolicy})),[
+    {code:'metadata.name_missing',category:'format',blocking:true,location:{entryIndex:0,relativePath:'SKILL.md',field:'name'},repairPolicy:'automatic'}
+  ]);
+  const invalid=validatePublishRequest(source('---\nname: 12\ndescription: Valid fixture\n---\n'));
+  const hash=invalid.body.error.validation.candidateHash;
+  invalid.body.error.validation.issues.find(issue=>issue.code==='metadata.name_invalid').repairPolicy='automatic';
+  assert.throws(()=>delegatedValidationReport(invalid,hash));
+});
 test('report projection fails closed on corrupt, cross-candidate, over-budget and private fields',()=>{
   for(const mutate of [
     r=>r.body.error.validation.candidateHash='a'.repeat(64),

@@ -29,7 +29,7 @@ export function delegatedValidationReport(result,candidateHash) {
       (Object.hasOwn(loc,'relativePath') && !['SKILL.md','skill.json','README.md'].includes(loc.relativePath)) ||
       (Object.hasOwn(loc,'field') && !fields.has(loc.field)))throw Error('invalid location');
     if(issue.repairPolicy==='automatic' &&
-      (issue.code!=='metadata.name_whitespace' || issue.category!=='format' || !issue.blocking || loc.field!=='name'))throw Error('invalid automatic repair policy');
+      (!['metadata.name_missing','metadata.name_whitespace'].includes(issue.code) || issue.category!=='format' || !issue.blocking || loc.field!=='name'))throw Error('invalid automatic repair policy');
   }
   const blocking=report.issues.some(i=>i.blocking);
   if((report.outcome==='passed' && blocking) || (report.outcome==='rejected' && !blocking && !report.truncated) ||
