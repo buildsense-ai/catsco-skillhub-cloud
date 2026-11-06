@@ -34,13 +34,24 @@ test("absence of frontmatter or fields cannot be masked by outside metadata", ()
   assert.equal(report(r).nextAction,'review_report');
 });
 
-test("metadata types and whitespace are not repaired", () => {
+test("only missing names and surrounding whitespace are marked for safe client repair", () => {
+  const missing = run(body(skill('description: fine')));
+  const missingName = report(missing).issues.find(i => i.code==='metadata.name_missing');
+  assert.equal(missingName.repairPolicy,'automatic');
+  assert.equal(missingName.location.field,'name');
   for (const [head,code] of [
     ['name: " x "\ndescription: fine','metadata.name_whitespace'],
     ['name: 13\ndescription: fine','metadata.name_invalid'],
+    ['name: ""\ndescription: fine','metadata.name_invalid'],
     ['name: x\ndescription: [one,two]','metadata.description_type'],
     ['name: x\ndescription: "  "','metadata.description_missing']
-  ]) assert.ok(codes(run(body(skill(head)))).includes(code));
+  ]) {
+    const result = run(body(skill(head)));
+    const problem = report(result).issues.find(i => i.code===code);
+    assert.ok(problem);
+    if (code==='metadata.name_whitespace') assert.equal(problem.repairPolicy,'automatic');
+    if (code==='metadata.name_invalid') assert.equal(problem.repairPolicy,'manual');
+  }
 });
 
 test("JSON and YAML duplicates are rejected, including escaped JSON names", () => {
