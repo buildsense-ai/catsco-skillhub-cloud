@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { appendAudit } from "../audit/index.js";
 import { generateId, JobStatus, nowIso, sha256, ValidationError } from "../domain/index.js";
 import { createPresentationStore, ensurePresentationSchema } from "../presentations/store.js";
 import { createPresentationAssetStore } from "../presentations/asset-store.js";
@@ -78,6 +79,24 @@ export function createStore(config) {
     } finally {
       client.release();
     }
+  }
+
+  // Use the same Skill-first lock order as publication and whole-Skill moderation.
+  async function lockSkillForVersion(client, packageVersionId) {
+    await client.query(
+      `SELECT s.id FROM skills s JOIN skill_versions v ON v.skill_id = s.id
+       WHERE v.id = $1 FOR UPDATE OF s`,
+      [packageVersionId]
+    );
+  }
+
+  async function insertAudit(runQuery, entry) {
+    await runQuery(
+      `INSERT INTO audit_logs (id, actor_user_id, actor_role, action, resource_type, resource_id, metadata, ip, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [entry.id, entry.actorId, entry.actorRole, entry.action, entry.resourceType,
+        entry.resourceId, toJsonParam(entry.metadata), entry.ip, entry.createdAt]
+    );
   }
 
   async function ensureSimplifiedSchema() {
@@ -833,7 +852,7 @@ export function createStore(config) {
           if (completion) await finishPublicationCompletion(client,completion,packageVersion,config.publicationTasks.retentionMs);
           return mapPackageVersion(previous);
         }
-        const current = (await client.query('SELECT latest_version FROM skills WHERE id=$1', [packageVersion.skillId])).rows[0];
+        const current = (await client.query('SELECT latest_version FROM skills WHERE id=$1 FOR UPDATE', [packageVersion.skillId])).rows[0];
         const latestVersion = current?.latest_version && comparePublicVersions(current.latest_version, packageVersion.version) > 0
           ? current.latest_version : packageVersion.version;
         await client.query(
@@ -1191,6 +1210,7 @@ export function createStore(config) {
     async yankPackageVersion(packageVersionId) {
       await ensureSimplifiedSchema();
       return tx(async (client) => {
+        await lockSkillForVersion(client, packageVersionId);
         const result = await client.query(
           `UPDATE skill_versions
            SET status = 'yanked', yanked_at = now()
@@ -1226,6 +1246,7 @@ export function createStore(config) {
     async restorePackageVersion(packageVersionId) {
       await ensureSimplifiedSchema();
       return tx(async (client) => {
+        await lockSkillForVersion(client, packageVersionId);
         const result = await client.query(
           `UPDATE skill_versions
            SET status = 'published', yanked_at = NULL, updated_at = now()
@@ -1259,6 +1280,7 @@ export function createStore(config) {
     async deletePackageVersion(packageVersionId) {
       await ensureSimplifiedSchema();
       return tx(async (client) => {
+        await lockSkillForVersion(client, packageVersionId);
         const result = await client.query(
           `UPDATE skill_versions
            SET status = 'yanked', yanked_at = coalesce(yanked_at, now()), updated_at = now()
@@ -1289,9 +1311,51 @@ export function createStore(config) {
       });
     },
 
+    async yankSkills(skillIds, { actor, reason, ip }) {
+      await ensureSimplifiedSchema();
+      return tx(async (client) => {
+        const locked = await client.query(
+          `SELECT id FROM skills WHERE id = ANY($1::text[]) ORDER BY id FOR UPDATE`,
+          [skillIds]
+        );
+        if (locked.rowCount !== skillIds.length) {
+          throw new ValidationError("选中的 Skill 已不存在，请刷新列表后重试", "skill.not_found", 404);
+        }
+
+        const updated = await client.query(
+          `WITH yanked AS (
+             UPDATE skill_versions SET status = 'yanked', yanked_at = now(), updated_at = now()
+             WHERE skill_id = ANY($1::text[]) AND status = 'published' AND yanked_at IS NULL
+             RETURNING skill_id
+           )
+           SELECT skill_id, count(*)::int AS version_count FROM yanked GROUP BY skill_id`,
+          [skillIds]
+        );
+        await client.query(
+          `UPDATE skills SET latest_version = NULL, status = 'yanked', updated_at = now()
+           WHERE id = ANY($1::text[]) AND (latest_version IS NOT NULL OR status <> 'yanked')`,
+          [skillIds]
+        );
+        const counts = new Map(updated.rows.map((row) => [row.skill_id, row.version_count]));
+        const auditStore = { appendAudit: (entry) => insertAudit(client.query.bind(client), entry) };
+        for (const { skill_id: skillId, version_count: versionCount } of updated.rows) {
+          await appendAudit(auditStore, {
+            actor,
+            action: "skill.hidden_admin",
+            resourceType: "skill",
+            resourceId: skillId,
+            metadata: { versionCount, reason },
+            ip
+          });
+        }
+        return skillIds.map((skillId) => ({ skillId, hiddenVersions: counts.get(skillId) ?? 0 }));
+      });
+    },
+
     async deleteSkill(skillId) {
       await ensureSimplifiedSchema();
       return tx(async (client) => {
+        await client.query("SELECT id FROM skills WHERE id = $1 FOR UPDATE", [skillId]);
         const versions = await client.query(
           `UPDATE skill_versions
            SET status = 'yanked', yanked_at = coalesce(yanked_at, now()), updated_at = now()
@@ -2037,21 +2101,7 @@ export function createStore(config) {
     },
 
     async appendAudit(entry) {
-      await query(
-        `INSERT INTO audit_logs (id, actor_user_id, actor_role, action, resource_type, resource_id, metadata, ip, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-        [
-          entry.id,
-          entry.actorId,
-          entry.actorRole,
-          entry.action,
-          entry.resourceType,
-          entry.resourceId,
-          toJsonParam(entry.metadata),
-          entry.ip,
-          entry.createdAt
-        ]
-      );
+      await insertAudit(query, entry);
     },
 
     async listAuditLogs({ action = "", resourceType = "", actorUserId = "", limit = 100 } = {}) {

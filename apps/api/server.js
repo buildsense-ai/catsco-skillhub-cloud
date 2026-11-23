@@ -1395,6 +1395,20 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
         return;
       }
 
+      if (pathname === "/api/admin/skills/yank" && req.method === "POST") {
+        const actor = await requireAdminActor(config, store, req, "package.yank");
+        const body = await readJson(req, 2 * 1024 * 1024);
+        const { skillIds, reason = "" } = body ?? {};
+        if (!Array.isArray(skillIds) || skillIds.length < 1 || skillIds.length > 1000
+          || skillIds.some((id) => typeof id !== "string" || !id.trim() || id.length > 512 || id.includes("\0"))
+          || typeof reason !== "string") {
+          throw new ValidationError("请选择 1 至 1000 个 Skill，并提供有效的下架原因", "skill.invalid_moderation_request");
+        }
+        const skills = await store.yankSkills([...new Set(skillIds)], { actor, reason: reason.trim().slice(0, 1000), ip });
+        sendJson(res, 200, { skills });
+        return;
+      }
+
       const adminDeleteSkill = pathname.match(/^\/api\/admin\/skills\/(.+)$/);
       if (adminDeleteSkill && req.method === "DELETE") {
         const actor = await requireAdminActor(config, store, req, "package.yank");

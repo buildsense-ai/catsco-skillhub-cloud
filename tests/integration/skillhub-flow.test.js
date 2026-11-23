@@ -324,6 +324,86 @@ test("PostgreSQL-backed current share flow works", { skip: !databaseUrl }, async
   assert.equal(stillRecoverableByBot.status, 200);
 });
 
+test("whole-Skill moderation hides all published versions and records the batch", { skip: !databaseUrl }, async () => {
+  const publisherEmail = `moderation-publisher-${suffix}@example.com`;
+  const adminEmail = `moderation-admin-${suffix}@example.com`;
+  const password = "moderation-test-pass-123";
+  await register(publisherEmail, password);
+  await login(publisherEmail, password);
+
+  async function publish(name, version) {
+    await postJson("/api/skills/share", {
+      source: { type: "files", files: [{
+        path: "SKILL.md",
+        content: `---\nname: ${name}\ndescription: Formats sample text for a moderation test.\n---\n# Test Skill\n\nFormats sample text for release ${version}.\n`
+      }] },
+      manifest: { name, displayName: name, version, license: "MIT" },
+      confirmVersionPublish: true,
+      runJobsInline: true
+    });
+    const { skills } = await getJson(`/api/skills?q=${name}`);
+    const skill = skills.find((item) => item.name === name);
+    assert.ok(skill, `expected published Skill ${name}`);
+    return skill;
+  }
+
+  const first = await publish(`moderation-first-${suffix}`, "1.0.0");
+  await publish(first.name, "1.0.1");
+  const second = await publish(`moderation-second-${suffix}`, "1.0.0");
+  const control = await publish(`moderation-control-${suffix}`, "1.0.0");
+  const firstPath = `/api/skills/${encodeURIComponent(first.skillId)}`;
+  const cataloguePath = `/api/catalogue/skills?q=${first.name}`;
+  const yankPath = "/api/admin/skills/yank";
+  const sendBatch = (skillIds) => fetch(`${baseUrl}${yankPath}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: cookies },
+    body: JSON.stringify({ skillIds, reason: "moderation regression" })
+  });
+  assert.equal((await sendBatch([first.skillId])).status, 403);
+
+  await register(adminEmail, password);
+  const admin = await login(adminEmail, password);
+  await store.grantRole({ userId: admin.user.id, role: "admin", grantedBy: admin.user.id });
+  const { skillVersions } = await getJson(`/api/admin/skills/${encodeURIComponent(first.skillId)}/versions`);
+  const newestId = skillVersions.find((item) => item.latestVersion === "1.0.1").packageVersionId;
+  const oldestId = skillVersions.find((item) => item.latestVersion === "1.0.0").packageVersionId;
+  await postJson(`/api/admin/skill-versions/${newestId}/yank`, {});
+  assert.equal((await getJson(firstPath)).skill.latestVersion, "1.0.0");
+  assert.ok((await getJson(cataloguePath)).skills.some((item) => item.skillId === first.skillId));
+
+  assert.equal((await sendBatch([])).status, 400);
+  assert.equal((await sendBatch([first.skillId, `unknown/not-found-${suffix}`])).status, 404);
+  assert.equal((await fetch(`${baseUrl}${firstPath}/versions/1.0.0/download`)).status, 200);
+  const batch = await sendBatch([second.skillId, first.skillId, second.skillId]);
+  assert.equal(batch.status, 200);
+  assert.deepEqual((await batch.json()).skills, [
+    { skillId: second.skillId, hiddenVersions: 1 }, { skillId: first.skillId, hiddenVersions: 1 }
+  ]);
+  assert.equal((await fetch(`${baseUrl}${firstPath}`)).status, 404);
+  assert.equal((await fetch(`${baseUrl}${firstPath}/versions/1.0.0/download`)).status, 404);
+  assert.equal((await fetch(first.packageUrl)).status, 404);
+  assert.deepEqual((await getJson(`${firstPath}/versions`)).versions, []);
+  assert.ok(!(await getJson(`/api/skills?q=${first.name}`)).skills.some((item) => item.skillId === first.skillId));
+  assert.ok(!(await getJson(cataloguePath)).skills.some((item) => item.skillId === first.skillId));
+  assert.equal((await fetch(`${baseUrl}/api/skills/${encodeURIComponent(second.skillId)}`)).status, 404);
+  assert.equal((await fetch(`${baseUrl}/api/skills/${encodeURIComponent(control.skillId)}`)).status, 200);
+
+  assert.deepEqual((await postJson(yankPath, { skillIds: [first.skillId] })).skills, [
+    { skillId: first.skillId, hiddenVersions: 0 }
+  ]);
+  const { skills: hiddenSkills } = await getJson(`/api/admin/skills?q=${first.name}&status=yanked`);
+  assert.equal(hiddenSkills[0].latestVersion, null);
+  assert.equal(hiddenSkills[0].versionCount, 2);
+  assert.equal(hiddenSkills[0].publishedVersionCount, 0);
+  const { auditLogs } = await getJson(`/api/admin/audit-logs?action=skill.hidden_admin&actorUserId=${admin.user.id}`);
+  assert.deepEqual(auditLogs.map((entry) => entry.resourceId).sort(), [first.skillId, second.skillId].sort());
+  assert.ok(auditLogs.every((entry) => entry.metadata.versionCount === 1 && entry.metadata.reason === "moderation regression"));
+
+  await postJson(`/api/admin/skill-versions/${oldestId}/restore`, {});
+  assert.equal((await getJson(firstPath)).skill.latestVersion, "1.0.0");
+  assert.equal((await fetch(`${baseUrl}${firstPath}/versions/1.0.1`)).status, 404);
+});
+
 test("PostgreSQL-backed concurrent first profile sync creates one identity", { skip: !databaseUrl }, async () => {
   const responses = await Promise.all([
     fetch(`${baseUrl}/api/auth/catsco-profile-sync`, {
