@@ -23,9 +23,11 @@ export function searchPublishedSkillsPage(packageVersions, query = "", options =
     searchMode,
     category,
     platform: normalizePlatform(options.platform),
-    limit
+    limit,
+    ...(options.recommended ? { scope: "recommended" } : {})
   }));
   const ranked = rankedPublishedSkills(packageVersions, query, { ...options, platform: normalizePlatform(options.platform) });
+  if (options.recommended) ranked.sort((a, b) => a.version.recommendationPosition - b.version.recommendationPosition);
   const counts = new Map();
   for (const { version } of ranked) {
     const value = catalogueCategory(version);

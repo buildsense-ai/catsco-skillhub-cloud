@@ -857,6 +857,25 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
         return;
       }
 
+      if (pathname === "/api/admin/catalogue/recommendations" && ["GET", "PUT"].includes(req.method)) {
+        const actor = await requireAdminActor(config, store, req, "package.yank");
+        if (req.method === "GET") {
+          sendJson(res, 200, await store.getCatalogueRecommendations(), { "Cache-Control": "private, no-store" });
+          return;
+        }
+        if (String(req.headers["content-type"] || "").split(";")[0].trim().toLowerCase() !== "application/json") {
+          throw new ValidationError("Content-Type must be application/json.", "catalogue.recommendations_content_type", 415);
+        }
+        const { revision, skillIds } = (await readJson(req, 256 * 1024)) ?? {};
+        if (!Number.isSafeInteger(revision) || revision < 0 || !Array.isArray(skillIds) || skillIds.length > 200
+          || skillIds.some((id) => typeof id !== "string" || !id.trim() || id.length > 512 || id.includes("\0"))
+          || new Set(skillIds).size !== skillIds.length) {
+          throw new ValidationError("推荐名单无效，最多可选 200 个不同的 Skill。", "catalogue.recommendations_invalid");
+        }
+        sendJson(res, 200, await store.writeCatalogueRecommendations({ revision, skillIds }, actor, ip), { "Cache-Control": "private, no-store" });
+        return;
+      }
+
       if (pathname === "/api/admin/skills" && req.method === "GET") {
         const actor = await requireAdminActor(config, store, req, "package.yank");
         const skills = typeof store.listAdminSkills === "function"

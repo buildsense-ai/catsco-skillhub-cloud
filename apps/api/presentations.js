@@ -27,7 +27,9 @@ export async function handlePresentationRequest({ config, store, req, res, url, 
     if (rawLimit !== null && !/^[1-9][0-9]{0,2}$/.test(rawLimit)) {
       throw new ValidationError("Catalogue limit must be an integer between 1 and 100.", "catalogue.limit_invalid", 400);
     }
-    const result = searchPublishedSkillsPage(await store.listCatalogueVersions(skillVisibilityViewer(actor)), url.searchParams.get("q") || "", {
+    const recommended = url.searchParams.get("scope") === "recommended";
+    const result = searchPublishedSkillsPage(await store.listCatalogueVersions({ ...skillVisibilityViewer(actor), recommended }), url.searchParams.get("q") || "", {
+      recommended,
       category: url.searchParams.get("category") || "",
       platform: url.searchParams.get("platform") || "",
       agentVersion: url.searchParams.get("agent_version") || "",
@@ -35,7 +37,7 @@ export async function handlePresentationRequest({ config, store, req, res, url, 
       ...(rawLimit !== null ? { limit: Number(rawLimit) } : {}),
       ...(url.searchParams.has("cursor") ? { cursor: url.searchParams.get("cursor") } : {})
     });
-    sendJson(res, 200, result);
+    sendJson(res, 200, recommended ? { ...result, scope: "recommended" } : result);
     return true;
   }
   if (req.method === "GET" && ["/api/skill-presentations", "/api/skill-presentations/draft"].includes(pathname)) {
