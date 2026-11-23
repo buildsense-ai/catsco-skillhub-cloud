@@ -167,18 +167,49 @@ export function createStore(config) {
     ...createPublicationDescriptionCommitAdmission({ enabled: config.publicationDescriptionDerivation?.commitAdmissionEnabled === true, store: { query, tx } }),
     ...createPublicationCommitStore({ query, tx, config }),
     ...createPublicVersionStore({ tx }),
-    async listCatalogueVersions({ viewerUserId = null, viewerCatsCoUid = null, includeAll = false } = {}) {
+    async getCatalogueRecommendations() {
+      const { rows: [row] } = await query("SELECT revision, skill_ids FROM catalogue_recommendations WHERE id");
+      return { revision: row.revision, skillIds: row.skill_ids };
+    },
+    async writeCatalogueRecommendations({ revision, skillIds }, actor, ip) {
+      return tx(async (client) => {
+        const { rows: [current] } = await client.query("SELECT revision, skill_ids FROM catalogue_recommendations WHERE id FOR UPDATE");
+        if (current.revision !== revision) {
+          throw new ValidationError("推荐名单已更新，请重新打开后再编辑。", "catalogue.recommendations_conflict", 409);
+        }
+        const additions = skillIds.filter((id) => !current.skill_ids.includes(id));
+        const eligible = await client.query(`SELECT s.id FROM skills s
+          WHERE s.id = ANY($1::text[]) AND s.visibility_scope = 'public'
+            AND EXISTS (SELECT 1 FROM skill_versions v WHERE v.skill_id = s.id AND v.status = 'published' AND v.yanked_at IS NULL)`, [additions]);
+        if (eligible.rowCount !== additions.length) {
+          throw new ValidationError("仅可加入公开且已发布的 Skill。", "catalogue.recommendations_ineligible");
+        }
+        const { rows: [row] } = await client.query(`UPDATE catalogue_recommendations SET revision = revision + 1, skill_ids = $1
+          WHERE id RETURNING revision`, [skillIds]);
+        await insertAudit(client.query.bind(client), {
+          id: generateId("audit"), actorId: actor.userId, actorRole: actor.role,
+          action: "catalogue.recommendations_updated", resourceType: "catalogue", resourceId: "recommendations",
+          metadata: { revision: row.revision, previousSkillIds: current.skill_ids, skillIds }, ip, createdAt: new Date()
+        });
+        return { revision: row.revision, skillIds };
+      });
+    },
+    async listCatalogueVersions({ viewerUserId = null, viewerCatsCoUid = null, includeAll = false, recommended = false } = {}) {
       await ensureSimplifiedSchema();
       await ensurePresentationSchema(query);
+      const recommendationJoin = recommended
+        ? `JOIN catalogue_recommendations r ON r.id AND s.visibility_scope = 'public' AND v.skill_id = ANY(r.skill_ids)` : "";
       const result = await query(`SELECT v.*, publisher_profiles.display_name AS publisher_display_name,
           publisher_profiles.contact AS publisher_contact,
           s.visibility_scope, s.visibility_revision, s.visibility_updated_at,
           p.published_revision AS presentation_revision,
           p.published_content->>'summary' AS presentation_summary,
           p.published_content->>'primaryCategory' AS presentation_category
+          ${recommended ? ", array_position(r.skill_ids, v.skill_id) AS recommendation_position" : ""}
         FROM skill_versions v
         LEFT JOIN publisher_profiles ON publisher_profiles.user_id = v.owner_user_id
         LEFT JOIN skills s ON s.id = v.skill_id
+        ${recommendationJoin}
         LEFT JOIN skill_visibility_grants g ON g.skill_id = s.id AND g.catsco_uid = $2
         LEFT JOIN skill_presentations p ON p.package_version_id = v.id
         WHERE v.status = 'published' AND v.yanked_at IS NULL
@@ -188,6 +219,7 @@ export function createStore(config) {
         ORDER BY v.published_at DESC`, [viewerUserId, viewerCatsCoUid, includeAll]);
       return result.rows.map((row) => ({
         ...mapPackageVersion(row),
+        ...(recommended ? { recommendationPosition: row.recommendation_position } : {}),
         ...(row.presentation_revision ? { presentationSummary: {
           revision: row.presentation_revision,
           summary: row.presentation_summary,
@@ -2297,6 +2329,7 @@ function mapAdminSkill(row) {
     status: row.status,
     versionCount: Number(row.version_count ?? 0),
     publishedVersionCount: Number(row.published_version_count ?? 0),
+    visibilityScope: row.visibility_scope || "public",
     downloadCount: Number(row.total_download_count ?? 0),
     riskLevel: row.latest_risk_level || "unknown",
     updatedAt: iso(row.updated_at),

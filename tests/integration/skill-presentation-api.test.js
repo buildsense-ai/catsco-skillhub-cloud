@@ -11,6 +11,7 @@ const owner = { userId: "owner", role: "user", roles: ["user"] };
 test("presentation validates bounded structured plain text without executable fields", () => {
   const parsed = parsePresentationContent({ ...content, tags: ["文档", "文档"], example: { kind: "document", input: "文档", output: "摘要" } });
   assert.deepEqual(parsed.tags, ["文档"]);
+  assert.equal(parsePresentationContent({ ...content, example: { ...parsed.example, copyAsPrompt: true } }).example.copyAsPrompt, true);
   assert.equal(parsed.details, "");
   for (const bad of [
     null, [], { ...content, schemaVersion: 2 }, { ...content, summary: " " },
@@ -19,6 +20,7 @@ test("presentation validates bounded structured plain text without executable fi
     { ...content, primaryCategory: "unknown" }, { ...content, tags: Array(6).fill("tag") },
     { ...content, html: "<script>alert(1)</script>" }, { ...content, imageUrl: "http://localhost/private" },
     { ...content, example: { kind: "image", input: "x", output: "y", assetId: "unverified" } },
+    { ...content, example: { ...parsed.example, copyAsPrompt: "true" } },
     { ...content, scenarios: [{ title: "a", description: "b", onclick: "evil()" }] },
     JSON.parse('{"schemaVersion":1,"summary":"x","primaryCategory":"other","__proto__":{}}')
   ]) assert.throws(() => parsePresentationContent(bad), { code: "presentation.invalid" });
@@ -117,6 +119,24 @@ test("publish and unpublish copy server drafts instead of accepting client repla
     assert.equal((await request(`/api/skill-presentations/${action}`, options)).status, 200);
     assert.equal(calls.at(-1)[2], action);
   }
+});
+
+test("recommendations use the curated order and isolate pagination from the full catalogue", async (t) => {
+  const { request, store } = await withApi(t);
+  const list = store.listCatalogueVersions;
+  const versions = await list();
+  store.listCatalogueVersions = async ({ recommended }) => recommended
+    ? [{ ...versions[0], recommendationPosition: 2 }, { ...versions[7], recommendationPosition: 1 }]
+    : versions;
+  const first = await request("/api/catalogue/skills?scope=recommended&limit=1");
+  assert.equal(first.status, 200);
+  assert.equal(first.data.scope, "recommended");
+  assert.equal(first.data.total, 2);
+  assert.equal(first.data.skills[0].skillId, versions[7].skillId);
+  const second = await request(`/api/catalogue/skills?scope=recommended&limit=1&cursor=${first.data.nextCursor}`);
+  assert.equal(second.data.skills[0].skillId, versions[0].skillId);
+  assert.equal((await request(`/api/catalogue/skills?limit=1&cursor=${first.data.nextCursor}`)).status, 409);
+  assert.equal((await request("/api/admin/catalogue/recommendations", { headers: { Cookie: "catsco_session=local-cookie" } })).status, 403);
 });
 
 test("new catalogue API pages beyond 30 while the legacy response stays compatible", async (t) => {

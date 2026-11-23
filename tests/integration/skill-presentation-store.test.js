@@ -76,6 +76,38 @@ async function uploadImage(item, { actor = item.owner, reason, color = "red", as
 
 function illustrated(asset) { return { ...content(), images: [{ assetId: asset.id, alt: "Illustrative result" }] }; }
 
+test("PostgreSQL recommended skills are visible only while public and published", pg, async (t) => {
+  const admin = await person("admin");
+  const first = await fixture({ owner: admin });
+  const second = await fixture({ owner: admin });
+  const firstId = first.target.skillId;
+  const secondId = second.target.skillId;
+  const ids = [secondId, firstId];
+  const baseline = await store.getCatalogueRecommendations();
+  t.after(async () => {
+    await store.query("UPDATE catalogue_recommendations SET skill_ids = $1, revision = $2 WHERE id", [baseline.skillIds, baseline.revision]);
+    await store.query("DELETE FROM audit_logs WHERE actor_user_id = $1 AND action = 'catalogue.recommendations_updated'", [admin.userId]);
+    await store.query("DELETE FROM skills WHERE id = ANY($1::text[])", [ids]);
+  });
+  await store.query(`INSERT INTO skills (id, name, display_name, owner_user_id, visibility_scope)
+    VALUES ($1,'first','First',$3,'public'),($2,'second','Second',$3,'private')`, [firstId, secondId, admin.userId]);
+  const write = (revision, skillIds) => store.writeCatalogueRecommendations({ revision, skillIds }, admin, "192.0.2.20");
+  await assert.rejects(write(baseline.revision, ids), { code: "catalogue.recommendations_ineligible" });
+  await store.query("UPDATE skills SET visibility_scope = 'public' WHERE id = $1", [secondId]);
+  const saved = await write(baseline.revision, ids);
+  assert.deepEqual(saved.skillIds, ids);
+  await assert.rejects(write(baseline.revision, []), { code: "catalogue.recommendations_conflict" });
+  const catalogue = () => store.listCatalogueVersions({ recommended: true, includeAll: true });
+  const recommendations = await catalogue();
+  assert.equal(recommendations.length, 2);
+  assert.equal(recommendations.find((item) => item.skillId === secondId).recommendationPosition, 1);
+  await store.query("UPDATE skills SET visibility_scope = 'shared' WHERE id = $1", [firstId]);
+  assert.deepEqual((await catalogue()).map(({ skillId }) => skillId), [secondId]);
+  await store.query("UPDATE skill_versions SET yanked_at = now() WHERE id = $1", [second.id]);
+  assert.deepEqual(await catalogue(), []);
+  assert.deepEqual(await write(saved.revision, []), { revision: saved.revision + 1, skillIds: [] });
+});
+
 test("PostgreSQL images stay private until publication and revoke on replacement, unpublish and yank", pg, async () => {
   const item = await fixture();
   const before = await snapshot(item);

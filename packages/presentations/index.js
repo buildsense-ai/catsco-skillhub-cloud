@@ -66,12 +66,14 @@ export function parsePresentationContent(value) {
     if (new Set(content.images.map((item) => item.assetId)).size !== content.images.length) invalid("Duplicate image references.");
   }
   if (value.example !== undefined) {
-    object(value.example, ["kind", "input", "output"]);
+    object(value.example, ["kind", "input", "output", "copyAsPrompt"]);
     if (!["document", "image", "generic"].includes(value.example.kind)) invalid("Unknown example template.");
+    if (value.example.copyAsPrompt !== undefined && typeof value.example.copyAsPrompt !== "boolean") invalid("Invalid example copy setting.");
     content.example = {
       kind: value.example.kind,
       input: text(value.example.input, 2000),
-      output: text(value.example.output, 2000)
+      output: text(value.example.output, 2000),
+      ...(value.example.copyAsPrompt === true ? { copyAsPrompt: true } : {})
     };
   }
   if (Buffer.byteLength(JSON.stringify(content), "utf8") > PRESENTATION_CONTENT_MAX_BYTES) invalid("Presentation is too large.");

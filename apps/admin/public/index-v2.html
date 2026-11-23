@@ -74,7 +74,7 @@
         <section class="content-grid" id="contentGrid">
           <article class="card">
             <div class="card-header"><div><div class="card-title" id="tableTitle">全部 Skills</div><div class="card-note" id="tableNote">按最近更新时间排序</div></div><div class="filters"><input class="filter-input" id="tableSearch" placeholder="搜索 Skill"><select class="filter-select" id="namespaceFilter"><option value="">全部命名空间</option></select><select class="filter-select" id="statusFilter"><option value="">全部状态</option><option value="published">已发布</option><option value="yanked">已下架</option></select></div></div>
-            <div class="bulk-bar hidden" id="bulkBar"><span id="bulkSelection" aria-live="polite">已选 0 个 Skill</span><button class="danger-button" id="bulkYankButton" disabled>批量下架</button></div>
+            <div class="bulk-bar hidden" id="bulkBar"><span id="bulkSelection" aria-live="polite">已选 0 个 Skill</span><div><button class="primary-button" id="openRecommendations">管理推荐</button> <button class="danger-button" id="bulkYankButton" disabled>批量下架</button></div></div>
             <div class="table-wrap"><table><thead id="tableHead"></thead><tbody id="tableBody"></tbody></table></div>
             <div class="pagination"><span id="resultCount">0 条记录</span><span>数据来自 SkillHub Admin API</span></div>
           </article>
@@ -108,6 +108,20 @@
     <section class="modal"><div class="modal-head"><div><div class="modal-title">登录 SkillHub Admin</div><div class="modal-note">管理员会话仅通过安全 Cookie 保存，密码不会写入页面。</div></div></div><form class="modal-body" id="loginForm"><div class="field"><label for="email">邮箱</label><input id="email" type="email" autocomplete="username" required placeholder="admin@example.com"></div><div class="field"><label for="password">密码</label><input id="password" type="password" autocomplete="current-password" required placeholder="输入管理员密码"></div><div class="field"><label for="apiBase">API 地址（通常无需修改）</label><input id="apiBase" inputmode="url" placeholder="默认使用当前站点"></div><div class="modal-error" id="loginError"></div><div class="login-actions"><button class="primary-button" type="submit" id="loginButton">登录</button></div></form></section>
   </div>
   <div class="modal-backdrop hidden" id="dataModal"><section class="modal large"><div class="modal-head"><div><div class="modal-title" id="modalTitle">详情</div><div class="modal-note" id="modalNote">SkillHub 返回的完整数据</div></div><button class="modal-close" id="modalClose">×</button></div><div class="modal-body"><pre class="json" id="modalJson">{}</pre></div></section></div>
+  <dialog class="modal large" id="recommendationsDialog" aria-labelledby="recommendationsTitle">
+    <div class="modal-head"><div><h2 class="modal-title" id="recommendationsTitle">管理能力库推荐</h2><p class="modal-note">名单从上到下展示。只有公开且已发布的 Skill 会出现在推荐页。</p></div></div>
+    <div class="modal-body">
+      <form id="recommendationAddForm" class="field">
+        <label for="recommendationInput">输入 Skill 名称或完整 ID</label>
+        <input id="recommendationInput" list="recommendationOptions" maxlength="512" required>
+        <datalist id="recommendationOptions"></datalist>
+        <button type="submit">加入推荐</button>
+      </form>
+      <ol id="recommendationList"></ol>
+      <div class="modal-error" id="recommendationError" role="status"></div>
+      <div class="login-actions"><button type="button" id="cancelRecommendations">取消</button> <button class="primary-button" type="button" id="saveRecommendations">保存推荐名单</button></div>
+    </div>
+  </dialog>
   <div class="toast" id="toast"></div>
 
   <script>
@@ -115,6 +129,98 @@
     const state = { me:null, health:null, namespaces:[], skills:[], versions:[], audits:[], selectedSkillId:"", selectedVersionId:"", view:"skills" };
     const checkedSkillIds = new Set();
     let moderationPending = false;
+    const recommendationEndpoint = "/api/admin/catalogue/recommendations";
+    let recommendationDraft = null;
+    let recommendationBusy = false;
+
+    function renderRecommendations() {
+      const ids = recommendationDraft?.skillIds ?? [];
+      const controlsDisabled = recommendationBusy || !recommendationDraft;
+      $("recommendationInput").disabled = controlsDisabled || ids.length >= 200;
+      $("recommendationAddForm").querySelector("button").disabled = $("recommendationInput").disabled;
+      $("saveRecommendations").disabled = controlsDisabled;
+      $("cancelRecommendations").disabled = recommendationBusy;
+      $("recommendationOptions").replaceChildren(...state.skills.filter((skill) => skill.visibilityScope === "public"
+        && skillStatus(skill) === "published" && !ids.includes(skill.skillId)).map((skill) => {
+        const option = document.createElement("option");
+        option.value = skill.skillId;
+        option.label = skill.displayName || skill.skillId;
+        return option;
+      }));
+      $("recommendationList").innerHTML = ids.map((id, index) => {
+        const skill = state.skills.find((item) => item.skillId === id);
+        const hidden = skill && (skill.visibilityScope !== "public" || skillStatus(skill) !== "published");
+        return `<li><strong>${esc(skill?.displayName || id)}</strong> <small>${esc(id)}${hidden ? " · 当前不可展示" : ""}</small>
+          <button type="button" data-move="up" data-index="${index}" aria-label="上移 ${esc(id)}" ${controlsDisabled || index === 0 ? "disabled" : ""}>上移</button>
+          <button type="button" data-move="down" data-index="${index}" aria-label="下移 ${esc(id)}" ${controlsDisabled || index === ids.length - 1 ? "disabled" : ""}>下移</button>
+          <button type="button" data-move="remove" data-index="${index}" aria-label="移出 ${esc(id)}" ${controlsDisabled ? "disabled" : ""}>移出</button></li>`;
+      }).join("");
+    }
+
+    $("openRecommendations").addEventListener("click", async () => {
+      const dialog = $("recommendationsDialog");
+      if (dialog.open || recommendationBusy) return;
+      recommendationDraft = null;
+      recommendationBusy = true;
+      $("recommendationInput").value = "";
+      $("recommendationError").textContent = "正在读取推荐名单…";
+      renderRecommendations();
+      dialog.showModal();
+      try {
+        recommendationDraft = await request(recommendationEndpoint);
+        $("recommendationError").textContent = "";
+      } catch (error) {
+        $("recommendationError").textContent = error.message;
+      } finally {
+        recommendationBusy = false;
+        renderRecommendations();
+        if (recommendationDraft) $("recommendationInput").focus();
+        else $("cancelRecommendations").focus();
+      }
+    });
+    $("recommendationsDialog").addEventListener("cancel", (event) => {
+      if (recommendationBusy) event.preventDefault();
+    });
+    $("cancelRecommendations").addEventListener("click", () => $("recommendationsDialog").close());
+    $("recommendationAddForm").addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (recommendationBusy || !recommendationDraft || recommendationDraft.skillIds.length >= 200) return;
+      const input = $("recommendationInput");
+      const id = input.value.trim();
+      if (id && !recommendationDraft.skillIds.includes(id)) recommendationDraft.skillIds.push(id);
+      input.value = "";
+      renderRecommendations();
+      input.focus();
+    });
+    $("recommendationList").addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-move]");
+      if (!button || recommendationBusy || !recommendationDraft) return;
+      const ids = recommendationDraft.skillIds;
+      const index = Number(button.dataset.index);
+      const action = button.dataset.move;
+      const target = index + (action === "up" ? -1 : 1);
+      if (action === "remove") ids.splice(index, 1);
+      else [ids[index], ids[target]] = [ids[target], ids[index]];
+      renderRecommendations();
+      const row = $("recommendationList").children[action === "remove" ? Math.min(index, ids.length - 1) : target];
+      (row?.querySelector(`button[data-move="${action}"]:enabled`) || row?.querySelector("button:enabled") || $("recommendationInput")).focus();
+    });
+    $("saveRecommendations").addEventListener("click", async () => {
+      if (recommendationBusy || !recommendationDraft) return;
+      recommendationBusy = true;
+      $("recommendationError").textContent = "正在保存…";
+      renderRecommendations();
+      try {
+        await request(recommendationEndpoint, { method: "PUT", body: JSON.stringify(recommendationDraft) });
+        $("recommendationsDialog").close();
+        toast("已保存推荐名单");
+      } catch (error) {
+        $("recommendationError").textContent = error.message;
+      } finally {
+        recommendationBusy = false;
+        renderRecommendations();
+      }
+    });
     const viewCopy = {
       overview:["概览","Platform overview","SkillHub 运行概览","查看仓库、版本和下架状态的整体情况。"],
       skills:["Skills","Repository governance","Skills 仓库","管理命名空间、发布版本与 Git 历史。所有正式版本均不可改写。"],
