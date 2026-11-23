@@ -337,7 +337,7 @@ test("whole-Skill moderation hides all published versions and records the batch"
         path: "SKILL.md",
         content: `---\nname: ${name}\ndescription: Formats sample text for a moderation test.\n---\n# Test Skill\n\nFormats sample text for release ${version}.\n`
       }] },
-      manifest: { version, license: "MIT" },
+      manifest: { name, displayName: name, version, license: "MIT" },
       confirmVersionPublish: true,
       runJobsInline: true
     });
