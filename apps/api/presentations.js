@@ -46,8 +46,15 @@ export async function handlePresentationRequest({ config, store, req, res, url, 
     const viewer = await getActorFromRequest(config, store, req, { allowPublic: true, allowAgent: true });
     const actor = draft ? await humanActor(config, store, req) : undefined;
     if (!draft) await assertSkillVersionVisible(store, target, skillVisibilityViewer(viewer));
-    const authored = await store.getSkillPresentation({ ...target, draft, actor });
-    const presentation = authored ?? (!draft ? await store.getRecommendedDetail?.(target) : null) ?? null;
+    let presentation = await store.getSkillPresentation({ ...target, draft, actor });
+    if (!draft && presentation?.content?.usagePrompts === undefined) {
+      const generated = await store.getRecommendedDetail?.(target);
+      if (!presentation) {
+        presentation = generated ?? null;
+      } else if (generated?.content.usagePrompts?.length) {
+        presentation = { ...presentation, content: { ...presentation.content, usagePrompts: generated.content.usagePrompts } };
+      }
+    }
     sendJson(res, 200, { presentation }, { "Cache-Control": "private, no-store" });
     return true;
   }
