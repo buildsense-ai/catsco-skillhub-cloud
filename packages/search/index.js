@@ -36,7 +36,8 @@ export function searchPublishedSkillsPage(packageVersions, query = "", options =
   const snapshot = sha256(JSON.stringify(ranked.map(({ version, score }) => ({
     skillId: version.skillId, version: version.version, contentHash: version.contentHash,
     publishedAt: version.publishedAt, score, primaryCategory: catalogueCategory(version),
-    presentation: version.presentationSummary ?? null
+    presentation: version.presentationSummary ?? null,
+    ...(options.recommended ? { recommendation: version.recommendationSummary ?? null } : {})
   }))));
   let offset = 0;
   if (options.cursor !== undefined && options.cursor !== null && options.cursor !== "") {
@@ -53,9 +54,17 @@ export function searchPublishedSkillsPage(packageVersions, query = "", options =
   if (offset > matched.length) throw invalidCursor();
   const end = offset + limit;
   return {
-    skills: matched.slice(offset, end).map(({ version }) => ({
-      ...toRegistryEntry(version), primaryCategory: catalogueCategory(version)
-    })),
+    skills: matched.slice(offset, end).map(({ version }) => {
+      const primaryCategory = catalogueCategory(version);
+      const recommendation = options.recommended ? version.recommendationSummary : null;
+      return {
+        ...toRegistryEntry(version), primaryCategory,
+        ...(recommendation ? {
+          presentationSummary: { ...recommendation, primaryCategory },
+          localizedDescription: recommendation.summary
+        } : {})
+      };
+    }),
     total: matched.length,
     nextCursor: end < matched.length
       ? Buffer.from(JSON.stringify({ v: 1, filters, snapshot, offset: end })).toString("base64url") : null,

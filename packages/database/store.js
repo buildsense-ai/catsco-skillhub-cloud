@@ -201,17 +201,22 @@ export function createStore(config) {
       await ensurePresentationSchema(query);
       const recommendationJoin = recommended
         ? `JOIN catalogue_recommendations r ON r.id AND s.visibility_scope = 'public' AND v.skill_id = ANY(r.skill_ids)` : "";
+      const recommendedDetailJoin = recommended
+        ? `LEFT JOIN recommended_skill_details d ON d.package_version_id = v.id AND d.published_at IS NOT NULL
+          AND d.source_hash = COALESCE(NULLIF(v.content_hash, ''), v.checksum_sha256)` : "";
       const result = await query(`SELECT v.*, publisher_profiles.display_name AS publisher_display_name,
           publisher_profiles.contact AS publisher_contact,
           s.visibility_scope, s.visibility_revision, s.visibility_updated_at,
           p.published_revision AS presentation_revision,
           p.published_content->>'summary' AS presentation_summary,
           p.published_content->>'primaryCategory' AS presentation_category
-          ${recommended ? ", array_position(r.skill_ids, v.skill_id) AS recommendation_position" : ""}
+          ${recommended ? `, array_position(r.skill_ids, v.skill_id) AS recommendation_position,
+            d.content->>'summary' AS recommendation_summary, d.revision AS recommendation_detail_revision` : ""}
         FROM skill_versions v
         LEFT JOIN publisher_profiles ON publisher_profiles.user_id = v.owner_user_id
         LEFT JOIN skills s ON s.id = v.skill_id
         ${recommendationJoin}
+        ${recommendedDetailJoin}
         LEFT JOIN skill_visibility_grants g ON g.skill_id = s.id AND g.catsco_uid = $2
         LEFT JOIN skill_presentations p ON p.package_version_id = v.id
         WHERE v.status = 'published' AND v.yanked_at IS NULL
@@ -222,6 +227,10 @@ export function createStore(config) {
       return result.rows.map((row) => ({
         ...mapPackageVersion(row),
         ...(recommended ? { recommendationPosition: row.recommendation_position } : {}),
+        ...(row.recommendation_summary ? { recommendationSummary: {
+          revision: row.recommendation_detail_revision,
+          summary: row.recommendation_summary
+        } } : {}),
         ...(row.presentation_revision ? { presentationSummary: {
           revision: row.presentation_revision,
           summary: row.presentation_summary,

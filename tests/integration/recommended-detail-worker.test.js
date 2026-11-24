@@ -34,9 +34,15 @@ test('recommendation worker sends only bounded documentation and keeps only grou
   });
   assert.deepEqual(completion, { failureCode: 'source_unavailable' });
   await processRecommendedDetail({}, store, {}, { readPackage, generateContent: async () => ({
-    schemaVersion: 1, primaryCategory: 'documents', summary: 'Check /root/internal/settings before use.'
+    schemaVersion: 1, primaryCategory: 'documents', summary: '先检查 /root/internal/settings 再使用。'
   }) });
   assert.deepEqual(completion, { failureCode: 'invalid_detail' });
+  for (const summary of ['Shortens replies.', '简短回复。'.repeat(12), '简短回复。\n保留关键内容。']) {
+    await processRecommendedDetail({}, store, {}, { readPackage, generateContent: async () => ({
+      schemaVersion: 1, primaryCategory: 'documents', summary
+    }) });
+    assert.deepEqual(completion, { failureCode: 'invalid_detail' });
+  }
 });
 
 test('detail provider is disabled without a complete HTTPS configuration', () => {
