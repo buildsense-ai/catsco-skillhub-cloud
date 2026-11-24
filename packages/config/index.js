@@ -143,6 +143,11 @@ export function loadConfig(overrides = {}) {
       readEnabled: overrides.presentationsReadEnabled ?? readBool("SKILLHUB_PRESENTATIONS_READ_ENABLED", nodeEnv !== "production"),
       writeEnabled: overrides.presentationsWriteEnabled ?? readBool("SKILLHUB_PRESENTATIONS_WRITE_ENABLED", nodeEnv !== "production")
     },
+    recommendedDetails: {
+      url: overrides.recommendedDetailsUrl ?? process.env.SKILLHUB_RECOMMENDED_DETAILS_URL,
+      apiKey: overrides.recommendedDetailsApiKey ?? process.env.SKILLHUB_RECOMMENDED_DETAILS_API_KEY,
+      model: overrides.recommendedDetailsModel ?? process.env.SKILLHUB_RECOMMENDED_DETAILS_MODEL
+    },
     allowedOrigins: overrides.allowedOrigins ?? splitList(process.env.SKILLHUB_ALLOWED_ORIGINS),
     root,
     storageRoot,

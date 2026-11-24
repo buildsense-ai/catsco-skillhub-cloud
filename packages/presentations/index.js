@@ -40,7 +40,7 @@ function list(value, max, parse) {
 }
 
 export function parsePresentationContent(value) {
-  object(value, ["schemaVersion", "summary", "primaryCategory", "tags", "scenarios", "steps", "example", "requirements", "limitations", "details", "images"]);
+  object(value, ["schemaVersion", "summary", "primaryCategory", "tags", "scenarios", "steps", "example", "requirements", "limitations", "details", "images", "usagePrompts"]);
   if (value.schemaVersion !== 1) invalid("Unsupported presentation schema.");
   if (!PRESENTATION_CATEGORIES.some(({ id }) => id === value.primaryCategory)) invalid("Unknown primary category.");
   const content = {
@@ -64,6 +64,12 @@ export function parsePresentationContent(value) {
         caption: item.caption === undefined ? "" : text(item.caption, 500, false) };
     });
     if (new Set(content.images.map((item) => item.assetId)).size !== content.images.length) invalid("Duplicate image references.");
+  }
+  if (value.usagePrompts !== undefined) {
+    content.usagePrompts = list(value.usagePrompts, 6, (item) => {
+      object(item, ["label", "prompt"]);
+      return { label: text(item.label, 48), prompt: text(item.prompt, 500) };
+    });
   }
   if (value.example !== undefined) {
     object(value.example, ["kind", "input", "output", "copyAsPrompt"]);

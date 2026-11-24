@@ -121,6 +121,21 @@ test("publish and unpublish copy server drafts instead of accepting client repla
   }
 });
 
+test("recommended detail is a read-only fallback and author presentation takes precedence", async (t) => {
+  const { request, store } = await withApi(t);
+  const target = { skillId: 'author/read', version: '1.0.0' };
+  const query = '?skillId=author%2Fread&version=1.0.0';
+  const generated = { ...target, origin: 'recommended_generated', content };
+  store.getRecommendedDetail = async (value) => { assert.deepEqual(value, target); return generated; };
+  const headers = { Cookie: 'catsco_session=local-cookie' };
+  assert.deepEqual((await request('/api/skill-presentations' + query)).data.presentation, generated);
+  assert.equal((await request('/api/skill-presentations/draft' + query, { headers })).data.presentation.draft, null);
+  const authored = { ...target, origin: 'author', content };
+  store.getSkillPresentation = async () => authored;
+  assert.deepEqual((await request('/api/skill-presentations' + query)).data.presentation, authored);
+  assert.equal((await request('/api/admin/catalogue/recommendations/details', { headers })).status, 403);
+});
+
 test("recommendations use the curated order and isolate pagination from the full catalogue", async (t) => {
   const { request, store } = await withApi(t);
   const list = store.listCatalogueVersions;

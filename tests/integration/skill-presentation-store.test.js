@@ -108,6 +108,43 @@ test("PostgreSQL recommended skills are visible only while public and published"
   assert.deepEqual(await write(saved.revision, []), { revision: saved.revision + 1, skillIds: [] });
 });
 
+test("recommended details claim one lease and follow the current public version and content", pg, async (t) => {
+  const original = await fixture();
+  const { skillId } = original.target;
+  const baseline = await store.getCatalogueRecommendations();
+  t.after(async () => {
+    await store.query("UPDATE catalogue_recommendations SET skill_ids=$1 WHERE id", [baseline.skillIds]);
+    await store.query("DELETE FROM skills WHERE id=$1", [skillId]);
+  });
+  await store.query(`INSERT INTO skills (id,name,display_name,owner_user_id,visibility_scope)
+    VALUES ($1,'same-name','Same visible name',$2,'public')`, [skillId, original.owner.userId]);
+  await store.query("UPDATE catalogue_recommendations SET skill_ids=$1 WHERE id", [[skillId]]);
+  assert.equal((await store.listRecommendedDetails())[0].status, 'queued');
+  const jobs = await Promise.all([store.claimRecommendedDetail(), store.claimRecommendedDetail()]);
+  assert.equal(jobs.filter(Boolean).length, 1);
+  const job = jobs.find(Boolean);
+  const generated = { ...content(), usagePrompts: [{ label: '启动', prompt: 'caveman mode' }] };
+  assert.equal(await store.finishRecommendedDetail(job, { content: generated }), true);
+  assert.equal(await store.finishRecommendedDetail(job, { content: generated }), false);
+  assert.deepEqual((await store.getRecommendedDetail(original.target)).content, generated);
+  await store.retryRecommendedDetail(skillId);
+  const replacement = await store.claimRecommendedDetail();
+  const upgraded = await fixture({ skillId, owner: original.owner, version: '1.10.0' });
+  assert.equal(await store.finishRecommendedDetail(replacement, { content: generated }), false);
+  assert.equal(await store.getRecommendedDetail(original.target), null);
+  assert.equal(await store.getRecommendedDetail(upgraded.target), null);
+  const current = await store.claimRecommendedDetail();
+  assert.equal(current.id, upgraded.id);
+  assert.equal(await store.finishRecommendedDetail(current, { content: generated }), true);
+  await store.query("UPDATE skill_versions SET content_hash=$2 WHERE id=$1", [upgraded.id, 'd'.repeat(64)]);
+  assert.equal(await store.getRecommendedDetail(upgraded.target), null);
+  const changed = await store.claimRecommendedDetail();
+  assert.equal(changed.sourceHash, 'd'.repeat(64));
+  await store.query("UPDATE skills SET visibility_scope='private' WHERE id=$1", [skillId]);
+  assert.equal(await store.finishRecommendedDetail(changed, { content: generated }), false);
+  assert.deepEqual(await store.listRecommendedDetails(), []);
+});
+
 test("Admin Skill list includes the current published description and skips yanked versions", pg, async (t) => {
   const first = await fixture({ description: "First published description" });
   const { skillId } = first.target;

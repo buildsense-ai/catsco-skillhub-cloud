@@ -46,7 +46,8 @@ export async function handlePresentationRequest({ config, store, req, res, url, 
     const viewer = await getActorFromRequest(config, store, req, { allowPublic: true, allowAgent: true });
     const actor = draft ? await humanActor(config, store, req) : undefined;
     if (!draft) await assertSkillVersionVisible(store, target, skillVisibilityViewer(viewer));
-    const presentation = await store.getSkillPresentation({ ...target, draft, actor });
+    const authored = await store.getSkillPresentation({ ...target, draft, actor });
+    const presentation = authored ?? (!draft ? await store.getRecommendedDetail?.(target) : null) ?? null;
     sendJson(res, 200, { presentation }, { "Cache-Control": "private, no-store" });
     return true;
   }
@@ -148,7 +149,7 @@ async function humanActor(config, store, req) {
   return actor;
 }
 
-function assertJsonOrigin(config, req) {
+export function assertJsonOrigin(config, req) {
   if (String(req.headers["content-type"] || "").split(";")[0].trim().toLowerCase() !== "application/json") {
     throw new ValidationError("Content-Type must be application/json.", "presentation.content_type", 415);
   }

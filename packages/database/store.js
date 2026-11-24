@@ -4,6 +4,7 @@ import { appendAudit } from "../audit/index.js";
 import { generateId, JobStatus, nowIso, sha256, ValidationError } from "../domain/index.js";
 import { createPresentationStore, ensurePresentationSchema } from "../presentations/store.js";
 import { createPresentationAssetStore } from "../presentations/asset-store.js";
+import { createRecommendedDetailStore } from "../recommended-details/store.js";
 import { createPublicationTaskStore } from "../publication-tasks/store.js";
 import { createPublicationDescriptionDerivationStore } from "../publication-description-derivations/store.js";
 import { createPublicationDescriptionCommitAdmission } from "../publication-description-derivations/commit-admission.js";
@@ -162,6 +163,7 @@ export function createStore(config) {
     tx,
     ...createPresentationStore({ query, tx }),
     ...createPresentationAssetStore({ query, tx }),
+    ...createRecommendedDetailStore({ query, tx }),
     ...createPublicationTaskStore({ query, tx }),
     ...createPublicationDescriptionDerivationStore({ query, tx }),
     ...createPublicationDescriptionCommitAdmission({ enabled: config.publicationDescriptionDerivation?.commitAdmissionEnabled === true, store: { query, tx } }),
