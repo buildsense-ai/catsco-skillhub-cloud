@@ -45,3 +45,46 @@ test('detail provider is disabled without a complete HTTPS configuration', () =>
   assert.equal(recommendedDetailProvider({ ...settings, url: 'http://example.invalid/v1/chat/completions' }), null);
   assert.equal(recommendedDetailProvider({ ...settings, url: 'https://example.invalid/v1/chat/completions' }).model, settings.model);
 });
+
+test('recommendation worker uses the configured model endpoint and rejects incomplete Responses output', async (t) => {
+  const detail = { schemaVersion: 1, summary: '简化回复。', primaryCategory: 'documents' };
+  const source = 'Use short mode in chat.';
+  const text = JSON.stringify(detail);
+  const output = [
+    { type: 'reasoning' },
+    { type: 'message', content: [{ type: 'output_text', text }] }
+  ];
+  let completion;
+  const store = {
+    claimRecommendedDetail: async () => ({ ...version, sourceHash: hash, lease: 'lease' }),
+    findPublishedVersion: async () => version,
+    finishRecommendedDetail: async (_job, result) => { completion = result; }
+  };
+  const settings = { model: 'test-model', apiKey: 'test-credential' };
+  const options = { readPackage: async () => ({ files: [file('SKILL.md', source)] }) };
+  const fetch = t.mock.method(globalThis, 'fetch', async (url, request) => {
+    assert.equal(request.redirect, 'error');
+    const payload = JSON.parse(request.body);
+    assert.equal(payload.model, settings.model);
+    assert.equal(payload.stream, false);
+    if (url.endsWith('/responses')) {
+      assert.equal(payload.store, false);
+      assert.equal(payload.max_output_tokens, 2000);
+      assert.match(payload.instructions, /untrusted/);
+      assert.equal(JSON.parse(payload.input)[0].text, source);
+      return Response.json({ status: 'completed', output });
+    }
+    assert.equal(payload.max_tokens, 2000);
+    assert.equal(JSON.parse(payload.messages[1].content)[0].text, source);
+    return Response.json({ choices: [{ message: { content: text } }] });
+  });
+  for (const endpoint of ['responses', 'chat/completions']) {
+    const provider = recommendedDetailProvider({ ...settings, url: `https://example.invalid/v1/${endpoint}` });
+    await processRecommendedDetail({}, store, provider, options);
+    assert.equal(completion.content?.summary, detail.summary);
+  }
+  fetch.mock.mockImplementation(async () => Response.json({ status: 'incomplete', output }));
+  const provider = recommendedDetailProvider({ ...settings, url: 'https://example.invalid/v1/responses' });
+  await processRecommendedDetail({}, store, provider, options);
+  assert.deepEqual(completion, { failureCode: 'generation_failed' });
+});

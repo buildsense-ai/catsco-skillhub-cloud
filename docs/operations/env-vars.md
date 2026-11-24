@@ -10,7 +10,7 @@
 
 ## 推荐 Skill 详情生成（可选）
 
-- `SKILLHUB_RECOMMENDED_DETAILS_URL`：允许处理公开 Skill 文档的 HTTPS chat-completions 接口。
+- `SKILLHUB_RECOMMENDED_DETAILS_URL`：允许处理公开 Skill 文档的完整 HTTPS 接口地址，支持 `/v1/chat/completions` 和 `/v1/responses`。仅支持 Responses 的模型须使用 `/v1/responses`。
 - `SKILLHUB_RECOMMENDED_DETAILS_MODEL`：接口提供的模型 ID。
 - `SKILLHUB_RECOMMENDED_DETAILS_API_KEY`：详情生成专用的服务凭据。
 
