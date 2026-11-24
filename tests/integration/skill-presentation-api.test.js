@@ -147,16 +147,24 @@ test("recommendations use the curated order and isolate pagination from the full
   const { request, store } = await withApi(t);
   const list = store.listCatalogueVersions;
   const versions = await list();
+  const recommendationSummary = { revision: 2, summary: '用文字生成图片，也可以修改现有图片。' };
   store.listCatalogueVersions = async ({ recommended }) => recommended
-    ? [{ ...versions[0], recommendationPosition: 2 }, { ...versions[7], recommendationPosition: 1 }]
-    : versions;
+    ? [{ ...versions[0], recommendationPosition: 2 }, { ...versions[7], recommendationPosition: 1, recommendationSummary }]
+    : [{ ...versions[7], recommendationSummary }, ...versions.filter((version) => version !== versions[7])];
   const first = await request("/api/catalogue/skills?scope=recommended&limit=1");
   assert.equal(first.status, 200);
   assert.equal(first.data.scope, "recommended");
   assert.equal(first.data.total, 2);
   assert.equal(first.data.skills[0].skillId, versions[7].skillId);
+  assert.equal(first.data.skills[0].description, versions[7].manifest.description);
+  assert.equal(first.data.skills[0].localizedDescription, recommendationSummary.summary);
+  assert.deepEqual(first.data.skills[0].presentationSummary, { ...recommendationSummary, primaryCategory: 'documents' });
   const second = await request(`/api/catalogue/skills?scope=recommended&limit=1&cursor=${first.data.nextCursor}`);
   assert.equal(second.data.skills[0].skillId, versions[0].skillId);
+  assert.equal(second.data.skills[0].localizedDescription, undefined);
+  const all = (await request('/api/catalogue/skills?limit=100')).data.skills.find(({ skillId }) => skillId === versions[7].skillId);
+  assert.equal(all.localizedDescription, undefined);
+  assert.equal(all.presentationSummary, undefined);
   assert.equal((await request(`/api/catalogue/skills?limit=1&cursor=${first.data.nextCursor}`)).status, 409);
   assert.equal((await request("/api/admin/catalogue/recommendations", { headers: { Cookie: "catsco_session=local-cookie" } })).status, 403);
 });

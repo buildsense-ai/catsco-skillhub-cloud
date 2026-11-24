@@ -127,7 +127,12 @@ test("recommended details claim one lease and follow the current public version 
   assert.equal(await store.finishRecommendedDetail(job, { content: generated }), true);
   assert.equal(await store.finishRecommendedDetail(job, { content: generated }), false);
   assert.deepEqual((await store.getRecommendedDetail(original.target)).content, generated);
+  const visibleSummary = async (target) => (await store.listCatalogueVersions({ recommended: true }))
+    .find((item) => item.skillId === target.skillId && item.version === target.version)?.recommendationSummary;
+  const publishedSummary = { revision: 1, summary: generated.summary };
+  assert.deepEqual(await visibleSummary(original.target), publishedSummary);
   await store.retryRecommendedDetail(skillId);
+  assert.deepEqual(await visibleSummary(original.target), publishedSummary);
   const replacement = await store.claimRecommendedDetail();
   const upgraded = await fixture({ skillId, owner: original.owner, version: '1.10.0' });
   assert.equal(await store.finishRecommendedDetail(replacement, { content: generated }), false);
@@ -138,6 +143,7 @@ test("recommended details claim one lease and follow the current public version 
   assert.equal(await store.finishRecommendedDetail(current, { content: generated }), true);
   await store.query("UPDATE skill_versions SET content_hash=$2 WHERE id=$1", [upgraded.id, 'd'.repeat(64)]);
   assert.equal(await store.getRecommendedDetail(upgraded.target), null);
+  assert.equal(await visibleSummary(upgraded.target), undefined);
   const changed = await store.claimRecommendedDetail();
   assert.equal(changed.sourceHash, 'd'.repeat(64));
   await store.query("UPDATE skills SET visibility_scope='private' WHERE id=$1", [skillId]);
