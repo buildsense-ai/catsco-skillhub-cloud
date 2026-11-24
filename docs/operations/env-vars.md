@@ -8,6 +8,14 @@
 
 不要放在 Nginx 公开目录，也不要提交到 Git。
 
+## 推荐 Skill 详情生成（可选）
+
+- `SKILLHUB_RECOMMENDED_DETAILS_URL`：允许处理公开 Skill 文档的 HTTPS chat-completions 接口。
+- `SKILLHUB_RECOMMENDED_DETAILS_MODEL`：接口提供的模型 ID。
+- `SKILLHUB_RECOMMENDED_DETAILS_API_KEY`：详情生成专用的服务凭据。
+
+配置后重启 API 和 Worker。后台会处理现有推荐名单，也会为新版本重新生成详情。人工发布的介绍优先展示。暂无生成结果时，详情页显示原始描述。
+
 ## 必填
 
 ```env

@@ -9,6 +9,7 @@ import { publicationTaskSettings } from "../../packages/publication-tasks/config
 import { createDelegatedPublicationScheduler } from '../../packages/publication-delegation/commit-scheduler.js';
 import { createPublicationReceiptDispatcher } from '../../packages/publication-delegation/receipt-worker.js';
 import { createPublicationDescriptionReleaseScheduler } from '../../packages/publication-description-derivations/commit-scheduler.js';
+import { runRecommendedDetails } from '../../packages/recommended-details/worker.js';
 
 // A Cloud acceptance receipt is historical evidence only. This lane never
 // grants a commit permit and never changes publication state by itself.
@@ -52,8 +53,10 @@ export async function startWorker(config = loadConfig(), { once = false } = {}) 
   };
 
   let stopped = false;
+  const recommendationWorker = new AbortController();
   const stop = () => {
     stopped = true;
+    recommendationWorker.abort();
     void delegated.stop().catch(()=>{}); // also stop admission while legacy IO settles
     void receiptDelivery.stop().catch(()=>{});
     void descriptionRelease.stop().catch(()=>{});
@@ -64,12 +67,14 @@ export async function startWorker(config = loadConfig(), { once = false } = {}) 
   // the legacy lane. Its own SQL lease/retry limits survive process restarts.
   const delegatedRun=delegated.run({once});
   const descriptionReleaseRun=descriptionRelease.run({once});
+  const recommendationRun = runRecommendedDetails(config, taskStore, { once, signal: recommendationWorker.signal });
   try {
     if (once) {
       const results = await processJobs(config);
       while (!stopped && await tickTasks()) { /* due work only; retries have backoff */ }
       await delegatedRun;
       await descriptionReleaseRun;
+      await recommendationRun;
       console.log(JSON.stringify({ processed: results.length, results: results.map((item) => ({ jobId: item.job.id, type: item.job.type, status: item.status })) }, null, 2));
       return results;
     }
@@ -81,6 +86,8 @@ export async function startWorker(config = loadConfig(), { once = false } = {}) 
     }
     console.log("CatsCo SkillHub worker stopped");
   } finally {
+    recommendationWorker.abort();
+    await recommendationRun;
     await delegated.stop();
     await receiptDelivery.stop();
     await descriptionRelease.stop();

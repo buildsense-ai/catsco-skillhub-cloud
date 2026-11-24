@@ -164,6 +164,43 @@
     let recommendationDraft = null;
     let savedRecommendationIds = [];
     let recommendationRequest = null;
+    let recommendationDetails = null;
+    let recommendationDetailRequest = null;
+
+    function detailStatusMarkup(id) {
+      const detail = recommendationDetails?.details.find((item) => item.skillId === id);
+      if (!detail) return "";
+      if (!recommendationDetails.enabled && !detail.publishedAt) return '<small>详情生成服务尚未配置</small>';
+      const labels = { queued: "等待生成", running: "正在生成", ready: "已生成", failed: "生成失败" };
+      const failure = { source_unavailable: "无法读取发布包", generation_failed: "模型调用失败", invalid_detail: "详情未通过校验" }[detail.failureCode];
+      const label = `${labels[detail.status] || "等待生成"} · v${detail.version}${failure && detail.status === "failed" ? ` · ${failure}` : ""}`;
+      const retry = recommendationDetails.enabled && ["ready", "failed"].includes(detail.status);
+      return `<small>${esc(label)}</small>${retry ? ' <button class="secondary-button" type="button" data-regenerate-detail>重新生成</button>' : ""}`;
+    }
+
+    function renderRecommendationDetailStatuses() {
+      for (const slot of $("recommendationList").querySelectorAll("[data-detail-status]")) {
+        const html = detailStatusMarkup(slot.dataset.detailStatus);
+        if (slot.innerHTML !== html) slot.innerHTML = html;
+      }
+    }
+
+    async function refreshRecommendationDetails() {
+      if (recommendationDetailRequest || state.view !== "recommendations" || !state.me) return;
+      const controller = new AbortController();
+      recommendationDetailRequest = controller;
+      try {
+        const result = await request(`${recommendationEndpoint}/details`, { signal: controller.signal });
+        if (!controller.signal.aborted) {
+          recommendationDetails = result;
+          renderRecommendationDetailStatuses();
+        }
+      } catch {
+        // A status refresh must not interrupt curation or clear in-progress edits.
+      } finally {
+        if (recommendationDetailRequest === controller) recommendationDetailRequest = null;
+      }
+    }
 
     function recommendationsChanged() {
       return recommendationDraft && JSON.stringify(recommendationDraft.skillIds) !== JSON.stringify(savedRecommendationIds);
@@ -213,6 +250,7 @@
         const description = skill?.description?.trim();
         const hidden = skill && (skill.visibilityScope !== "public" || skillStatus(skill) !== "published");
         return `<li><strong>${esc(skill?.displayName || id)}</strong> <small>${esc(id)}${hidden ? " · 当前不可展示" : ""}</small>${description ? `<p class="recommendation-skill-description">${esc(description)}</p>` : ""}
+          <div class="recommendation-actions" data-detail-status="${esc(id)}">${detailStatusMarkup(id)}</div>
           <div class="recommendation-actions">
           <button class="secondary-button" type="button" data-move="up" data-index="${index}" aria-label="上移 ${esc(id)}" ${controlsDisabled || index === 0 ? "disabled" : ""}>上移</button>
           <button class="secondary-button" type="button" data-move="down" data-index="${index}" aria-label="下移 ${esc(id)}" ${controlsDisabled || index === ids.length - 1 ? "disabled" : ""}>下移</button>
@@ -237,6 +275,7 @@
         if (catalogue) state.skills = catalogue.skills;
         recommendationDraft = response;
         savedRecommendationIds = [...response.skillIds];
+        void refreshRecommendationDetails();
         $("recommendationStatus").textContent = options.method === "PUT" ? "已保存推荐名单" : "";
       } catch (error) {
         if (recommendationRequest !== controller) return;
@@ -277,6 +316,16 @@
       if (button) addRecommendation(button.dataset.addRecommendation);
     });
     $("recommendationList").addEventListener("click", (event) => {
+      const regenerate = event.target.closest("button[data-regenerate-detail]");
+      if (regenerate) {
+        regenerate.disabled = true;
+        const skillId = regenerate.closest("[data-detail-status]").dataset.detailStatus;
+        request(`${recommendationEndpoint}/details`, { method: "POST", body: JSON.stringify({ skillId }) })
+          .then(() => { toast("已排队重新生成详情"); })
+          .catch((error) => toast(error.message))
+          .finally(() => { regenerate.disabled = false; void refreshRecommendationDetails(); });
+        return;
+      }
       const button = event.target.closest("button[data-move]");
       if (!button || recommendationRequest || !recommendationDraft) return;
       const ids = recommendationDraft.skillIds;
@@ -345,6 +394,9 @@
       await request("/api/auth/logout",{method:"POST",body:"{}"}).catch(()=>{});
       checkedSkillIds.clear();
       recommendationRequest?.abort();
+      recommendationDetailRequest?.abort();
+      recommendationDetailRequest = null;
+      recommendationDetails = null;
       recommendationRequest = null;
       recommendationDraft = null;
       savedRecommendationIds = [];
@@ -585,6 +637,7 @@
     document.querySelectorAll(".nav-item").forEach((item)=>item.addEventListener("click",()=>switchView(item.dataset.view)));
     document.addEventListener("keydown",(event)=>{if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==="k"){event.preventDefault();$("globalSearch").focus()}if(event.key==="Escape")$("dataModal").classList.add("hidden")});
     boot();
+    setInterval(() => { if (!document.hidden) void refreshRecommendationDetails(); }, 15000);
   </script>
 </body>
 </html>

@@ -47,7 +47,8 @@ import {
   readRootPublicKey
 } from "../../packages/signing/index.js";
 import { createExaWebAnswerService } from "../../packages/web-answer/index.js";
-import { handlePresentationRequest } from "./presentations.js";
+import { assertJsonOrigin, handlePresentationRequest } from "./presentations.js";
+import { recommendedDetailProvider } from "../../packages/recommended-details/worker.js";
 import { createPublishValidationHandler, readRaw } from "./publish-validation.js";
 import { createPublicationTasksHandler } from "./publication-tasks.js";
 import { createPublicationControlHandler } from "./publication-control.js";
@@ -854,6 +855,25 @@ export function createApiServer(config = loadConfig(), dependencies = {}) {
           : [];
         await appendAudit(store, { actor, action: "namespace.list_admin", resourceType: "namespace", resourceId: "list", ip });
         sendJson(res, 200, { namespaces });
+        return;
+      }
+
+      if (pathname === "/api/admin/catalogue/recommendations/details" && ["GET", "POST"].includes(req.method)) {
+        await requireAdminActor(config, store, req, "package.yank");
+        const enabled = Boolean(recommendedDetailProvider(config.recommendedDetails));
+        const headers = { "Cache-Control": "private, no-store" };
+        if (req.method === "GET") {
+          sendJson(res, 200, { enabled, details: await store.listRecommendedDetails() }, headers);
+          return;
+        }
+        if (!enabled) throw new ValidationError("详情生成服务尚未配置。", "recommendation.detail_disabled", 503);
+        assertJsonOrigin(config, req);
+        const { skillId } = (await readJson(req, 4096)) ?? {};
+        if (typeof skillId !== "string" || !skillId.trim() || skillId.length > 512 || skillId.includes("\0")) {
+          throw new ValidationError("Skill ID 无效。", "catalogue.recommendations_invalid");
+        }
+        await store.retryRecommendedDetail(skillId);
+        sendJson(res, 202, { skillId, status: "queued" }, headers);
         return;
       }
 
