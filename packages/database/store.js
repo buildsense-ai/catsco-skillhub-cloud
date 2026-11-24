@@ -1225,7 +1225,12 @@ export function createStore(config) {
            count(v.id) FILTER (WHERE v.status = 'published' AND v.yanked_at IS NULL)::int AS published_version_count,
            max(v.published_at) AS last_published_at,
            coalesce(sum(v.download_count), 0)::int AS total_download_count,
-           max(v.risk_level) FILTER (WHERE v.status = 'published' AND v.yanked_at IS NULL) AS latest_risk_level
+           max(v.risk_level) FILTER (WHERE v.status = 'published' AND v.yanked_at IS NULL) AS latest_risk_level,
+           (SELECT published.manifest->>'description'
+              FROM skill_versions published
+             WHERE published.skill_id = s.id AND published.status = 'published' AND published.yanked_at IS NULL
+             ORDER BY (published.version = s.latest_version) DESC NULLS LAST, published.published_at DESC NULLS LAST, published.id
+             LIMIT 1) AS published_description
          FROM skills s
          LEFT JOIN skill_versions v ON v.skill_id = s.id
          WHERE ($1 = '' OR lower(split_part(s.id, '/', 1)) = $1)
@@ -2326,6 +2331,7 @@ function mapAdminSkill(row) {
     displayName: row.display_name,
     ownerUserId: row.owner_user_id,
     latestVersion: row.latest_version,
+    description: row.published_description,
     status: row.status,
     versionCount: Number(row.version_count ?? 0),
     publishedVersionCount: Number(row.published_version_count ?? 0),

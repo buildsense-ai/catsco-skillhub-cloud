@@ -47,11 +47,11 @@ async function person(role = "user") {
   return { userId: id, role, roles: [role] };
 }
 
-async function fixture({ owner, skillId, version = "1.0.0" } = {}) {
+async function fixture({ owner, skillId, version = "1.0.0", description = "Original immutable package description" } = {}) {
   owner ||= await person();
   const id = `presentation-version-${randomUUID()}`;
   skillId ||= `presentation-${randomUUID()}/same-name`;
-  const manifest = { name: "same-name", displayName: "Same visible name", description: "Original immutable package description", categories: ["other"], tags: [], runtime: {}, author: { name: "untrusted-author-field" } };
+  const manifest = { name: "same-name", displayName: "Same visible name", description, categories: ["other"], tags: [], runtime: {}, author: { name: "untrusted-author-field" } };
   await store.query(`INSERT INTO skill_versions
     (id, skill_id, skill_name, display_name, owner_user_id, version, status,
       package_path, package_file, package_url, package_size, checksum_sha256, payload_sha256,
@@ -106,6 +106,21 @@ test("PostgreSQL recommended skills are visible only while public and published"
   await store.query("UPDATE skill_versions SET yanked_at = now() WHERE id = $1", [second.id]);
   assert.deepEqual(await catalogue(), []);
   assert.deepEqual(await write(saved.revision, []), { revision: saved.revision + 1, skillIds: [] });
+});
+
+test("Admin Skill list includes the current published description and skips yanked versions", pg, async (t) => {
+  const first = await fixture({ description: "First published description" });
+  const { skillId } = first.target;
+  const second = await fixture({ skillId, owner: first.owner, version: "1.1.0", description: "Updated description" });
+  t.after(() => store.query("DELETE FROM skills WHERE id = $1", [skillId]));
+  await store.query(`INSERT INTO skills (id, name, display_name, owner_user_id, latest_version, status, visibility_scope)
+    VALUES ($1,'same-name','Same visible name',$2,'1.1.0','published','public')`, [skillId, first.owner.userId]);
+  const getSkill = async () => (await store.listAdminSkills({ search: skillId }))[0];
+  assert.equal((await getSkill()).description, "Updated description");
+  await store.query("UPDATE skill_versions SET yanked_at = now() WHERE id = $1", [second.id]);
+  assert.equal((await getSkill()).description, "First published description");
+  await store.query("UPDATE skill_versions SET yanked_at = now() WHERE id = $1", [first.id]);
+  assert.equal((await getSkill()).description, null);
 });
 
 test("PostgreSQL images stay private until publication and revoke on replacement, unpublish and yank", pg, async () => {

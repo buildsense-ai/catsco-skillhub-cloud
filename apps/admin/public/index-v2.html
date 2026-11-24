@@ -22,8 +22,20 @@
     .whole-skill-action{grid-column:1/-1}
     .nav-item .recommendation-icon{display:inline-block;width:17px;text-align:center;opacity:.8}
     .recommendations-body{padding:0 16px 16px}
-    .recommendation-add{display:flex;align-items:end;flex-wrap:wrap;gap:8px}
-    .recommendation-add .field{flex:1 1 240px;max-width:560px}
+    .recommendation-picker{margin-top:16px;padding-top:16px;border-top:1px solid var(--line)}
+    .recommendation-picker-head{display:flex;align-items:end;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:12px}
+    .recommendation-picker-title{font-size:13px;font-weight:740}
+    .recommendation-picker-note{margin-top:4px;color:var(--muted);font-size:11px}
+    .recommendation-search{width:min(100%,440px);height:38px;padding:0 12px;border:1px solid var(--line);border-radius:9px;background:#fff}
+    .recommendation-catalog{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,320px),1fr));gap:10px;max-height:520px;overflow:auto;padding:2px}
+    .recommendation-skill{min-width:0;padding:13px;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+    .recommendation-skill-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+    .recommendation-skill-name{font-size:12px;font-weight:740;overflow-wrap:anywhere}
+    .recommendation-skill-id{margin-top:4px;color:var(--muted);font-size:10px;overflow-wrap:anywhere}
+    .recommendation-skill-description{margin:10px 0 0;color:#555b6d;font-size:11px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere}
+    .recommendation-skill-description.missing{color:var(--muted);font-style:italic}
+    .recommendation-skill .secondary-button{flex:0 0 auto;padding:0 10px}
+    .recommendation-catalog-empty{grid-column:1/-1;padding:20px 8px;color:var(--muted);font-size:12px;text-align:center}
     .recommendation-list{padding-inline-start:26px;margin:18px 0}
     .recommendation-list li{padding:10px 0;border-top:1px solid var(--line);overflow-wrap:anywhere}
     .recommendation-list small{color:var(--muted)}
@@ -86,14 +98,6 @@
         <section class="card hidden" id="recommendationsPanel" aria-labelledby="recommendationsTitle">
           <div class="card-header"><div><h2 class="card-title" id="recommendationsTitle">推荐名单</h2><div class="card-note">只有公开且已发布的 Skill 会出现在能力库推荐页，顺序与此名单一致。</div></div></div>
           <div class="recommendations-body">
-            <form id="recommendationAddForm" class="recommendation-add">
-              <div class="field">
-                <label for="recommendationInput">搜索 Skill 名称或输入完整 ID</label>
-              <input id="recommendationInput" list="recommendationOptions" maxlength="512" required disabled>
-                <datalist id="recommendationOptions"></datalist>
-              </div>
-              <button class="primary-button" type="submit" disabled>加入推荐</button>
-            </form>
             <p class="recommendation-status hidden" id="recommendationEmpty">暂无推荐 Skill。添加后，点击「保存推荐名单」生效。</p>
             <ol class="recommendation-list" id="recommendationList"></ol>
             <div class="recommendation-footer">
@@ -101,6 +105,13 @@
               <span class="recommendation-status" id="recommendationStatus" role="status"></span>
             </div>
             <div class="modal-error" id="recommendationError" role="alert"></div>
+            <section class="recommendation-picker" aria-labelledby="recommendationPickerTitle">
+              <div class="recommendation-picker-head">
+                <div><div class="recommendation-picker-title" id="recommendationPickerTitle">选择要推荐的 Skill</div><div class="recommendation-picker-note" id="recommendationCount" role="status"></div></div>
+                <input class="recommendation-search" id="recommendationSearch" type="search" placeholder="搜索名称、ID 或描述" aria-label="搜索可推荐 Skill" disabled>
+              </div>
+              <div class="recommendation-catalog" id="recommendationCatalog"></div>
+            </section>
           </div>
         </section>
 
@@ -149,6 +160,7 @@
     const checkedSkillIds = new Set();
     let moderationPending = false;
     const recommendationEndpoint = "/api/admin/catalogue/recommendations";
+    const adminSkillsEndpoint = "/api/admin/skills?limit=1000";
     let recommendationDraft = null;
     let savedRecommendationIds = [];
     let recommendationRequest = null;
@@ -157,24 +169,50 @@
       return recommendationDraft && JSON.stringify(recommendationDraft.skillIds) !== JSON.stringify(savedRecommendationIds);
     }
 
+    function canRecommend(skill) {
+      return skill?.visibilityScope === "public" && skillStatus(skill) === "published";
+    }
+
+    function renderRecommendationCatalog() {
+      const ids = recommendationDraft?.skillIds ?? [];
+      const query = $("recommendationSearch").value.trim().toLowerCase();
+      const catalog = $("recommendationCatalog");
+      const previousScroll = catalog.scrollTop;
+      const skills = state.skills.filter((skill) => canRecommend(skill)
+        && [skill.displayName, skill.skillName, skill.skillId, skill.description]
+          .some((value) => String(value ?? "").toLowerCase().includes(query)))
+        .sort((a, b) => (a.displayName || a.skillId).localeCompare(b.displayName || b.skillId));
+      $("recommendationCount").textContent = recommendationDraft ? `${skills.length} 个公开 Skill · 已选 ${ids.length}/200` : "";
+      let emptyMessage = query ? "没有匹配的 Skill" : "暂无公开且已发布的 Skill";
+      if (!recommendationDraft) emptyMessage = recommendationRequest ? "正在加载 Skill 列表…" : "请刷新名单以加载 Skill 列表";
+      catalog.innerHTML = recommendationDraft && skills.length ? skills.map((skill) => {
+        const name = skill.displayName || skill.skillName || skill.skillId;
+        const description = skill.description?.trim();
+        const selected = ids.includes(skill.skillId);
+        const disabled = recommendationRequest || selected || ids.length >= 200;
+        return `<article class="recommendation-skill">
+          <div class="recommendation-skill-head">
+            <div><div class="recommendation-skill-name">${esc(name)}</div><div class="recommendation-skill-id">${esc(skill.skillId)}</div></div>
+            <button class="secondary-button" type="button" data-add-recommendation="${esc(skill.skillId)}" aria-label="${selected ? "已加入" : "加入推荐"} ${esc(name)}" ${disabled ? "disabled" : ""}>${selected ? "已加入" : "加入推荐"}</button>
+          </div>
+          <p class="recommendation-skill-description${description ? "" : " missing"}">${esc(description || "暂无描述")}</p>
+        </article>`;
+      }).join("") : `<div class="recommendation-catalog-empty">${emptyMessage}</div>`;
+      catalog.scrollTop = previousScroll;
+    }
+
     function renderRecommendations() {
       const ids = recommendationDraft?.skillIds ?? [];
       const controlsDisabled = Boolean(recommendationRequest) || !recommendationDraft;
-      $("recommendationInput").disabled = controlsDisabled || ids.length >= 200;
-      $("recommendationAddForm").querySelector("button").disabled = $("recommendationInput").disabled;
+      $("recommendationSearch").disabled = controlsDisabled;
       $("saveRecommendations").disabled = controlsDisabled || !recommendationsChanged();
       $("recommendationEmpty").classList.toggle("hidden", !recommendationDraft || ids.length > 0);
-      $("recommendationOptions").replaceChildren(...state.skills.filter((skill) => skill.visibilityScope === "public"
-        && skillStatus(skill) === "published" && !ids.includes(skill.skillId)).map((skill) => {
-        const option = document.createElement("option");
-        option.value = skill.skillId;
-        option.label = skill.displayName || skill.skillId;
-        return option;
-      }));
+      renderRecommendationCatalog();
       $("recommendationList").innerHTML = ids.map((id, index) => {
         const skill = state.skills.find((item) => item.skillId === id);
+        const description = skill?.description?.trim();
         const hidden = skill && (skill.visibilityScope !== "public" || skillStatus(skill) !== "published");
-        return `<li><strong>${esc(skill?.displayName || id)}</strong> <small>${esc(id)}${hidden ? " · 当前不可展示" : ""}</small>
+        return `<li><strong>${esc(skill?.displayName || id)}</strong> <small>${esc(id)}${hidden ? " · 当前不可展示" : ""}</small>${description ? `<p class="recommendation-skill-description">${esc(description)}</p>` : ""}
           <div class="recommendation-actions">
           <button class="secondary-button" type="button" data-move="up" data-index="${index}" aria-label="上移 ${esc(id)}" ${controlsDisabled || index === 0 ? "disabled" : ""}>上移</button>
           <button class="secondary-button" type="button" data-move="down" data-index="${index}" aria-label="下移 ${esc(id)}" ${controlsDisabled || index === ids.length - 1 ? "disabled" : ""}>下移</button>
@@ -190,11 +228,15 @@
       $("recommendationStatus").textContent = options.method === "PUT" ? "正在保存…" : "正在读取推荐名单…";
       renderRecommendations();
       try {
-        const response = await request(recommendationEndpoint, { ...options, signal: controller.signal });
+        const requestOptions = { ...options, signal: controller.signal };
+        const [response, catalogue] = await Promise.all([
+          request(recommendationEndpoint, requestOptions),
+          options.method === "PUT" ? null : request(adminSkillsEndpoint, { signal: controller.signal })
+        ]);
         if (recommendationRequest !== controller) return;
+        if (catalogue) state.skills = catalogue.skills;
         recommendationDraft = response;
         savedRecommendationIds = [...response.skillIds];
-        $("recommendationInput").value = "";
         $("recommendationStatus").textContent = options.method === "PUT" ? "已保存推荐名单" : "";
       } catch (error) {
         if (recommendationRequest !== controller) return;
@@ -214,16 +256,25 @@
       return updateRecommendations();
     }
 
-    $("recommendationAddForm").addEventListener("submit", (event) => {
-      event.preventDefault();
-      if (recommendationRequest || !recommendationDraft || recommendationDraft.skillIds.length >= 200) return;
-      const input = $("recommendationInput");
-      const id = input.value.trim();
-      if (id && !recommendationDraft.skillIds.includes(id)) recommendationDraft.skillIds.push(id);
+    function addRecommendation(id) {
+      if (recommendationRequest || !recommendationDraft || recommendationDraft.skillIds.length >= 200
+        || recommendationDraft.skillIds.includes(id)) return;
+      if (!canRecommend(state.skills.find((skill) => skill.skillId === id))) return;
+      recommendationDraft.skillIds.push(id);
       $("recommendationStatus").textContent = "";
-      input.value = "";
       renderRecommendations();
-      input.focus();
+      const buttons = Array.from($("recommendationCatalog").querySelectorAll("button"));
+      const index = buttons.findIndex((button) => button.dataset.addRecommendation === id);
+      const next = buttons.slice(index + 1).find((button) => !button.disabled);
+      (next || $("recommendationSearch")).focus({ preventScroll: true });
+    }
+    $("recommendationSearch").addEventListener("input", () => {
+      $("recommendationCatalog").scrollTop = 0;
+      renderRecommendationCatalog();
+    });
+    $("recommendationCatalog").addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-add-recommendation]");
+      if (button) addRecommendation(button.dataset.addRecommendation);
     });
     $("recommendationList").addEventListener("click", (event) => {
       const button = event.target.closest("button[data-move]");
@@ -237,7 +288,7 @@
       $("recommendationStatus").textContent = "";
       renderRecommendations();
       const row = $("recommendationList").children[action === "remove" ? Math.min(index, ids.length - 1) : target];
-      (row?.querySelector(`button[data-move="${action}"]:enabled`) || row?.querySelector("button:enabled") || $("recommendationInput")).focus();
+      (row?.querySelector(`button[data-move="${action}"]:enabled`) || row?.querySelector("button:enabled") || $("recommendationSearch")).focus();
     });
     $("saveRecommendations").addEventListener("click", () => {
       if (!recommendationsChanged()) return;
@@ -297,7 +348,7 @@
       recommendationRequest = null;
       recommendationDraft = null;
       savedRecommendationIds = [];
-      $("recommendationInput").value = "";
+      $("recommendationSearch").value = "";
       $("recommendationStatus").textContent = "";
       $("recommendationError").textContent = "";
       renderRecommendations();
@@ -308,7 +359,7 @@
     async function refreshAll() {
       const [namespaceData,skillData,versionData]=await Promise.all([
         request("/api/admin/namespaces?q="),
-        request("/api/admin/skills?namespace=&q=&status=&limit=1000"),
+        request(adminSkillsEndpoint),
         request("/api/admin/skill-versions?q=&status=&limit=1000")
       ]);
       state.namespaces=namespaceData.namespaces||[]; state.skills=skillData.skills||[]; state.versions=versionData.skillVersions||[];
